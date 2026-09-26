@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>D7-Space-Colonization</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <div class="app">
+      <aside class="hud" id="studioHud">
+      <div class="kicker">Runions et al. 2007</div>
+      <h1>D7-Space-Colonization</h1>
+      <p class="lede">
+        Import PNG, JPG, or SVG — add several grids and use Prev / Next to cycle. Grow and capture variants per grid.
+      </p>
+
+      <div class="row">
+        <button id="play" class="primary" type="button" disabled>Grow</button>
+        <button id="reset" class="ghost" type="button">Reset</button>
+      </div>
+      <div class="row">
+        <button id="importGrid" class="ghost" type="button">Add grid</button>
+        <button id="clearGrid" class="ghost" type="button" disabled>Clear all</button>
+      </div>
+      <div class="row">
+        <button id="prevGrid" class="ghost" type="button" disabled>Prev grid</button>
+        <button id="nextGrid" class="ghost" type="button" disabled>Next grid</button>
+      </div>
+      <p id="gridCycleStatus" class="grid-status">No grids loaded</p>
+      <input
+        id="gridFile"
+        type="file"
+        accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml"
+        multiple
+        hidden
+      />
+      <p id="gridStatus" class="grid-status">Import a grid to begin</p>
+      <label class="check">
+        <input id="showVoidMask" type="checkbox" />
+        Show void mask (dim non-solid areas)
+      </label>
+
+      <div class="section">
+        <div class="section-head">Seeds</div>
+        <div class="row">
+          <button id="seedMode" class="ghost" type="button">Place seed</button>
+          <button id="clearSeeds" class="ghost" type="button">Clear</button>
+        </div>
+        <p id="seedStatus" class="grid-status">0 seeds</p>
+        <ul id="seedList" class="seed-list"></ul>
+      </div>
+
+      <label class="ctrl">
+        Attractors
+        <span class="value" id="countVal"></span>
+        <input id="count" type="range" min="50" max="2000" step="10" value="800" />
+      </label>
+      <label class="ctrl">
+        Influence
+        <span class="value" id="influenceVal"></span>
+        <input id="influence" type="range" min="20" max="220" value="90" />
+      </label>
+      <label class="ctrl">
+        Kill distance
+        <span class="value" id="killVal"></span>
+        <input id="kill" type="range" min="4" max="40" value="12" />
+      </label>
+      <label class="ctrl">
+        Step size
+        <span class="value" id="stepVal"></span>
+        <input id="stepSize" type="range" min="2" max="16" step="0.5" value="6" />
+      </label>
+      <label class="ctrl">
+        Iterations
+        <span class="value" id="iterVal"></span>
+        <input id="iterations" type="range" min="10" max="800" step="10" value="250" />
+      </label>
+
+      <div class="section">
+        <div class="section-head">Branches</div>
+        <label class="check" title="Requires 2+ detected circles. Growth follows external tangent lines between circles only, not other grid strokes.">
+          <input id="circleTangents" type="checkbox" />
+          Branch on circle tangent lines only
+        </label>
+        <label class="check">
+          <input id="identifyBranches" type="checkbox" />
+          Identify primary / secondary / tertiary
+        </label>
+        <div id="branchLegend" class="legend hidden">
+          <label class="legend-item">
+            <input id="showPrimary" type="checkbox" checked />
+            <span class="swatch primary"></span>
+            Primary
+          </label>
+          <label class="legend-item">
+            <input id="showSecondary" type="checkbox" checked />
+            <span class="swatch secondary"></span>
+            Secondary
+          </label>
+          <label class="legend-item">
+            <input id="showTertiary" type="checkbox" checked />
+            <span class="swatch tertiary"></span>
+            Tertiary
+          </label>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div>Iteration<b id="genCount">0</b></div>
+        <div>Attractors left<b id="attrCount">0</b></div>
+        <div>Seeds<b id="seedCount">0</b></div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">Variants</div>
+        <p id="variantStatus" class="grid-status">Capture layouts to compare</p>
+        <div class="row">
+          <button id="captureVariant" class="ghost" type="button" disabled>Capture</button>
+          <button id="newAttempt" class="ghost" type="button" disabled>New attempt</button>
+        </div>
+        <label class="ctrl compact" title="Each run uses a random seed on the grid and light growth jitter.">
+          Batch count
+          <span class="value" id="batchCountVal">3</span>
+          <select id="batchCount">
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5" selected>5</option>
+          </select>
+        </label>
+        <div class="row">
+          <button id="generateVariants" class="ghost" type="button" disabled>Generate batch</button>
+          <button id="clearVariants" class="ghost" type="button" disabled>Clear all</button>
+        </div>
+        <ul id="variantList" class="variant-list"></ul>
+      </div>
+      <div class="section section-compact">
+        <button id="openAnalyze" class="ghost analyze-link" type="button">Open Analyze page →</button>
+      </div>
+    </aside>
+
+    <div class="main-pane">
+      <nav class="page-tabs" role="tablist" aria-label="App sections">
+        <button id="tabStudio" type="button" class="page-tab active" role="tab" aria-selected="true">
+          Studio
+        </button>
+        <button id="tabAnalyze" type="button" class="page-tab" role="tab" aria-selected="false">
+          Analyze
+        </button>
+      </nav>
+
+      <div class="viewport" id="studioView">
+      <canvas id="stage" aria-label="Space colonization growth canvas"></canvas>
+      <p class="view-hint">Scroll to zoom · Middle-drag to pan</p>
+    </div>
+
+      <div id="analyzeView" class="analyze-view hidden" aria-label="Variant analysis">
+        <div class="analyze-toolbar">
+          <label class="analyze-filter">
+            <span>Show</span>
+            <select id="analyzeScope">
+              <option value="all">All grids</option>
+              <option value="current">Current grid only</option>
+            </select>
+          </label>
+          <label class="check analyze-filter">
+            <input id="analyzeOverlay" type="checkbox" />
+            Overlay selected
+          </label>
+          <button id="analyzeSelectAll" type="button" class="ghost">Select all</button>
+          <button id="analyzeClearSel" type="button" class="ghost">Clear selection</button>
+        </div>
+        <p id="analyzeSummary" class="analyze-summary"></p>
+        <canvas id="analyzeComposite" class="analyze-composite" aria-label="Overlay comparison"></canvas>
+        <div id="analyzeMatrix" class="analyze-matrix"></div>
+        <table id="analyzeTable" class="analyze-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Variant</th>
+              <th>Grid</th>
+              <th>Gen</th>
+              <th>Branches</th>
+              <th>Nodes</th>
+              <th>Attractors</th>
+              <th>Open</th>
+            </tr>
+          </thead>
+          <tbody id="analyzeTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  </div>
+
+    <script src="algorithm.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
