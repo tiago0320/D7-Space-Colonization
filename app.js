@@ -67,6 +67,8 @@
     gridOpacityVal: document.getElementById("gridOpacityVal"),
     attractorSize: document.getElementById("attractorSize"),
     attractorSizeVal: document.getElementById("attractorSizeVal"),
+    branchThickness: document.getElementById("branchThickness"),
+    branchThicknessVal: document.getElementById("branchThicknessVal"),
     attractorColor: document.getElementById("attractorColor"),
     branchColor: document.getElementById("branchColor"),
     primaryColor: document.getElementById("primaryColor"),
@@ -85,6 +87,7 @@
     importSnapshotFile: document.getElementById("importSnapshotFile"),
     exportStatus: document.getElementById("exportStatus"),
     saveIteration: document.getElementById("saveIteration"),
+    saveSvg: document.getElementById("saveSvg"),
     clearIterations: document.getElementById("clearIterations"),
     iterationStatus: document.getElementById("iterationStatus"),
     iterationList: document.getElementById("iterationList"),
@@ -323,7 +326,23 @@
     if (ui.attractorSizeVal) {
       ui.attractorSizeVal.textContent = `${Number(ui.attractorSize.value).toFixed(1)} px`;
     }
+    if (ui.branchThicknessVal) {
+      ui.branchThicknessVal.textContent = `${Number(ui.branchThickness?.value ?? 1).toFixed(1)}×`;
+    }
     saveDisplayColors();
+  }
+
+  function branchStrokeWidth(parentThickness, order, identify) {
+    const scale = Number(ui.branchThickness?.value ?? 1);
+    const thick = Math.max(
+      0.3,
+      (0.8 + Math.log2((parentThickness || 1) + 1) * 0.9) * scale
+    );
+    const capped = Math.min(28, thick);
+    if (!identify) return capped;
+    const factor = order === 1 ? 1 : order === 2 ? 0.65 : 0.4;
+    const floors = { 1: 3.2 * scale, 2: 1.8 * scale, 3: 1.1 * scale };
+    return Math.max(floors[order] || 1, capped * factor);
   }
 
   const DISPLAY_COLOR_IDS = [
@@ -374,6 +393,7 @@
     for (const id of DISPLAY_COLOR_IDS) {
       if (ui[id]) stored[id] = ui[id].value;
     }
+    if (ui.branchThickness) stored.branchThickness = ui.branchThickness.value;
     try {
       localStorage.setItem("d7-display-colors", JSON.stringify(stored));
     } catch (_) {
@@ -390,6 +410,10 @@
     }
     for (const id of DISPLAY_COLOR_IDS) {
       if (ui[id] && /^#[0-9a-fA-F]{6}$/.test(stored[id] || "")) ui[id].value = stored[id];
+    }
+    const thickness = Number(stored.branchThickness);
+    if (ui.branchThickness && Number.isFinite(thickness) && thickness > 0) {
+      ui.branchThickness.value = String(thickness);
     }
   }
 
@@ -1676,6 +1700,7 @@
     ui.generateVariants.disabled = !ready || batchRunning;
     ui.captureVariant.disabled = !ready || batchRunning || !canCaptureVariant();
     if (ui.saveIteration) ui.saveIteration.disabled = !ready || batchRunning || !canSaveIteration();
+    if (ui.saveSvg) ui.saveSvg.disabled = !ready || batchRunning || !canSaveIteration();
     ui.clearVariants.disabled = !variants.some((v) => v.gridToken === gridToken) || batchRunning;
     updateIterationUI();
     if (!ready) {
@@ -2004,7 +2029,6 @@
       2: ui.showSecondary.checked,
       3: ui.showTertiary.checked,
     };
-    const widths = { 1: 3.2, 2: 1.8, 3: 1.1 };
     const drawOrder = identify ? [3, 2, 1] : [0];
     for (const rank of drawOrder) {
       if (identify && !visible[rank]) continue;
@@ -2013,10 +2037,8 @@
         if (!node.parent) continue;
         const order = node.order || 1;
         if (identify && order !== rank) continue;
-        const thick = Math.min(8, 0.8 + Math.log2(node.parent.thickness + 1) * 0.9);
-        targetCtx.lineWidth = identify
-          ? Math.max(widths[order], thick * (order === 1 ? 1 : order === 2 ? 0.65 : 0.4))
-          : thick;
+        const thick = branchStrokeWidth(node.parent.thickness, order, identify);
+        targetCtx.lineWidth = thick;
         targetCtx.beginPath();
         targetCtx.moveTo(node.parent.pos.x, node.parent.pos.y);
         targetCtx.lineTo(node.pos.x, node.pos.y);
@@ -2096,7 +2118,7 @@
     const line2 = `gen ${simSnap.generation ?? 0}  ·  attractors ${
       simSnap.attractorsLeft ? simSnap.attractorsLeft.length : 0
     }  ·  seeds ${(meta.seeds || []).length}`;
-    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  cap ${params.iterationsCap}`;
+    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  cap ${params.iterationsCap}  ·  thick ${Number(ui.branchThickness?.value ?? 1).toFixed(1)}`;
 
     targetCtx.save();
     targetCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -2134,6 +2156,7 @@
       display: {
         gridOpacity: Number(ui.gridOpacity?.value ?? 90),
         attractorSize: Number(ui.attractorSize?.value ?? 2),
+        branchThickness: Number(ui.branchThickness?.value ?? 1),
         identifyBranches: !!ui.identifyBranches?.checked,
         showPrimary: !!ui.showPrimary?.checked,
         showSecondary: !!ui.showSecondary?.checked,
@@ -2335,6 +2358,9 @@
     if (ui.attractorSize && display.attractorSize != null) {
       ui.attractorSize.value = String(display.attractorSize);
     }
+    if (ui.branchThickness && display.branchThickness != null) {
+      ui.branchThickness.value = String(display.branchThickness);
+    }
     if (ui.identifyBranches) ui.identifyBranches.checked = !!display.identifyBranches;
     if (ui.showPrimary) ui.showPrimary.checked = !!display.showPrimary;
     if (ui.showSecondary) ui.showSecondary.checked = !!display.showSecondary;
@@ -2404,6 +2430,220 @@
     link.download = filename;
     link.href = href;
     link.click();
+  }
+
+  function xmlEscape(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&apos;");
+  }
+
+  function svgNum(n) {
+    const v = Math.round(Number(n) * 100) / 100;
+    if (!Number.isFinite(v)) return "0";
+    return String(v);
+  }
+
+  function sourceToDataUrl(source) {
+    if (!source) return null;
+    try {
+      if (source instanceof HTMLCanvasElement) return source.toDataURL("image/png");
+      const w = source.naturalWidth || source.width;
+      const h = source.naturalHeight || source.height;
+      if (!w || !h) return null;
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
+      c.getContext("2d").drawImage(source, 0, 0);
+      return c.toDataURL("image/png");
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildStudioSvg(transparentBackground) {
+    const svgW = width;
+    const svgH = height + EXPORT_CAPTION_HEIGHT;
+    const meta = buildExportMetadata(transparentBackground);
+    const palette = displayColors();
+    const gridAlpha = Math.max(0, Math.min(1, Number(ui.gridOpacity?.value ?? 90) / 100));
+    const attractorR = Math.max(0.2, Number(ui.attractorSize?.value ?? 2.5));
+    const identify = ui.identifyBranches.checked;
+    const visible = {
+      1: ui.showPrimary.checked,
+      2: ui.showSecondary.checked,
+      3: ui.showTertiary.checked,
+    };
+    const parts = [];
+    parts.push(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${svgNum(svgW)}" height="${svgNum(
+        svgH
+      )}" viewBox="0 0 ${svgNum(svgW)} ${svgNum(svgH)}">`
+    );
+    parts.push(`<title>${xmlEscape(exportFileBaseName())} D7 snapshot</title>`);
+    parts.push(
+      `<metadata><d7-snapshot>${xmlEscape(JSON.stringify(meta))}</d7-snapshot></metadata>`
+    );
+    if (!transparentBackground) {
+      parts.push(`<rect width="${svgNum(svgW)}" height="${svgNum(height)}" fill="#000"/>`);
+    }
+
+    parts.push(
+      `<g transform="translate(${svgNum(view.x)} ${svgNum(view.y)}) scale(${svgNum(view.scale)})">`
+    );
+
+    if (gridSource && imageLayout) {
+      const href = sourceToDataUrl(gridSource);
+      if (href) {
+        parts.push(
+          `<image href="${href}" x="${svgNum(imageLayout.x)}" y="${svgNum(
+            imageLayout.y
+          )}" width="${svgNum(imageLayout.w)}" height="${svgNum(
+            imageLayout.h
+          )}" opacity="${svgNum(gridAlpha)}" preserveAspectRatio="none"/>`
+        );
+      }
+    }
+
+    if (!transparentBackground && ui.showVoidMask.checked && gridLayout) {
+      parts.push(
+        `<rect x="${svgNum(gridLayout.x)}" y="${svgNum(gridLayout.y)}" width="${svgNum(
+          gridLayout.w
+        )}" height="${svgNum(gridLayout.h)}" fill="rgba(4,6,10,0.72)"/>`
+      );
+    }
+
+    if (gridOverlay && imageLayout) {
+      const href = sourceToDataUrl(gridOverlay);
+      if (href) {
+        parts.push(
+          `<image href="${href}" x="${svgNum(imageLayout.x)}" y="${svgNum(
+            imageLayout.y
+          )}" width="${svgNum(imageLayout.w)}" height="${svgNum(
+            imageLayout.h
+          )}" opacity="${svgNum(gridAlpha * 0.8)}" preserveAspectRatio="none"/>`
+        );
+      }
+    }
+
+    if (gridShapes && gridShapes.rectangles.length) {
+      parts.push(`<g fill="none" stroke="rgba(232,213,163,0.75)" stroke-width="1.5" stroke-dasharray="7 5">`);
+      for (const rect of gridShapes.rectangles) {
+        parts.push(
+          `<rect x="${svgNum(rect.x)}" y="${svgNum(rect.y)}" width="${svgNum(
+            rect.w
+          )}" height="${svgNum(rect.h)}"/>`
+        );
+      }
+      parts.push(`</g>`);
+    }
+
+    const circles = sim.circles || [];
+    if (circles.length) {
+      parts.push(`<g fill="none" stroke="rgba(232,213,163,0.9)" stroke-width="1.5">`);
+      for (const circle of circles) {
+        parts.push(
+          `<circle cx="${svgNum(circle.x)}" cy="${svgNum(circle.y)}" r="${svgNum(circle.r)}"/>`
+        );
+      }
+      parts.push(`</g>`);
+    }
+
+    if (sim.attractors.length) {
+      const fill = rgbaFromHex(palette.attractor, 0.82);
+      const stroke = rgbaFromHex(palette.attractor, 1);
+      const sw = attractorR >= 2 ? 1.1 : 0.7;
+      parts.push(`<g fill="${xmlEscape(fill)}" stroke="${xmlEscape(stroke)}" stroke-width="${svgNum(sw)}">`);
+      for (const p of sim.attractors) {
+        parts.push(`<circle cx="${svgNum(p.x)}" cy="${svgNum(p.y)}" r="${svgNum(attractorR)}"/>`);
+      }
+      parts.push(`</g>`);
+    }
+
+    const drawOrder = identify ? [3, 2, 1] : [0];
+    parts.push(`<g fill="none" stroke-linecap="round" stroke-linejoin="round">`);
+    for (const rank of drawOrder) {
+      if (identify && !visible[rank]) continue;
+      const color = identify ? palette[rank] : palette.branch;
+      for (const node of sim.nodes) {
+        if (!node.parent) continue;
+        const order = node.order || 1;
+        if (identify && order !== rank) continue;
+        const thick = branchStrokeWidth(node.parent.thickness, order, identify);
+        parts.push(
+          `<line x1="${svgNum(node.parent.pos.x)}" y1="${svgNum(node.parent.pos.y)}" x2="${svgNum(
+            node.pos.x
+          )}" y2="${svgNum(node.pos.y)}" stroke="${xmlEscape(color)}" stroke-width="${svgNum(thick)}"/>`
+        );
+      }
+    }
+    parts.push(`</g>`);
+
+    parts.push(`<g fill="#e8d5a3">`);
+    for (const seed of seeds) {
+      const selected = seed.id === selectedSeedId;
+      if (selected) {
+        parts.push(
+          `<circle cx="${svgNum(seed.x)}" cy="${svgNum(
+            seed.y
+          )}" r="8" fill="none" stroke="rgba(232,213,163,0.85)" stroke-width="2"/>`
+        );
+      }
+      parts.push(
+        `<circle cx="${svgNum(seed.x)}" cy="${svgNum(seed.y)}" r="${selected ? 4.2 : 3.4}"/>`
+      );
+    }
+    for (const node of sim.nodes) {
+      if (node.parent) continue;
+      if (seeds.some((seed) => Math.hypot(seed.x - node.pos.x, seed.y - node.pos.y) < 3)) continue;
+      parts.push(`<circle cx="${svgNum(node.pos.x)}" cy="${svgNum(node.pos.y)}" r="3.4"/>`);
+    }
+    parts.push(`</g>`);
+    parts.push(`</g>`);
+
+    const params = meta.params || {};
+    const simSnap = meta.sim || {};
+    const gridLabel = meta.gridName || "untitled grid";
+    const line1 = `${gridLabel}  ·  ${formatExportTimestamp(meta.exportedAt)}`;
+    const line2 = `gen ${simSnap.generation ?? 0}  ·  attractors ${
+      simSnap.attractorsLeft ? simSnap.attractorsLeft.length : 0
+    }  ·  seeds ${(meta.seeds || []).length}`;
+    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  cap ${params.iterationsCap}  ·  thick ${Number(ui.branchThickness?.value ?? 1).toFixed(1)}`;
+    const y0 = height;
+    parts.push(`<g>`);
+    parts.push(`<rect x="0" y="${svgNum(y0)}" width="${svgNum(svgW)}" height="${svgNum(EXPORT_CAPTION_HEIGHT)}" fill="#111"/>`);
+    parts.push(`<rect x="0" y="${svgNum(y0)}" width="${svgNum(svgW)}" height="1" fill="#2a2a2a"/>`);
+    parts.push(
+      `<g font-family="Arkitech Light, sans-serif" font-weight="300" font-size="12" letter-spacing="0.06em">`
+    );
+    parts.push(
+      `<text x="12" y="${svgNum(y0 + 20)}" fill="#9a9a9a">D7 snapshot</text>`
+    );
+    parts.push(`<text x="12" y="${svgNum(y0 + 34)}" fill="#e0e0e0">${xmlEscape(line1)}</text>`);
+    parts.push(`<text x="12" y="${svgNum(y0 + 48)}" fill="#c0c0c0">${xmlEscape(line2)}</text>`);
+    parts.push(`<text x="12" y="${svgNum(y0 + 62)}" fill="#c0c0c0">${xmlEscape(line3)}</text>`);
+    parts.push(`</g></g></svg>`);
+    return { svg: parts.join(""), meta };
+  }
+
+  function downloadSvgSnapshot() {
+    if (!width || !height) {
+      setExportStatus("Canvas is not ready to export.", "error");
+      return false;
+    }
+    const transparentBackground = !!(ui.exportTransparent && ui.exportTransparent.checked);
+    const { svg } = buildStudioSvg(transparentBackground);
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    const suffix = transparentBackground ? "transparent" : "opaque";
+    const filename = `${exportFileBaseName()}-d7-${suffix}-${stamp}.svg`;
+    const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+    triggerDownload(filename, url);
+    URL.revokeObjectURL(url);
+    setExportStatus(`Saved ${filename} · vector branches`, "active");
+    return true;
   }
 
   function downloadPngSnapshot() {
@@ -2579,6 +2819,7 @@
   ui.iterations.addEventListener("input", () => onLiveParamChange("iterations"));
   ui.gridOpacity.addEventListener("input", updateDisplayParams);
   ui.attractorSize.addEventListener("input", updateDisplayParams);
+  if (ui.branchThickness) ui.branchThickness.addEventListener("input", updateDisplayParams);
   for (const id of DISPLAY_COLOR_IDS) {
     if (ui[id]) ui[id].addEventListener("input", saveDisplayColors);
   }
@@ -2587,6 +2828,7 @@
   });
   ui.captureVariant.addEventListener("click", captureVariant);
   if (ui.saveIteration) ui.saveIteration.addEventListener("click", saveCurrentIteration);
+  if (ui.saveSvg) ui.saveSvg.addEventListener("click", downloadSvgSnapshot);
   if (ui.clearIterations) ui.clearIterations.addEventListener("click", clearSavedIterationsForGrid);
   if (ui.importSnapshot && ui.importSnapshotFile) {
     ui.importSnapshot.addEventListener("click", () => ui.importSnapshotFile.click());

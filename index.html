@@ -130,6 +130,11 @@
 
       <div class="section">
         <div class="section-head">Branches</div>
+        <label class="ctrl" title="Scales the trunk-to-tip taper: bases with more descendants stay thicker, tips stay thinner.">
+          Branch thickness
+          <span class="value" id="branchThicknessVal"></span>
+          <input id="branchThickness" type="range" min="0.3" max="5" step="0.1" value="1" />
+        </label>
         <label class="ctrl color-ctrl" title="Stroke color when rank identification is off.">
           Branch color
           <input id="branchColor" type="color" value="#9fd6e8" aria-label="Branch color" />
@@ -165,20 +170,21 @@
 
       <div class="section">
         <div class="section-head">Saved iterations</div>
-        <p id="iterationStatus" class="grid-status">Grow, then save a PNG snapshot. This file is the archive — restore it here (same grid required).</p>
+        <p id="iterationStatus" class="grid-status">Grow, then save a PNG snapshot to restore later, or Save SVG for a vector drawing.</p>
         <label class="check" title="PNG alpha outside the scene; omits black fill and void dimming. Caption bar stays opaque.">
           <input id="exportTransparent" type="checkbox" />
           Transparent background
         </label>
         <div class="row">
           <button id="saveIteration" class="ghost" type="button" disabled>Save PNG snapshot</button>
-          <button id="importSnapshot" class="ghost" type="button">Load snapshot from PNG</button>
+          <button id="saveSvg" class="ghost" type="button" disabled>Save SVG</button>
         </div>
         <div class="row">
+          <button id="importSnapshot" class="ghost" type="button">Load snapshot from PNG</button>
           <button id="clearIterations" class="ghost" type="button" disabled>Clear saved</button>
         </div>
         <input id="importSnapshotFile" type="file" accept="image/png" hidden />
-        <p id="exportStatus" class="grid-status">PNG shows params on a caption strip and embeds a restorable sim snapshot.</p>
+        <p id="exportStatus" class="grid-status">PNG is the restorable archive. SVG is a vector drawing of the current sim.</p>
         <ul id="iterationList" class="seed-list iteration-list"></ul>
       </div>
 
