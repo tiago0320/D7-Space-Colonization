@@ -172,9 +172,6 @@
       this.lastInfluences = [];
       this.consumed = [];
       this.circles = [];
-      this.tangentSegments = [];
-      this.circleTangentMode = false;
-      this.tangentOnlyMode = false;
     }
 
     clearStructure() {
@@ -208,16 +205,11 @@
       return seed;
     }
 
-    refreshTangents() {
-      this.tangentSegments = externalTangents(this.circles || []);
-    }
-
     step() {
       this.consumed = [];
-      this.refreshTangents();
       const hasCircles = this.circles && this.circles.length;
       const hasPath = this.pathIndex && this.pathIndex.map.size;
-      if (!this.nodes.length || !hasPath || (!this.attractors.length && !hasCircles)) {
+      if (!this.nodes.length || !hasPath || !this.attractors.length) {
         this.lastInfluences = [];
         return false;
       }
@@ -267,14 +259,6 @@
         }
       }
 
-      if (hasCircles) {
-        for (const node of this.nodes) {
-          if (influence.has(node)) continue;
-          const tangent = tangentAim(node.pos, this.circles, this.tangentSegments, 0, 0);
-          if (tangent && tangent.gap < this.attractionRadius) influence.set(node, []);
-        }
-      }
-
       this.lastInfluences = [];
       const newborns = [];
 
@@ -292,58 +276,25 @@
 
         dirX += this.bias.x * nearby.length;
         dirY += this.bias.y * nearby.length;
-        const tangent = hasCircles
-          ? tangentAim(node.pos, this.circles, this.tangentSegments, dirX, dirY)
-          : null;
-        if (tangent && tangent.gap < this.attractionRadius) {
-          const weight =
-            this.tangentOnlyMode || this.circleTangentMode
-              ? 0.92
-              : 1 - Math.max(0, tangent.gap) / this.attractionRadius;
-          dirX = dirX * (1 - weight) + tangent.x * weight;
-          dirY = dirY * (1 - weight) + tangent.y * weight;
-        }
 
         const len = Math.hypot(dirX, dirY);
         if (len < 1e-8) continue;
 
         const step = this.stepSize;
         const bridgeReach = Math.max(this.attractionRadius, step * 8);
-        let nextPos = null;
-        const useTangentStep =
-          (this.circleTangentMode || this.tangentOnlyMode) &&
-          hasCircles &&
-          this.tangentSegments.length;
-        if (useTangentStep) {
-          nextPos = pickTangentNetworkStep(
-            node.pos.x,
-            node.pos.y,
-            dirX / len,
-            dirY / len,
-            step,
-            this.circles,
-            this.tangentSegments
-          );
-        }
-        if (!nextPos) {
-          nextPos = pickPathOrBridgeStep(
-            node.pos.x,
-            node.pos.y,
-            dirX / len,
-            dirY / len,
-            step,
-            this.pathIndex,
-            bridgeReach
-          );
-        }
+        let nextPos = pickPathOrBridgeStep(
+          node.pos.x,
+          node.pos.y,
+          dirX / len,
+          dirY / len,
+          step,
+          this.pathIndex,
+          bridgeReach
+        );
         if (hasCircles) {
           const outside = pushOutsideCircles(nextPos.x, nextPos.y, this.circles);
-          if (!this.tangentOnlyMode) {
-            const hit = nearestPathPoint(outside.x, outside.y, this.pathIndex, step * 1.5);
-            if (hit) nextPos = new Vec2(hit.x, hit.y);
-          } else {
-            nextPos = new Vec2(outside.x, outside.y);
-          }
+          const hit = nearestPathPoint(outside.x, outside.y, this.pathIndex, step * 1.5);
+          nextPos = hit ? new Vec2(hit.x, hit.y) : new Vec2(outside.x, outside.y);
         }
 
         const next = new Node(nextPos, node);
@@ -411,152 +362,6 @@
         if (!node.parent) assign(node, 1);
       }
     }
-  }
-
-  function tangentPoint(px, py, circle, preferX, preferY) {
-    const dx = px - circle.x;
-    const dy = py - circle.y;
-    const d = Math.hypot(dx, dy);
-    if (d < 1e-4) return null;
-    if (d <= circle.r + 0.75) {
-      const ux = dx / d;
-      const uy = dy / d;
-      const tx = -uy;
-      const ty = ux;
-      const sign = tx * preferX + ty * preferY >= 0 ? 1 : -1;
-      return { x: tx * sign, y: ty * sign, gap: 0 };
-    }
-    const base = Math.atan2(dy, dx);
-    const delta = Math.acos(Math.min(1, circle.r / d));
-    const c1 = Math.cos(base + delta);
-    const s1 = Math.sin(base + delta);
-    const c2 = Math.cos(base - delta);
-    const s2 = Math.sin(base - delta);
-    const t1x = circle.x + circle.r * c1 - px;
-    const t1y = circle.y + circle.r * s1 - py;
-    const t2x = circle.x + circle.r * c2 - px;
-    const t2y = circle.y + circle.r * s2 - py;
-    const useFirst =
-      Math.hypot(preferX, preferY) < 1e-4
-        ? t1x * t1x + t1y * t1y <= t2x * t2x + t2y * t2y
-        : t1x * preferX + t1y * preferY >= t2x * preferX + t2y * preferY;
-    const gap = d - circle.r;
-    return useFirst ? { x: t1x, y: t1y, gap } : { x: t2x, y: t2y, gap };
-  }
-
-  function externalTangents(circles) {
-    const segments = [];
-    for (let i = 0; i < circles.length; i++) {
-      for (let j = i + 1; j < circles.length; j++) {
-        const a = circles[i];
-        const b = circles[j];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const d = Math.hypot(dx, dy);
-        if (d <= Math.abs(a.r - b.r) + 0.5) continue;
-        const ang = Math.atan2(dy, dx);
-        const phi = Math.acos(Math.min(1, Math.max(-1, (a.r - b.r) / d)));
-        for (const sign of [1, -1]) {
-          const t = ang + sign * phi;
-          segments.push({
-            x1: a.x + a.r * Math.cos(t),
-            y1: a.y + a.r * Math.sin(t),
-            x2: b.x + b.r * Math.cos(t),
-            y2: b.y + b.r * Math.sin(t),
-          });
-        }
-      }
-    }
-    return segments;
-  }
-
-  function sampleSegmentPoints(seg, stepPx) {
-    const len = Math.hypot(seg.x2 - seg.x1, seg.y2 - seg.y1);
-    if (len < 1e-4) return [{ x: seg.x1, y: seg.y1 }];
-    const step = Math.max(1, stepPx);
-    const steps = Math.max(2, Math.ceil(len / step));
-    const points = [];
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      points.push({
-        x: seg.x1 + (seg.x2 - seg.x1) * t,
-        y: seg.y1 + (seg.y2 - seg.y1) * t,
-      });
-    }
-    return points;
-  }
-
-  function nearestOnSegment(px, py, seg) {
-    const vx = seg.x2 - seg.x1;
-    const vy = seg.y2 - seg.y1;
-    const lenSq = vx * vx + vy * vy || 1;
-    let t = ((px - seg.x1) * vx + (py - seg.y1) * vy) / lenSq;
-    t = Math.max(0, Math.min(1, t));
-    return { x: seg.x1 + vx * t, y: seg.y1 + vy * t, t, vx, vy };
-  }
-
-  function tangentAim(pos, circles, segments, preferX, preferY) {
-    let best = null;
-    for (const circle of circles) {
-      const aim = tangentPoint(pos.x, pos.y, circle, preferX, preferY);
-      if (!aim) continue;
-      if (!best || aim.gap < best.gap) best = aim;
-    }
-    for (const seg of segments) {
-      const hit = nearestOnSegment(pos.x, pos.y, seg);
-      const gap = Math.hypot(hit.x - pos.x, hit.y - pos.y);
-      if (best && gap >= best.gap) continue;
-      const sign = hit.vx * preferX + hit.vy * preferY >= 0 ? 1 : -1;
-      const along = Math.hypot(hit.vx, hit.vy) || 1;
-      best = {
-        x: (hit.vx / along) * sign,
-        y: (hit.vy / along) * sign,
-        gap,
-      };
-    }
-    return best;
-  }
-
-  function pickTangentNetworkStep(x, y, dirX, dirY, step, circles, segments) {
-    const reach = step * 5;
-    let bestHit = null;
-    let bestSeg = null;
-    let bestGap = reach;
-    for (const seg of segments) {
-      const hit = nearestOnSegment(x, y, seg);
-      const gap = Math.hypot(hit.x - x, hit.y - y);
-      if (gap < bestGap) {
-        bestGap = gap;
-        bestHit = hit;
-        bestSeg = seg;
-      }
-    }
-    if (bestHit && bestSeg) {
-      const to1 = Math.hypot(bestSeg.x1 - x, bestSeg.y1 - y);
-      const to2 = Math.hypot(bestSeg.x2 - x, bestSeg.y2 - y);
-      let tx = bestSeg.x2 - bestSeg.x1;
-      let ty = bestSeg.y2 - bestSeg.y1;
-      const segLen = Math.hypot(tx, ty) || 1;
-      tx /= segLen;
-      ty /= segLen;
-      if (to1 < to2) {
-        tx = -tx;
-        ty = -ty;
-      }
-      const dot = tx * dirX + ty * dirY;
-      if (dot < 0) {
-        tx = -tx;
-        ty = -ty;
-      }
-      return new Vec2(x + tx * step, y + ty * step);
-    }
-
-    const aim = tangentAim({ x, y }, circles, segments, dirX, dirY);
-    if (aim && aim.gap < reach) {
-      const d = Math.hypot(aim.x, aim.y) || 1;
-      return new Vec2(x + (aim.x / d) * step, y + (aim.y / d) * step);
-    }
-    return null;
   }
 
   function pushOutsideCircles(x, y, circles) {
@@ -1020,9 +825,6 @@
     dist,
     buildPathIndex,
     nearestPathPoint,
-    tangentPoint,
-    externalTangents,
-    sampleSegmentPoints,
     detectGridShapes,
     sampleCirclePerimeter,
     sampleRectPerimeter,

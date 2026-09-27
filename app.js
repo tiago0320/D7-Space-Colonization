@@ -9,8 +9,6 @@
     sampleCirclePerimeter,
     sampleRectPerimeter,
     parseSvgGridShapes,
-    externalTangents,
-    sampleSegmentPoints,
   } = window.SpaceColonization;
 
   const canvas = document.getElementById("stage");
@@ -20,6 +18,25 @@
   sim.jitter = 0;
   sim.bias.x = 0;
   sim.bias.y = -0.18;
+  let debugDrawLogs = 0;
+
+  // #region agent log
+  function dbg(hypothesisId, location, message, data) {
+    fetch("http://127.0.0.1:7886/ingest/4186916a-28f7-429a-ba45-0f68eddb858a", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "443dc5" },
+      body: JSON.stringify({
+        sessionId: "443dc5",
+        runId: "import-vis",
+        hypothesisId,
+        location,
+        message,
+        data,
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }
+  // #endregion
 
   const ui = {
     play: document.getElementById("play"),
@@ -46,6 +63,15 @@
     killVal: document.getElementById("killVal"),
     stepVal: document.getElementById("stepVal"),
     iterVal: document.getElementById("iterVal"),
+    gridOpacity: document.getElementById("gridOpacity"),
+    gridOpacityVal: document.getElementById("gridOpacityVal"),
+    attractorSize: document.getElementById("attractorSize"),
+    attractorSizeVal: document.getElementById("attractorSizeVal"),
+    attractorColor: document.getElementById("attractorColor"),
+    branchColor: document.getElementById("branchColor"),
+    primaryColor: document.getElementById("primaryColor"),
+    secondaryColor: document.getElementById("secondaryColor"),
+    tertiaryColor: document.getElementById("tertiaryColor"),
     genCount: document.getElementById("genCount"),
     attrCount: document.getElementById("attrCount"),
     identifyBranches: document.getElementById("identifyBranches"),
@@ -53,7 +79,6 @@
     showPrimary: document.getElementById("showPrimary"),
     showSecondary: document.getElementById("showSecondary"),
     showTertiary: document.getElementById("showTertiary"),
-    circleTangents: document.getElementById("circleTangents"),
     showVoidMask: document.getElementById("showVoidMask"),
     captureVariant: document.getElementById("captureVariant"),
     newAttempt: document.getElementById("newAttempt"),
@@ -100,6 +125,10 @@
   let gridName = "";
   let gridOverlay = null;
   let gridLayout = null;
+  let siteLayout = null;
+  let imageLayout = null;
+  let pixelsPerFoot = 0;
+  const SITE_FEET = 20;
   let gridPoints = null;
   let gridPathPoints = null;
   let tracedGridPoints = null;
@@ -241,69 +270,12 @@
     updateSeedUI();
   }
 
-  function buildTangentField(circles, attractorCount, stepPx) {
-    const segments = externalTangents(circles);
-    if (!segments.length) {
-      return { ok: false, message: "No external tangents between these circles." };
-    }
-    const pool = [];
-    for (const seg of segments) {
-      pool.push(...sampleSegmentPoints(seg, stepPx));
-    }
-    if (pool.length < 2) {
-      return { ok: false, message: "Tangent lines are too short to grow on." };
-    }
-    const chosen = spreadPoints(pool, attractorCount, width || 1000, height || 1000);
-    return {
-      ok: true,
-      pathPoints: pool,
-      attractorPoints: chosen.map((p) => ({ x: p.x, y: p.y })),
-      segmentCount: segments.length,
-    };
-  }
-
   function activeGridEntry() {
     return gridLibrary.find((entry) => entry.id === activeGridId) || null;
   }
 
   function resolveGrowthField() {
     syncCircles();
-    const wantTangent = ui.circleTangents.checked;
-    const circleCount = gridShapes?.circles?.length || 0;
-
-    if (wantTangent && circleCount < 2) {
-      sim.tangentOnlyMode = false;
-      sim.circleTangentMode = false;
-      growthPathPoints = tracedGridPathPoints;
-      growthAttractors = tracedGridPoints;
-      setGridStatus("Need 2+ detected circles for tangent-only mode.", "error");
-      return false;
-    }
-
-    if (wantTangent && circleCount >= 2 && sim.circles.length >= 2) {
-      const field = buildTangentField(
-        sim.circles,
-        Number(ui.count.value),
-        sim.stepSize || Number(ui.stepSize.value)
-      );
-      if (field.ok) {
-        sim.tangentOnlyMode = true;
-        sim.circleTangentMode = true;
-        growthPathPoints = field.pathPoints;
-        growthAttractors = field.attractorPoints;
-        return true;
-      }
-      sim.tangentOnlyMode = false;
-      sim.circleTangentMode = false;
-      growthPathPoints = tracedGridPathPoints;
-      growthAttractors = tracedGridPoints;
-      setGridStatus(field.message, "error");
-      ui.circleTangents.checked = false;
-      return false;
-    }
-
-    sim.tangentOnlyMode = false;
-    sim.circleTangentMode = false;
     growthPathPoints = tracedGridPathPoints;
     growthAttractors = tracedGridPoints;
     return true;
@@ -331,6 +303,198 @@
     ui.killVal.textContent = `${ui.kill.value} px`;
     ui.stepVal.textContent = `${Number(ui.stepSize.value).toFixed(1)} px`;
     ui.iterVal.textContent = ui.iterations.value;
+    updateDisplayParams();
+  }
+
+  function updateDisplayParams() {
+    if (ui.gridOpacityVal) ui.gridOpacityVal.textContent = `${ui.gridOpacity.value}%`;
+    if (ui.attractorSizeVal) {
+      ui.attractorSizeVal.textContent = `${Number(ui.attractorSize.value).toFixed(1)} px`;
+    }
+    saveDisplayColors();
+  }
+
+  const DISPLAY_COLOR_IDS = [
+    "attractorColor",
+    "branchColor",
+    "primaryColor",
+    "secondaryColor",
+    "tertiaryColor",
+  ];
+
+  function hexToRgb(hex) {
+    const raw = String(hex || "").replace("#", "").trim();
+    const full =
+      raw.length === 3
+        ? raw
+            .split("")
+            .map((ch) => ch + ch)
+            .join("")
+        : raw.padEnd(6, "0").slice(0, 6);
+    const n = parseInt(full, 16);
+    if (!Number.isFinite(n)) return { r: 159, g: 214, b: 232 };
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+
+  function rgbaFromHex(hex, alpha) {
+    const { r, g, b } = hexToRgb(hex);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function readDisplayColor(id, fallback) {
+    const el = ui[id];
+    const value = el && el.value ? el.value : fallback;
+    return /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback;
+  }
+
+  function displayColors() {
+    return {
+      attractor: readDisplayColor("attractorColor", "#9fd6e8"),
+      branch: readDisplayColor("branchColor", "#9fd6e8"),
+      1: readDisplayColor("primaryColor", "#e8d5a3"),
+      2: readDisplayColor("secondaryColor", "#9fd6e8"),
+      3: readDisplayColor("tertiaryColor", "#d4785a"),
+    };
+  }
+
+  function saveDisplayColors() {
+    const stored = {};
+    for (const id of DISPLAY_COLOR_IDS) {
+      if (ui[id]) stored[id] = ui[id].value;
+    }
+    try {
+      localStorage.setItem("d7-display-colors", JSON.stringify(stored));
+    } catch (_) {
+      /* ignore quota */
+    }
+  }
+
+  function initDisplayColors() {
+    let stored = {};
+    try {
+      stored = JSON.parse(localStorage.getItem("d7-display-colors") || "{}");
+    } catch (_) {
+      stored = {};
+    }
+    for (const id of DISPLAY_COLOR_IDS) {
+      if (ui[id] && /^#[0-9a-fA-F]{6}$/.test(stored[id] || "")) ui[id].value = stored[id];
+    }
+  }
+
+  const SLIDER_BOUNDS = [
+    { slider: "count", min: "countMin", max: "countMax", kind: "count", hardMin: 1, hardMax: 20000 },
+    { slider: "influence", min: "influenceMin", max: "influenceMax", kind: "influence", hardMin: 1, hardMax: 4000 },
+    { slider: "kill", min: "killMin", max: "killMax", kind: "kill", hardMin: 0.1, hardMax: 500 },
+    { slider: "stepSize", min: "stepSizeMin", max: "stepSizeMax", kind: "step", hardMin: 0.1, hardMax: 200 },
+    { slider: "iterations", min: "iterationsMin", max: "iterationsMax", kind: "iterations", hardMin: 1, hardMax: 20000 },
+  ];
+
+  function saveSliderBounds() {
+    const stored = {};
+    for (const item of SLIDER_BOUNDS) {
+      const slider = document.getElementById(item.slider);
+      if (!slider) continue;
+      stored[item.slider] = { min: slider.min, max: slider.max };
+    }
+    try {
+      localStorage.setItem("d7-slider-bounds", JSON.stringify(stored));
+    } catch (_) {
+      /* ignore quota */
+    }
+  }
+
+  function applySliderBound(item, silent) {
+    const slider = document.getElementById(item.slider);
+    const minEl = document.getElementById(item.min);
+    const maxEl = document.getElementById(item.max);
+    if (!slider || !minEl || !maxEl) return;
+    let min = Number(minEl.value);
+    let max = Number(maxEl.value);
+    if (!Number.isFinite(min)) min = Number(slider.min);
+    if (!Number.isFinite(max)) max = Number(slider.max);
+    min = Math.max(item.hardMin, min);
+    max = Math.min(item.hardMax, max);
+    if (max <= min) max = min + (Number(slider.step) || 1);
+    minEl.value = String(min);
+    maxEl.value = String(max);
+    slider.min = String(min);
+    slider.max = String(max);
+    let value = Number(slider.value);
+    if (value < min) value = min;
+    if (value > max) value = max;
+    slider.value = String(value);
+    saveSliderBounds();
+    if (!silent) onLiveParamChange(item.kind);
+  }
+
+  function initSliderBounds() {
+    let stored = {};
+    try {
+      stored = JSON.parse(localStorage.getItem("d7-slider-bounds") || "{}");
+    } catch (_) {
+      stored = {};
+    }
+    for (const item of SLIDER_BOUNDS) {
+      const slider = document.getElementById(item.slider);
+      const minEl = document.getElementById(item.min);
+      const maxEl = document.getElementById(item.max);
+      if (!slider || !minEl || !maxEl) continue;
+      const saved = stored[item.slider];
+      if (saved) {
+        minEl.value = saved.min;
+        maxEl.value = saved.max;
+      } else {
+        minEl.value = slider.min;
+        maxEl.value = slider.max;
+      }
+      applySliderBound(item, true);
+      minEl.addEventListener("change", () => applySliderBound(item, false));
+      maxEl.addEventListener("change", () => applySliderBound(item, false));
+    }
+  }
+
+  function startPlaying() {
+    if (batchRunning) return;
+    const path = currentPathPoints();
+    const attractors = currentAttractors();
+    if (!(attractors && attractors.length && path && path.length)) return;
+    playing = true;
+    ui.play.textContent = "Pause";
+  }
+
+  function stopPlaying() {
+    playing = false;
+    ui.play.textContent = "Grow";
+  }
+
+  function restoreSeedsOnStructure() {
+    if (!sim.pathIndex) return;
+    if (seeds.length) {
+      for (const seed of seeds) sim.addSeed(seed.x, seed.y);
+      return;
+    }
+    const attractors = currentAttractors();
+    if (attractors && attractors.length) {
+      const seed = seedForGrid(attractors, sim.pathIndex);
+      addSeedRecord(seed);
+    }
+  }
+
+  function restoreAttractorsFromField() {
+    sim.attractors = [];
+    const points = currentAttractors();
+    if (points && points.length) sim.addAttractors(points);
+  }
+
+  function replayGrowthFromSeeds() {
+    if (!gridSource || batchRunning) return;
+    applyParams();
+    restoreAttractorsFromField();
+    sim.clearStructure();
+    restoreSeedsOnStructure();
+    flashes.length = 0;
+    if (sim.nodes.length && sim.attractors.length) startPlaying();
+    updatePlayState();
   }
 
   function refreshAttractorsLive() {
@@ -341,25 +505,33 @@
       gridKey = prevKey;
       return;
     }
-    sim.attractors = [];
-    const points = currentAttractors();
-    if (points && points.length) sim.addAttractors(points);
+    replayGrowthFromSeeds();
   }
 
   function onLiveParamChange(kind) {
     applyParams();
-    if (kind === "count" && gridSource) {
-      clearTimeout(onLiveParamChange._timer);
-      onLiveParamChange._timer = setTimeout(refreshAttractorsLive, 60);
-      return;
-    }
+    if (batchRunning) return;
+
     if (kind === "iterations") {
       const cap = Number(ui.iterations.value);
-      if (sim.generation >= cap && playing) {
-        playing = false;
-        ui.play.textContent = "Grow";
+      if (sim.generation < cap && sim.nodes.length) {
+        if (!sim.attractors.length) restoreAttractorsFromField();
+        startPlaying();
+      } else if (sim.generation >= cap) {
+        stopPlaying();
       }
+      updatePlayState();
+      return;
     }
+
+    clearTimeout(onLiveParamChange._timer);
+    onLiveParamChange._timer = setTimeout(() => {
+      if (kind === "count" && gridSource) {
+        refreshAttractorsLive();
+        return;
+      }
+      replayGrowthFromSeeds();
+    }, 60);
   }
 
   function gridEntryExists(id) {
@@ -384,6 +556,20 @@
   }
 
   function activateGrid(entry) {
+    // #region agent log
+    dbg("A", "app.js:activateGrid", "activateGrid enter", {
+      hasEntry: !!entry,
+      width,
+      height,
+      viewportW: viewport?.clientWidth,
+      viewportH: viewport?.clientHeight,
+      canvasW: canvas.width,
+      canvasH: canvas.height,
+      imgW: entry?.source?.naturalWidth,
+      imgH: entry?.source?.naturalHeight,
+      studioHidden: ui.studioView?.classList.contains("hidden"),
+    });
+    // #endregion
     if (!entry || !width || !height) return false;
     activeGridId = entry.id;
     gridSource = entry.source;
@@ -392,6 +578,7 @@
     gridToken = entry.id;
     gridKey = "";
     if (!rebuildGrid()) return false;
+    debugDrawLogs = 0;
     activeVariantId = null;
     clearSeeds();
     resetSim();
@@ -514,23 +701,46 @@
     return parts.length ? ` · ${parts.join(", ")}` : "";
   }
 
-  function traceGrid(img, count, canvasW, canvasH) {
+  function computeSiteLayout(canvasW, canvasH) {
     const margin = 36;
     const maxW = Math.max(1, canvasW - margin * 2);
     const maxH = Math.max(1, canvasH - margin * 2);
-    const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
-    const layout = {
-      x: (canvasW - img.naturalWidth * scale) / 2,
-      y: (canvasH - img.naturalHeight * scale) / 2,
-      w: img.naturalWidth * scale,
-      h: img.naturalHeight * scale,
+    const pxPerFt = Math.min(maxW, maxH) / SITE_FEET;
+    const sitePx = SITE_FEET * pxPerFt;
+    return {
+      layout: {
+        x: (canvasW - sitePx) / 2,
+        y: (canvasH - sitePx) / 2,
+        w: sitePx,
+        h: sitePx,
+      },
+      pixelsPerFoot: pxPerFt,
+      siteFeet: SITE_FEET,
     };
+  }
 
-    const long = Math.max(layout.w, layout.h);
+  function computeImageLayout(siteRect, imgW, imgH) {
+    const scale = Math.min(siteRect.w / imgW, siteRect.h / imgH);
+    const w = imgW * scale;
+    const h = imgH * scale;
+    return {
+      x: siteRect.x + (siteRect.w - w) / 2,
+      y: siteRect.y + (siteRect.h - h) / 2,
+      w,
+      h,
+    };
+  }
+
+  function traceGrid(img, count, canvasW, canvasH) {
+    const site = computeSiteLayout(canvasW, canvasH);
+    const layout = site.layout;
+    const imageRect = computeImageLayout(layout, img.naturalWidth, img.naturalHeight);
+
+    const long = Math.max(imageRect.w, imageRect.h);
     const sampleLong = Math.max(64, Math.min(1100, Math.round(long)));
     const sampleScale = sampleLong / long;
-    const sw = Math.max(1, Math.round(layout.w * sampleScale));
-    const sh = Math.max(1, Math.round(layout.h * sampleScale));
+    const sw = Math.max(1, Math.round(imageRect.w * sampleScale));
+    const sh = Math.max(1, Math.round(imageRect.h * sampleScale));
 
     const sample = document.createElement("canvas");
     sample.width = sw;
@@ -603,8 +813,8 @@
     }
 
     const toCanvas = (p) => ({
-      x: layout.x + ((p.x + 0.5) / sw) * layout.w,
-      y: layout.y + ((p.y + 0.5) / sh) * layout.h,
+      x: imageRect.x + ((p.x + 0.5) / sw) * imageRect.w,
+      y: imageRect.y + ((p.y + 0.5) / sh) * imageRect.h,
     });
 
     const svgParsed = gridSvgText
@@ -633,8 +843,8 @@
       rectangles: svgSample.rectangles.length ? svgSample.rectangles : rasterParsed.rectangles,
     };
     const shapes = {
-      circles: sampleShapes.circles.map((shape) => mapSampleShape(shape, layout, sw, sh)),
-      rectangles: sampleShapes.rectangles.map((shape) => mapSampleShape(shape, layout, sw, sh)),
+      circles: sampleShapes.circles.map((shape) => mapSampleShape(shape, imageRect, sw, sh)),
+      rectangles: sampleShapes.rectangles.map((shape) => mapSampleShape(shape, imageRect, sw, sh)),
     };
 
     const shapeInk = [];
@@ -660,10 +870,15 @@
       ok: true,
       overlay,
       layout,
+      siteLayout: layout,
+      imageLayout: imageRect,
+      pixelsPerFoot: site.pixelsPerFoot,
+      siteFeet: site.siteFeet,
       points,
       pathPoints,
       shapes,
       solidCount: ink.length,
+      sampleArea: sw * sh,
       hasAlphaVoid,
     };
   }
@@ -757,7 +972,10 @@
       kill: Number(ui.kill.value),
       stepSize: Number(ui.stepSize.value),
       iterationsCap: Number(ui.iterations.value),
-      circleTangents: ui.circleTangents.checked,
+      siteFeet: SITE_FEET,
+      pixelsPerFoot,
+      viewportW: width,
+      viewportH: height,
     };
   }
 
@@ -767,8 +985,13 @@
     ui.kill.value = String(params.kill);
     ui.stepSize.value = String(params.stepSize);
     ui.iterations.value = String(params.iterationsCap);
-    if (params.circleTangents != null) {
-      ui.circleTangents.checked = !!params.circleTangents;
+    for (const item of SLIDER_BOUNDS) applySliderBound(item, true);
+    if (
+      params.viewportW != null &&
+      params.viewportH != null &&
+      (params.viewportW !== width || params.viewportH !== height)
+    ) {
+      gridKey = "";
     }
     applyParams();
   }
@@ -802,7 +1025,7 @@
     c.width = thumbSize;
     c.height = thumbSize;
     const g = c.getContext("2d");
-    g.fillStyle = "#0a0c12";
+    g.fillStyle = "#000";
     g.fillRect(0, 0, thumbSize, thumbSize);
     if (!flatNodes.length) return c.toDataURL("image/png");
 
@@ -823,12 +1046,15 @@
     const ox = (thumbSize - w * scale) / 2 - minX * scale;
     const oy = (thumbSize - h * scale) / 2 - minY * scale;
 
-    g.strokeStyle = "#9fd6e8";
     g.lineWidth = 1.2;
     g.lineCap = "round";
+    const palette = displayColors();
+    const identify = ui.identifyBranches.checked;
     for (const node of flatNodes) {
       if (node.parentIndex < 0) continue;
       const parent = flatNodes[node.parentIndex];
+      const order = node.order || 1;
+      g.strokeStyle = identify ? palette[order] || palette.branch : palette.branch;
       g.beginPath();
       g.moveTo(parent.x * scale + ox, parent.y * scale + oy);
       g.lineTo(node.x * scale + ox, node.y * scale + oy);
@@ -921,7 +1147,7 @@
       canvas.height = h;
     }
     const g = analyzeCompositeCtx;
-    g.fillStyle = "#0a0c12";
+    g.fillStyle = "#000";
     g.fillRect(0, 0, w, h);
 
     let minX = Infinity;
@@ -1052,7 +1278,7 @@
     drawAnalyzeComposite(list);
   }
 
-  function captureVariant() {
+  function captureVariant(options = {}) {
     if (!canCaptureVariant()) {
       setVariantStatus("Grow branches before capturing.", "error");
       updatePlayState();
@@ -1064,7 +1290,7 @@
     const snap = serializeSimSnapshot();
     const variant = {
       id: nextVariantId++,
-      label: `Variant ${variants.length + 1}`,
+      label: options.label || `Variant ${variants.length + 1}`,
       createdAt: Date.now(),
       gridToken,
       gridName: gridNameForToken(gridToken),
@@ -1247,16 +1473,31 @@
   }
 
   function rebuildGrid() {
-    if (!gridSource || !width || !height) return false;
+    if (!gridSource || !width || !height) {
+      // #region agent log
+      dbg("A", "app.js:rebuildGrid", "rebuildGrid skipped", {
+        hasSource: !!gridSource,
+        width,
+        height,
+      });
+      // #endregion
+      return false;
+    }
     const key = `${width}x${height}x${ui.count.value}x${gridToken}`;
     if (key === gridKey && gridPoints) return true;
     const result = traceGrid(gridSource, Number(ui.count.value), width, height);
     if (!result.ok) {
+      // #region agent log
+      dbg("B", "app.js:rebuildGrid", "traceGrid failed", { message: result.message, width, height });
+      // #endregion
       setGridStatus(result.message, "error");
       return false;
     }
     gridOverlay = result.overlay;
     gridLayout = result.layout;
+    siteLayout = result.siteLayout || result.layout;
+    imageLayout = result.imageLayout;
+    pixelsPerFoot = result.pixelsPerFoot || 0;
     gridPoints = result.points;
     gridPathPoints = result.pathPoints;
     tracedGridPoints = result.points;
@@ -1265,22 +1506,27 @@
     growthAttractors = result.points;
     gridShapes = result.shapes;
     gridKey = key;
+    // #region agent log
+    dbg("C", "app.js:rebuildGrid", "traceGrid ok", {
+      solidCount: result.solidCount,
+      overlayW: result.overlay?.width,
+      overlayH: result.overlay?.height,
+      layout: result.layout,
+      imageLayout: result.imageLayout,
+      points: result.points?.length,
+      pathPoints: result.pathPoints?.length,
+      circles: result.shapes?.circles?.length,
+    });
+    // #endregion
 
-    const entry = activeGridEntry();
-    if (entry && gridShapes.circles.length >= 2 && !entry.tangentOffered) {
-      entry.tangentOffered = true;
-      if (!entry.tangentUserDisabled) ui.circleTangents.checked = true;
-    }
     resolveGrowthField();
 
-    let tangentLabel = "";
-    if (gridShapes.circles.length >= 2) {
-      const segN = externalTangents(gridShapes.circles).length;
-      tangentLabel = ` · ${segN} tangent segment${segN === 1 ? "" : "s"}`;
-    }
     const voidMode = result.hasAlphaVoid ? "transparent void" : "background void";
+    const pxFt =
+      pixelsPerFoot > 0 ? `${(Math.round(pixelsPerFoot * 10) / 10).toFixed(1)} px/ft` : "";
+    const siteLabel = `Site ${SITE_FEET}'×${SITE_FEET}'${pxFt ? ` · ${pxFt}` : ""}`;
     setGridStatus(
-      `Following ${gridName} · solid ${result.solidCount} px (${voidMode})${shapeStatusLabel(gridShapes)}${tangentLabel} · ${(currentAttractors() || []).length} attractors`,
+      `${siteLabel} · ${gridName} · solid ${result.solidCount} px (${voidMode})${shapeStatusLabel(gridShapes)} · ${(currentAttractors() || []).length} attractors`,
       "active"
     );
     updateGridCycleUI();
@@ -1294,6 +1540,9 @@
     gridName = "";
     gridOverlay = null;
     gridLayout = null;
+    siteLayout = null;
+    imageLayout = null;
+    pixelsPerFoot = 0;
     gridPoints = null;
     gridPathPoints = null;
     tracedGridPoints = null;
@@ -1332,6 +1581,13 @@
         gridLibrary.pop();
         nextGridId -= 1;
         setGridStatus("Could not trace solid paths in that file.", "error");
+        // #region agent log
+        dbg("B", "app.js:importGridFile", "activateGrid failed", {
+          name: file.name,
+          width,
+          height,
+        });
+        // #endregion
         return false;
       }
       return true;
@@ -1371,10 +1627,32 @@
     updatePlayState();
   }
 
+  let lastResizeW = 0;
+  let lastResizeH = 0;
+
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
-    width = viewport.clientWidth;
-    height = viewport.clientHeight;
+    const nextW = viewport.clientWidth;
+    const nextH = viewport.clientHeight;
+    if (nextW < 8 || nextH < 8) return;
+    const sizeChanged =
+      Math.abs(nextW - lastResizeW) >= 8 || Math.abs(nextH - lastResizeH) >= 8;
+    if (!sizeChanged && ready) {
+      if (debugDrawLogs < 2) {
+        // #region agent log
+        dbg("A", "app.js:resize", "resize skipped", {
+          width: nextW,
+          height: nextH,
+          runId: "post-fix",
+        });
+        // #endregion
+      }
+      return;
+    }
+    width = nextW;
+    height = nextH;
+    lastResizeW = width;
+    lastResizeH = height;
     canvas.width = Math.floor(width * dpr);
     canvas.height = Math.floor(height * dpr);
     canvas.style.width = `${width}px`;
@@ -1394,7 +1672,7 @@
     if (!ready) {
       resetSim();
       ready = true;
-    } else if (usingGrid) {
+    } else if (usingGrid && sizeChanged) {
       resetSim();
     }
   }
@@ -1432,62 +1710,101 @@
 
   function growOnce() {
     if (sim.generation >= Number(ui.iterations.value)) {
-      playing = false;
-      ui.play.textContent = "Grow";
+      stopPlaying();
       return false;
     }
     const grew = sim.step();
     for (const point of sim.consumed) {
       flashes.push({ x: point.x, y: point.y, life: 1 });
     }
-    if (!grew) {
-      playing = false;
-      ui.play.textContent = "Grow";
-    }
+    if (!grew) stopPlaying();
     updatePlayState();
     return grew;
   }
 
   function draw() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const g = ctx.createRadialGradient(
-      width * 0.5,
-      height * 0.45,
-      40,
-      width * 0.5,
-      height * 0.5,
-      Math.max(width, height) * 0.75
-    );
-    g.addColorStop(0, "#12151f");
-    g.addColorStop(1, "#07080c");
-    ctx.fillStyle = g;
+    ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, width, height);
 
     ctx.save();
     applyViewTransform();
 
-    ctx.fillStyle = "#dce7f0";
-    for (const star of stars) {
-      ctx.globalAlpha = star.a;
-      ctx.beginPath();
-      ctx.arc(star.x, star.y, star.r, 0, Math.PI * 2);
-      ctx.fill();
+    if (!gridSource) {
+      ctx.fillStyle = "#dce7f0";
+      for (const star of stars) {
+        ctx.globalAlpha = star.a;
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 1;
+
+    if (debugDrawLogs < 8) {
+      debugDrawLogs += 1;
+      // #region agent log
+      dbg("E", "app.js:draw", "draw frame", {
+        n: debugDrawLogs,
+        runId: "post-fix",
+        hasOverlay: !!gridOverlay,
+        hasImageLayout: !!imageLayout,
+        hasGridLayout: !!gridLayout,
+        hasSource: !!gridSource,
+        imageLayout,
+        gridLayout,
+        nodes: sim.nodes.length,
+        attractors: sim.attractors.length,
+        width,
+        height,
+        view,
+      });
+      // #endregion
+    }
+
+    const gridAlpha = Number(ui.gridOpacity?.value ?? 90) / 100;
+
+    if (gridSource && imageLayout) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, gridAlpha));
+      ctx.drawImage(
+        gridSource,
+        imageLayout.x,
+        imageLayout.y,
+        imageLayout.w,
+        imageLayout.h
+      );
+      ctx.restore();
+    }
 
     if (ui.showVoidMask.checked && gridLayout) {
       ctx.fillStyle = "rgba(4, 6, 10, 0.72)";
       ctx.fillRect(gridLayout.x, gridLayout.y, gridLayout.w, gridLayout.h);
     }
 
-    if (gridOverlay && gridLayout) {
+    if (gridOverlay && imageLayout) {
       ctx.save();
-      ctx.globalAlpha = 0.72;
-      ctx.drawImage(gridOverlay, gridLayout.x, gridLayout.y, gridLayout.w, gridLayout.h);
+      ctx.globalAlpha = Math.max(0, Math.min(1, gridAlpha * 0.8));
+      ctx.drawImage(
+        gridOverlay,
+        imageLayout.x,
+        imageLayout.y,
+        imageLayout.w,
+        imageLayout.h
+      );
       ctx.restore();
     }
 
-    sim.refreshTangents();
+    if (gridLayout && gridSource) {
+      ctx.strokeStyle = "rgba(232, 213, 163, 0.85)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([10, 6]);
+      ctx.strokeRect(gridLayout.x, gridLayout.y, gridLayout.w, gridLayout.h);
+      ctx.setLineDash([]);
+      ctx.font = "12px system-ui, sans-serif";
+      ctx.fillStyle = "rgba(232, 213, 163, 0.9)";
+      ctx.fillText(`${SITE_FEET}' × ${SITE_FEET}'`, gridLayout.x + 6, gridLayout.y + 16);
+    }
 
     if (gridShapes && gridShapes.rectangles.length) {
       ctx.strokeStyle = "rgba(232, 213, 163, 0.75)";
@@ -1508,30 +1825,21 @@
       ctx.stroke();
     }
 
-    if (ui.circleTangents.checked && sim.tangentSegments.length) {
-      ctx.strokeStyle = "rgba(232, 213, 163, 0.55)";
-      ctx.lineWidth = 1.25;
-      ctx.setLineDash([6, 6]);
-      for (const seg of sim.tangentSegments) {
-        ctx.beginPath();
-        ctx.moveTo(seg.x1, seg.y1);
-        ctx.lineTo(seg.x2, seg.y2);
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-    }
-
-    ctx.fillStyle = "rgba(159, 214, 232, 0.55)";
+    const attractorR = Math.max(0.2, Number(ui.attractorSize?.value ?? 2.5));
+    const palette = displayColors();
+    ctx.fillStyle = rgbaFromHex(palette.attractor, 0.82);
+    ctx.strokeStyle = rgbaFromHex(palette.attractor, 1);
+    ctx.lineWidth = attractorR >= 2 ? 1.1 : 0.7;
     for (const p of sim.attractors) {
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 1.15, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, attractorR, 0, Math.PI * 2);
       ctx.fill();
+      ctx.stroke();
     }
 
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     const identify = ui.identifyBranches.checked;
-    const colors = { 1: "#e8d5a3", 2: "#9fd6e8", 3: "#d4785a" };
     const visible = {
       1: ui.showPrimary.checked,
       2: ui.showSecondary.checked,
@@ -1541,7 +1849,7 @@
     const drawOrder = identify ? [3, 2, 1] : [0];
     for (const rank of drawOrder) {
       if (identify && !visible[rank]) continue;
-      ctx.strokeStyle = identify ? colors[rank] : "#9fd6e8";
+      ctx.strokeStyle = identify ? palette[rank] : palette.branch;
       for (const node of sim.nodes) {
         if (!node.parent) continue;
         const order = node.order || 1;
@@ -1595,7 +1903,16 @@
 
   function loop() {
     if (playing) growOnce();
-    draw();
+    try {
+      draw();
+    } catch (err) {
+      // #region agent log
+      dbg("G", "app.js:loop", "draw threw", {
+        runId: "post-fix",
+        error: String(err && err.message ? err.message : err),
+      });
+      // #endregion
+    }
     requestAnimationFrame(loop);
   }
 
@@ -1630,20 +1947,13 @@
   ui.kill.addEventListener("input", () => onLiveParamChange("kill"));
   ui.stepSize.addEventListener("input", () => onLiveParamChange("step"));
   ui.iterations.addEventListener("input", () => onLiveParamChange("iterations"));
+  ui.gridOpacity.addEventListener("input", updateDisplayParams);
+  ui.attractorSize.addEventListener("input", updateDisplayParams);
+  for (const id of DISPLAY_COLOR_IDS) {
+    if (ui[id]) ui[id].addEventListener("input", saveDisplayColors);
+  }
   ui.identifyBranches.addEventListener("change", () => {
     ui.branchLegend.classList.toggle("hidden", !ui.identifyBranches.checked);
-  });
-  ui.circleTangents.addEventListener("change", () => {
-    const entry = activeGridEntry();
-    if (entry && !ui.circleTangents.checked) entry.tangentUserDisabled = true;
-    applyParams();
-    if (sim.nodes.length) {
-      sim.attractors = [];
-      const points = currentAttractors();
-      if (points && points.length) sim.addAttractors(points);
-    } else {
-      resetSim();
-    }
   });
   ui.captureVariant.addEventListener("click", captureVariant);
   ui.newAttempt.addEventListener("click", newAttempt);
@@ -1705,7 +2015,6 @@
       sim.circles.push(...gridShapes.circles.map((circle) => ({ ...circle })));
     }
     sim.circles.push(...placedCircles.map((circle) => ({ ...circle })));
-    sim.refreshTangents();
   }
 
   canvas.addEventListener("pointerdown", (event) => {
@@ -1779,7 +2088,6 @@
       const r = Math.hypot(point.x - drag.origin.x, point.y - drag.origin.y);
       draft = r >= 8 ? { x: drag.origin.x, y: drag.origin.y, r } : null;
     }
-    sim.refreshTangents();
   });
 
   canvas.addEventListener("pointerup", (event) => {
@@ -1838,6 +2146,9 @@
     new ResizeObserver(resize).observe(viewport);
   }
   updateSeedUI();
+  initSliderBounds();
+  initDisplayColors();
+  updateDisplayParams();
   ui.batchCountVal.textContent = ui.batchCount.value;
   updateGridCycleUI();
   updateVariantUI();

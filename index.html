@@ -47,6 +47,11 @@
         <input id="showVoidMask" type="checkbox" />
         Show void mask (dim non-solid areas)
       </label>
+      <label class="ctrl" title="Fade the imported drawing so growth and attractors read more clearly.">
+        Grid opacity
+        <span class="value" id="gridOpacityVal"></span>
+        <input id="gridOpacity" type="range" min="0" max="100" step="1" value="90" />
+      </label>
 
       <div class="section">
         <div class="section-head">Seeds</div>
@@ -62,54 +67,93 @@
         Attractors
         <span class="value" id="countVal"></span>
         <input id="count" type="range" min="50" max="2000" step="10" value="800" />
+        <span class="range-bounds">
+          <input id="countMin" type="number" value="50" step="10" aria-label="Attractors minimum" />
+          <span>min</span>
+          <input id="countMax" type="number" value="2000" step="10" aria-label="Attractors maximum" />
+          <span>max</span>
+        </span>
+      </label>
+      <label class="ctrl" title="Visual size of remaining attractors on the canvas. Does not change the simulation.">
+        Attractor size
+        <span class="value" id="attractorSizeVal"></span>
+        <input id="attractorSize" type="range" min="0.5" max="10" step="0.1" value="2.5" />
+      </label>
+      <label class="ctrl color-ctrl" title="Fill color for remaining attractors.">
+        Attractor color
+        <input id="attractorColor" type="color" value="#9fd6e8" aria-label="Attractor color" />
       </label>
       <label class="ctrl">
         Influence
         <span class="value" id="influenceVal"></span>
         <input id="influence" type="range" min="20" max="220" value="90" />
+        <span class="range-bounds">
+          <input id="influenceMin" type="number" value="20" step="1" aria-label="Influence minimum" />
+          <span>min</span>
+          <input id="influenceMax" type="number" value="220" step="1" aria-label="Influence maximum" />
+          <span>max</span>
+        </span>
       </label>
       <label class="ctrl">
         Kill distance
         <span class="value" id="killVal"></span>
         <input id="kill" type="range" min="4" max="40" value="12" />
+        <span class="range-bounds">
+          <input id="killMin" type="number" value="4" step="1" aria-label="Kill distance minimum" />
+          <span>min</span>
+          <input id="killMax" type="number" value="40" step="1" aria-label="Kill distance maximum" />
+          <span>max</span>
+        </span>
       </label>
       <label class="ctrl">
         Step size
         <span class="value" id="stepVal"></span>
         <input id="stepSize" type="range" min="2" max="16" step="0.5" value="6" />
+        <span class="range-bounds">
+          <input id="stepSizeMin" type="number" value="2" step="0.5" aria-label="Step size minimum" />
+          <span>min</span>
+          <input id="stepSizeMax" type="number" value="16" step="0.5" aria-label="Step size maximum" />
+          <span>max</span>
+        </span>
       </label>
       <label class="ctrl">
         Iterations
         <span class="value" id="iterVal"></span>
         <input id="iterations" type="range" min="10" max="800" step="10" value="250" />
+        <span class="range-bounds">
+          <input id="iterationsMin" type="number" value="10" step="10" aria-label="Iterations minimum" />
+          <span>min</span>
+          <input id="iterationsMax" type="number" value="800" step="10" aria-label="Iterations maximum" />
+          <span>max</span>
+        </span>
       </label>
 
       <div class="section">
         <div class="section-head">Branches</div>
-        <label class="check" title="Requires 2+ detected circles. Growth follows external tangent lines between circles only, not other grid strokes.">
-          <input id="circleTangents" type="checkbox" />
-          Branch on circle tangent lines only
+        <label class="ctrl color-ctrl" title="Stroke color when rank identification is off.">
+          Branch color
+          <input id="branchColor" type="color" value="#9fd6e8" aria-label="Branch color" />
         </label>
         <label class="check">
           <input id="identifyBranches" type="checkbox" />
           Identify primary / secondary / tertiary
         </label>
         <div id="branchLegend" class="legend hidden">
-          <label class="legend-item">
+          <div class="legend-item">
             <input id="showPrimary" type="checkbox" checked />
-            <span class="swatch primary"></span>
-            Primary
-          </label>
-          <label class="legend-item">
+            <input id="primaryColor" type="color" value="#e8d5a3" aria-label="Primary branch color" />
+            <label for="showPrimary">Primary</label>
+          </div>
+          <div class="legend-item">
             <input id="showSecondary" type="checkbox" checked />
-            <span class="swatch secondary"></span>
-            Secondary
-          </label>
-          <label class="legend-item">
+            <input id="secondaryColor" type="color" value="#9fd6e8" aria-label="Secondary branch color" />
+            <label for="showSecondary">Secondary</label>
+          </div>
+          <div class="legend-item">
             <input id="showTertiary" type="checkbox" checked />
-            <span class="swatch tertiary"></span>
-            Tertiary
-          </label>
+            <input id="tertiaryColor" type="color" value="#d4785a" aria-label="Tertiary branch color" />
+            <label for="showTertiary">Tertiary</label>
+          </div>
         </div>
       </div>
 
