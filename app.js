@@ -359,15 +359,15 @@
     attractorColor: "#9fd6e8",
     branchColor: "#ff0000",
     primaryColor: "#C80000",
-    secondaryColor: "#007AC7",
-    tertiaryColor: "#C7C400",
+    secondaryColor: "#00fffe",
+    tertiaryColor: "#ffd900",
   };
 
   const LEGACY_DISPLAY_COLORS = {
-    branchColor: "#9fd6e8",
-    primaryColor: "#e8d5a3",
-    secondaryColor: "#9fd6e8",
-    tertiaryColor: "#d4785a",
+    branchColor: ["#9fd6e8"],
+    primaryColor: ["#e8d5a3"],
+    secondaryColor: ["#9fd6e8", "#007ac7"],
+    tertiaryColor: ["#d4785a", "#c7c400"],
   };
 
   function hexToRgb(hex) {
@@ -431,8 +431,9 @@
         continue;
       }
       const storedHex = String(stored[id] || "").toLowerCase();
-      const legacy = String(LEGACY_DISPLAY_COLORS[id] || "").toLowerCase();
-      if (legacy && storedHex === legacy && ui[id] && DEFAULT_DISPLAY_COLORS[id]) {
+      const legacyList = LEGACY_DISPLAY_COLORS[id] || [];
+      const isLegacy = legacyList.some((hex) => String(hex).toLowerCase() === storedHex);
+      if (isLegacy && ui[id] && DEFAULT_DISPLAY_COLORS[id]) {
         ui[id].value = DEFAULT_DISPLAY_COLORS[id];
         continue;
       }
@@ -1497,7 +1498,7 @@
     const scale = Math.min((w - pad * 2) / bw, (h - pad * 2) / bh);
     const ox = (w - bw * scale) / 2 - minX * scale;
     const oy = (h - bh * scale) / 2 - minY * scale;
-    const colors = ["#ff0000", "#007AC7", "#C7C400", "#C80000", "#a8e6cf", "#c9a0dc"];
+    const colors = ["#ff0000", "#00fffe", "#ffd900", "#C80000", "#a8e6cf", "#c9a0dc"];
 
     selected.forEach((item, index) => {
       g.strokeStyle = colors[index % colors.length];
