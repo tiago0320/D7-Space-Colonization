@@ -81,7 +81,9 @@
     showTertiary: document.getElementById("showTertiary"),
     showVoidMask: document.getElementById("showVoidMask"),
     exportTransparent: document.getElementById("exportTransparent"),
-    exportPng: document.getElementById("exportPng"),
+    importSnapshot: document.getElementById("importSnapshot"),
+    importSnapshotFile: document.getElementById("importSnapshotFile"),
+    exportStatus: document.getElementById("exportStatus"),
     saveIteration: document.getElementById("saveIteration"),
     clearIterations: document.getElementById("clearIterations"),
     iterationStatus: document.getElementById("iterationStatus"),
@@ -1088,15 +1090,7 @@
     updatePlayState();
   }
 
-  function saveCurrentIteration() {
-    if (!gridSource) {
-      setIterationStatus("Import a grid before saving iterations.", "error");
-      return;
-    }
-    if (!canSaveIteration()) {
-      setIterationStatus("Grow branches before saving an iteration.", "error");
-      return;
-    }
+  function persistIterationRecord() {
     if (savedIterations.length >= MAX_SAVED_ITERATIONS) {
       savedIterations.shift();
     }
@@ -1125,9 +1119,34 @@
     activeSavedIterationId = record.id;
     activeVariantId = null;
     persistSavedIterations();
-    setIterationStatus(`${label} saved · ${record.attractorsLeft.length} attractors left`, "active");
     updateIterationUI();
     updateVariantUI();
+    return record;
+  }
+
+  function saveCurrentIteration() {
+    if (!gridSource) {
+      setIterationStatus("Import a grid before saving iterations.", "error");
+      return;
+    }
+    if (!canSaveIteration()) {
+      setIterationStatus("Grow branches before saving an iteration.", "error");
+      return;
+    }
+    const record = persistIterationRecord();
+    downloadPngSnapshot().then((ok) => {
+      if (ok) {
+        setIterationStatus(
+          `${record.label} saved as PNG · ${record.attractorsLeft.length} attractors left`,
+          "active"
+        );
+      } else {
+        setIterationStatus(
+          `${record.label} kept in session, but PNG download failed.`,
+          "error"
+        );
+      }
+    });
   }
 
   function restoreSavedIteration(record) {
@@ -2045,29 +2064,407 @@
     }
   }
 
+  const EXPORT_CAPTION_HEIGHT = 72;
+
   function exportFileBaseName() {
     const raw = (gridName || "studio").replace(/\.[^.]+$/, "");
     const safe = raw.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "");
     return safe || "studio";
   }
 
-  function exportStudioPng() {
-    if (!width || !height) return;
-    const off = document.createElement("canvas");
-    off.width = canvas.width;
-    off.height = canvas.height;
-    const ectx = off.getContext("2d");
-    ectx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    renderStudioFrame(ectx, {
-      transparentBackground: ui.exportTransparent.checked,
-      hideSiteBoundary: true,
-    });
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-    const suffix = ui.exportTransparent.checked ? "transparent" : "opaque";
+  function formatExportTimestamp(iso) {
+    return String(iso || "").replace("T", " ").slice(0, 19);
+  }
+
+  const EXPORT_CAPTION_FONT = '300 12px "Arkitech Light"';
+
+  function ensureExportCaptionFont() {
+    if (!document.fonts || !document.fonts.load) return Promise.resolve();
+    return document.fonts
+      .load(EXPORT_CAPTION_FONT)
+      .then(() => document.fonts.ready)
+      .catch(() => {});
+  }
+
+  function drawExportCaption(targetCtx, meta) {
+    const y0 = height;
+    const band = EXPORT_CAPTION_HEIGHT;
+    const params = meta.params || {};
+    const simSnap = meta.sim || {};
+    const gridLabel = meta.gridName || "untitled grid";
+    const line1 = `${gridLabel}  ·  ${formatExportTimestamp(meta.exportedAt)}`;
+    const line2 = `gen ${simSnap.generation ?? 0}  ·  attractors ${
+      simSnap.attractorsLeft ? simSnap.attractorsLeft.length : 0
+    }  ·  seeds ${(meta.seeds || []).length}`;
+    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  cap ${params.iterationsCap}`;
+
+    targetCtx.save();
+    targetCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    targetCtx.fillStyle = "#111";
+    targetCtx.fillRect(0, y0, width, band);
+    targetCtx.fillStyle = "#2a2a2a";
+    targetCtx.fillRect(0, y0, width, 1);
+    const pad = 12;
+    const maxW = Math.max(40, width - pad * 2);
+    targetCtx.textBaseline = "top";
+    targetCtx.font = EXPORT_CAPTION_FONT;
+    if (targetCtx.letterSpacing !== undefined) targetCtx.letterSpacing = "0.06em";
+    targetCtx.fillStyle = "#9a9a9a";
+    targetCtx.fillText("D7 snapshot", pad, y0 + 10, maxW);
+    targetCtx.fillStyle = "#e0e0e0";
+    targetCtx.fillText(line1, pad, y0 + 24, maxW);
+    targetCtx.fillStyle = "#c0c0c0";
+    targetCtx.fillText(line2, pad, y0 + 40, maxW);
+    targetCtx.fillText(line3, pad, y0 + 54, maxW);
+    targetCtx.restore();
+  }
+
+  function buildExportMetadata(transparentBackground) {
+    const colors = displayColors();
+    return {
+      app: "D7-Space-Colonization",
+      format: 1,
+      exportedAt: new Date().toISOString(),
+      gridName: gridName || null,
+      gridToken: gridToken || null,
+      transparentBackground: !!transparentBackground,
+      params: readParamsFromUI(),
+      jitter: sim.jitter,
+      seeds: seeds.map((seed) => ({ x: seed.x, y: seed.y })),
+      display: {
+        gridOpacity: Number(ui.gridOpacity?.value ?? 90),
+        attractorSize: Number(ui.attractorSize?.value ?? 2),
+        identifyBranches: !!ui.identifyBranches?.checked,
+        showPrimary: !!ui.showPrimary?.checked,
+        showSecondary: !!ui.showSecondary?.checked,
+        showTertiary: !!ui.showTertiary?.checked,
+        showVoidMask: !!ui.showVoidMask?.checked,
+        colors: {
+          attractor: colors.attractor,
+          branch: colors.branch,
+          primary: colors[1],
+          secondary: colors[2],
+          tertiary: colors[3],
+        },
+      },
+      sim: serializeSimSnapshot(),
+    };
+  }
+
+  let pngCrcTable = null;
+
+  function getPngCrcTable() {
+    if (pngCrcTable) return pngCrcTable;
+    pngCrcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      pngCrcTable[n] = c >>> 0;
+    }
+    return pngCrcTable;
+  }
+
+  function pngCrc32(bytes, start, end) {
+    const table = getPngCrcTable();
+    let c = 0xffffffff;
+    for (let i = start; i < end; i++) c = table[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  }
+
+  function readUint32BE(bytes, offset) {
+    return (
+      ((bytes[offset] << 24) |
+        (bytes[offset + 1] << 16) |
+        (bytes[offset + 2] << 8) |
+        bytes[offset + 3]) >>>
+      0
+    );
+  }
+
+  function writeUint32BE(bytes, offset, value) {
+    bytes[offset] = (value >>> 24) & 0xff;
+    bytes[offset + 1] = (value >>> 16) & 0xff;
+    bytes[offset + 2] = (value >>> 8) & 0xff;
+    bytes[offset + 3] = value & 0xff;
+  }
+
+  function makePngChunk(type, data) {
+    const chunk = new Uint8Array(12 + data.length);
+    writeUint32BE(chunk, 0, data.length);
+    for (let i = 0; i < 4; i++) chunk[4 + i] = type.charCodeAt(i);
+    chunk.set(data, 8);
+    writeUint32BE(chunk, 8 + data.length, pngCrc32(chunk, 4, 8 + data.length));
+    return chunk;
+  }
+
+  function buildPngTExtData(keyword, text) {
+    const enc = new TextEncoder();
+    const keywordBytes = enc.encode(keyword);
+    const textBytes = enc.encode(text);
+    const data = new Uint8Array(keywordBytes.length + 1 + textBytes.length);
+    data.set(keywordBytes, 0);
+    data[keywordBytes.length] = 0;
+    data.set(textBytes, keywordBytes.length + 1);
+    return data;
+  }
+
+  function buildPngITxtData(keyword, text) {
+    const enc = new TextEncoder();
+    const keywordBytes = enc.encode(keyword);
+    const textBytes = enc.encode(text);
+    const data = new Uint8Array(keywordBytes.length + 1 + 2 + 1 + 1 + textBytes.length);
+    let o = 0;
+    data.set(keywordBytes, o);
+    o += keywordBytes.length;
+    data[o++] = 0;
+    data[o++] = 0;
+    data[o++] = 0;
+    data[o++] = 0;
+    data[o++] = 0;
+    data.set(textBytes, o);
+    return data.subarray(0, o + textBytes.length);
+  }
+
+  function parsePngTextChunk(type, bytes, dataStart, dataEnd) {
+    const latin1 = new TextDecoder("latin1");
+    const utf8 = new TextDecoder("utf-8");
+    if (type === "tEXt") {
+      let n = dataStart;
+      while (n < dataEnd && bytes[n] !== 0) n++;
+      return {
+        keyword: latin1.decode(bytes.subarray(dataStart, n)),
+        text: latin1.decode(bytes.subarray(n + 1, dataEnd)),
+      };
+    }
+    if (type === "iTXt") {
+      let n = dataStart;
+      while (n < dataEnd && bytes[n] !== 0) n++;
+      const keyword = latin1.decode(bytes.subarray(dataStart, n));
+      n += 1;
+      if (n + 2 > dataEnd) return null;
+      const compressed = bytes[n++];
+      n += 1;
+      while (n < dataEnd && bytes[n] !== 0) n++;
+      n += 1;
+      while (n < dataEnd && bytes[n] !== 0) n++;
+      n += 1;
+      if (compressed !== 0) return null;
+      return { keyword, text: utf8.decode(bytes.subarray(n, dataEnd)) };
+    }
+    return null;
+  }
+
+  function readPngD7Snapshot(pngBytes) {
+    let o = 8;
+    while (o + 12 <= pngBytes.length) {
+      const len = readUint32BE(pngBytes, o);
+      const type = String.fromCharCode(
+        pngBytes[o + 4],
+        pngBytes[o + 5],
+        pngBytes[o + 6],
+        pngBytes[o + 7]
+      );
+      const dataStart = o + 8;
+      const dataEnd = dataStart + len;
+      if (type === "tEXt" || type === "iTXt") {
+        const parsed = parsePngTextChunk(type, pngBytes, dataStart, dataEnd);
+        if (parsed && parsed.keyword === "d7-snapshot" && parsed.text) {
+          try {
+            return JSON.parse(parsed.text);
+          } catch (_) {
+            /* try next chunk */
+          }
+        }
+      }
+      if (type === "IEND") break;
+      o += 12 + len;
+    }
+    return null;
+  }
+
+  function findPngIendOffset(bytes) {
+    let o = 8;
+    while (o + 12 <= bytes.length) {
+      const len = readUint32BE(bytes, o);
+      const type = String.fromCharCode(bytes[o + 4], bytes[o + 5], bytes[o + 6], bytes[o + 7]);
+      if (type === "IEND") return o;
+      o += 12 + len;
+    }
+    return -1;
+  }
+
+  function isLatin1Text(text) {
+    for (let i = 0; i < text.length; i++) {
+      if (text.charCodeAt(i) > 255) return false;
+    }
+    return true;
+  }
+
+  function embedPngSnapshotMetadata(pngBytes, jsonText) {
+    const iend = findPngIendOffset(pngBytes);
+    if (iend < 0) return pngBytes;
+    const chunks = [makePngChunk("iTXt", buildPngITxtData("d7-snapshot", jsonText))];
+    if (isLatin1Text(jsonText) && jsonText.length <= 32768) {
+      chunks.unshift(makePngChunk("tEXt", buildPngTExtData("d7-snapshot", jsonText)));
+    }
+    let extra = 0;
+    for (const chunk of chunks) extra += chunk.length;
+    const out = new Uint8Array(pngBytes.length + extra);
+    out.set(pngBytes.subarray(0, iend));
+    let o = iend;
+    for (const chunk of chunks) {
+      out.set(chunk, o);
+      o += chunk.length;
+    }
+    out.set(pngBytes.subarray(iend), o);
+    return out;
+  }
+
+  function setExportStatus(message, kind) {
+    if (!ui.exportStatus) return;
+    ui.exportStatus.textContent = message;
+    ui.exportStatus.classList.toggle("active", kind === "active");
+    ui.exportStatus.classList.toggle("error", kind === "error");
+  }
+
+  function applyDisplayFromExportMeta(display) {
+    if (!display) return;
+    if (ui.gridOpacity && display.gridOpacity != null) {
+      ui.gridOpacity.value = String(display.gridOpacity);
+    }
+    if (ui.attractorSize && display.attractorSize != null) {
+      ui.attractorSize.value = String(display.attractorSize);
+    }
+    if (ui.identifyBranches) ui.identifyBranches.checked = !!display.identifyBranches;
+    if (ui.showPrimary) ui.showPrimary.checked = !!display.showPrimary;
+    if (ui.showSecondary) ui.showSecondary.checked = !!display.showSecondary;
+    if (ui.showTertiary) ui.showTertiary.checked = !!display.showTertiary;
+    if (ui.showVoidMask) ui.showVoidMask.checked = !!display.showVoidMask;
+    const colors = display.colors;
+    if (colors) {
+      if (ui.attractorColor && colors.attractor) ui.attractorColor.value = colors.attractor;
+      if (ui.branchColor && colors.branch) ui.branchColor.value = colors.branch;
+      if (ui.primaryColor && colors.primary) ui.primaryColor.value = colors.primary;
+      if (ui.secondaryColor && colors.secondary) ui.secondaryColor.value = colors.secondary;
+      if (ui.tertiaryColor && colors.tertiary) ui.tertiaryColor.value = colors.tertiary;
+    }
+    if (ui.branchLegend) {
+      ui.branchLegend.classList.toggle("hidden", !ui.identifyBranches?.checked);
+    }
+    updateDisplayParams();
+  }
+
+  async function importSnapshotFromPngFile(file) {
+    if (!file) return;
+    let meta;
+    try {
+      const buf = await file.arrayBuffer();
+      meta = readPngD7Snapshot(new Uint8Array(buf));
+    } catch (_) {
+      meta = null;
+    }
+    if (!meta || !meta.params || !meta.sim) {
+      setExportStatus("No D7 snapshot in this PNG. Use Save PNG snapshot from Studio.", "error");
+      setIterationStatus("This PNG is not a restorable snapshot.", "error");
+      return;
+    }
+    if (meta.gridToken && meta.gridToken !== gridToken) {
+      const entry = gridLibrary.find((item) => item.id === meta.gridToken);
+      if (!entry) {
+        setExportStatus("Import the same grid first, then load this PNG snapshot.", "error");
+        setIterationStatus("Same grid required to restore this snapshot.", "error");
+        return;
+      }
+      if (!activateGrid(entry)) {
+        setExportStatus("Could not open the grid for this snapshot.", "error");
+        return;
+      }
+    } else if (!gridSource) {
+      setExportStatus("Import a grid before loading a snapshot PNG.", "error");
+      setIterationStatus("Import the original grid, then load the PNG.", "error");
+      return;
+    }
+    applyDisplayFromExportMeta(meta.display);
+    if (meta.jitter != null) sim.jitter = meta.jitter;
+    if (meta.transparentBackground != null && ui.exportTransparent) {
+      ui.exportTransparent.checked = !!meta.transparentBackground;
+    }
+    applySimSnapshot(meta.params, meta.seeds || [], meta.sim);
+    activeVariantId = null;
+    activeSavedIterationId = null;
+    const loadedMsg = `Loaded snapshot · gen ${meta.sim.generation} · ${meta.sim.attractorsLeft.length} attractors left`;
+    setExportStatus(loadedMsg, "active");
+    setIterationStatus(loadedMsg, "active");
+    updateVariantUI();
+    updateIterationUI();
+  }
+
+  function triggerDownload(filename, href) {
     const link = document.createElement("a");
-    link.download = `${exportFileBaseName()}-d7-${suffix}-${stamp}.png`;
-    link.href = off.toDataURL("image/png");
+    link.download = filename;
+    link.href = href;
     link.click();
+  }
+
+  function downloadPngSnapshot() {
+    if (!width || !height) {
+      setExportStatus("Canvas is not ready to export.", "error");
+      return Promise.resolve(false);
+    }
+    return ensureExportCaptionFont().then(
+      () =>
+        new Promise((resolve) => {
+          const off = document.createElement("canvas");
+          off.width = Math.floor(width * dpr);
+          off.height = Math.floor((height + EXPORT_CAPTION_HEIGHT) * dpr);
+          const ectx = off.getContext("2d");
+          ectx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          const transparentBackground = !!(ui.exportTransparent && ui.exportTransparent.checked);
+          renderStudioFrame(ectx, {
+            transparentBackground,
+            hideSiteBoundary: true,
+          });
+          const meta = buildExportMetadata(transparentBackground);
+          drawExportCaption(ectx, meta);
+          const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+          const suffix = transparentBackground ? "transparent" : "opaque";
+          const filename = `${exportFileBaseName()}-d7-${suffix}-${stamp}.png`;
+          const json = JSON.stringify(meta);
+          off.toBlob(
+            (blob) => {
+              if (!blob) {
+                setExportStatus("Could not encode PNG.", "error");
+                resolve(false);
+                return;
+              }
+              blob
+                .arrayBuffer()
+                .then((buf) => {
+                  const png = embedPngSnapshotMetadata(new Uint8Array(buf), json);
+                  if (!readPngD7Snapshot(png)) {
+                    setExportStatus("Could not embed snapshot metadata in PNG.", "error");
+                    resolve(false);
+                    return;
+                  }
+                  const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+                  triggerDownload(filename, url);
+                  URL.revokeObjectURL(url);
+                  setExportStatus(
+                    `Saved ${filename} · caption + restorable snapshot`,
+                    "active"
+                  );
+                  resolve(true);
+                })
+                .catch(() => {
+                  setExportStatus("Could not write snapshot metadata into PNG.", "error");
+                  resolve(false);
+                });
+            },
+            "image/png",
+            1
+          );
+        })
+    );
   }
 
   function screenToWorld(sx, sy) {
@@ -2191,7 +2588,14 @@
   ui.captureVariant.addEventListener("click", captureVariant);
   if (ui.saveIteration) ui.saveIteration.addEventListener("click", saveCurrentIteration);
   if (ui.clearIterations) ui.clearIterations.addEventListener("click", clearSavedIterationsForGrid);
-  ui.exportPng.addEventListener("click", exportStudioPng);
+  if (ui.importSnapshot && ui.importSnapshotFile) {
+    ui.importSnapshot.addEventListener("click", () => ui.importSnapshotFile.click());
+    ui.importSnapshotFile.addEventListener("change", async () => {
+      const file = ui.importSnapshotFile.files && ui.importSnapshotFile.files[0];
+      await importSnapshotFromPngFile(file);
+      ui.importSnapshotFile.value = "";
+    });
+  }
   ui.newAttempt.addEventListener("click", newAttempt);
   ui.generateVariants.addEventListener("click", () => generateVariantsBatch());
   ui.clearVariants.addEventListener("click", clearVariantsForActiveGrid);

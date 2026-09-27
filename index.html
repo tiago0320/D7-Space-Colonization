@@ -165,21 +165,21 @@
 
       <div class="section">
         <div class="section-head">Saved iterations</div>
-        <p id="iterationStatus" class="grid-status">Grow, then save the current step to reload later.</p>
-        <div class="row">
-          <button id="saveIteration" class="ghost" type="button" disabled>Save iteration</button>
-          <button id="clearIterations" class="ghost" type="button" disabled>Clear saved</button>
-        </div>
-        <ul id="iterationList" class="seed-list iteration-list"></ul>
-      </div>
-
-      <div class="section">
-        <div class="section-head">Export</div>
-        <label class="check" title="PNG alpha outside the scene; omits black fill and void dimming.">
+        <p id="iterationStatus" class="grid-status">Grow, then save a PNG snapshot. This file is the archive — restore it here (same grid required).</p>
+        <label class="check" title="PNG alpha outside the scene; omits black fill and void dimming. Caption bar stays opaque.">
           <input id="exportTransparent" type="checkbox" />
           Transparent background
         </label>
-        <button id="exportPng" class="ghost" type="button">Export PNG</button>
+        <div class="row">
+          <button id="saveIteration" class="ghost" type="button" disabled>Save PNG snapshot</button>
+          <button id="importSnapshot" class="ghost" type="button">Load snapshot from PNG</button>
+        </div>
+        <div class="row">
+          <button id="clearIterations" class="ghost" type="button" disabled>Clear saved</button>
+        </div>
+        <input id="importSnapshotFile" type="file" accept="image/png" hidden />
+        <p id="exportStatus" class="grid-status">PNG shows params on a caption strip and embeds a restorable sim snapshot.</p>
+        <ul id="iterationList" class="seed-list iteration-list"></ul>
       </div>
 
       <div class="section">
