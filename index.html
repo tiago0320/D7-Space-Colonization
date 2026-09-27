@@ -164,6 +164,25 @@
       </div>
 
       <div class="section">
+        <div class="section-head">Saved iterations</div>
+        <p id="iterationStatus" class="grid-status">Grow, then save the current step to reload later.</p>
+        <div class="row">
+          <button id="saveIteration" class="ghost" type="button" disabled>Save iteration</button>
+          <button id="clearIterations" class="ghost" type="button" disabled>Clear saved</button>
+        </div>
+        <ul id="iterationList" class="seed-list iteration-list"></ul>
+      </div>
+
+      <div class="section">
+        <div class="section-head">Export</div>
+        <label class="check" title="PNG alpha outside the scene; omits black fill and void dimming.">
+          <input id="exportTransparent" type="checkbox" />
+          Transparent background
+        </label>
+        <button id="exportPng" class="ghost" type="button">Export PNG</button>
+      </div>
+
+      <div class="section">
         <div class="section-head">Variants</div>
         <p id="variantStatus" class="grid-status">Capture layouts to compare</p>
         <div class="row">

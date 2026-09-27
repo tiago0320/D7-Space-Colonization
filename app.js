@@ -80,6 +80,12 @@
     showSecondary: document.getElementById("showSecondary"),
     showTertiary: document.getElementById("showTertiary"),
     showVoidMask: document.getElementById("showVoidMask"),
+    exportTransparent: document.getElementById("exportTransparent"),
+    exportPng: document.getElementById("exportPng"),
+    saveIteration: document.getElementById("saveIteration"),
+    clearIterations: document.getElementById("clearIterations"),
+    iterationStatus: document.getElementById("iterationStatus"),
+    iterationList: document.getElementById("iterationList"),
     captureVariant: document.getElementById("captureVariant"),
     newAttempt: document.getElementById("newAttempt"),
     generateVariants: document.getElementById("generateVariants"),
@@ -112,6 +118,10 @@
   const variants = [];
   let nextVariantId = 1;
   let activeVariantId = null;
+  const MAX_SAVED_ITERATIONS = 48;
+  const savedIterations = [];
+  let nextSavedIterationId = 1;
+  let activeSavedIterationId = null;
   let batchRunning = false;
 
   const stars = [];
@@ -584,6 +594,7 @@
     resetSim();
     updateGridCycleUI();
     updateVariantUI();
+    updateIterationUI();
     return true;
   }
 
@@ -1000,6 +1011,208 @@
     return sim.nodes.some((node) => node.parent);
   }
 
+  function canSaveIteration() {
+    return sim.generation > 0 && canCaptureVariant();
+  }
+
+  function setIterationStatus(message, kind) {
+    if (!ui.iterationStatus) return;
+    ui.iterationStatus.textContent = message;
+    ui.iterationStatus.classList.toggle("active", kind === "active");
+    ui.iterationStatus.classList.toggle("error", kind === "error");
+  }
+
+  function persistSavedIterations() {
+    try {
+      localStorage.setItem(
+        "d7-saved-iterations",
+        JSON.stringify({
+          nextId: nextSavedIterationId,
+          items: savedIterations,
+        })
+      );
+    } catch (_) {
+      /* ignore quota */
+    }
+  }
+
+  function loadSavedIterationsFromStorage() {
+    try {
+      const raw = localStorage.getItem("d7-saved-iterations");
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (!Array.isArray(data.items)) return;
+      savedIterations.length = 0;
+      savedIterations.push(...data.items);
+      nextSavedIterationId =
+        Number(data.nextId) ||
+        savedIterations.reduce((max, item) => Math.max(max, item.id || 0), 0) + 1;
+    } catch (_) {
+      /* ignore corrupt storage */
+    }
+  }
+
+  function applySimSnapshot(params, seedRecords, snap) {
+    applyParamsFromSnapshot(params);
+    seeds.length = 0;
+    nextSeedId = 1;
+    for (const seed of seedRecords) {
+      seeds.push({ id: nextSeedId++, x: seed.x, y: seed.y });
+    }
+    selectedSeedId = seeds.length ? seeds[seeds.length - 1].id : null;
+
+    sim.clearAll();
+    const path = currentPathPoints();
+    if (path && path.length) {
+      sim.pathIndex = buildPathIndex(path, sim.stepSize);
+    }
+    syncCircles();
+
+    const nodes = [];
+    for (const rec of snap.nodes) {
+      const parent = rec.parentIndex >= 0 ? nodes[rec.parentIndex] : null;
+      const node = new Node(new Vec2(rec.x, rec.y), parent);
+      node.thickness = rec.thickness;
+      node.order = rec.order;
+      if (parent) parent.children.push(node);
+      nodes.push(node);
+    }
+    sim.nodes = nodes;
+    sim.generation = snap.generation;
+    sim.addAttractors(snap.attractorsLeft);
+
+    playing = false;
+    ui.play.textContent = "Grow";
+    flashes.length = 0;
+    updateSeedUI();
+    updatePlayState();
+  }
+
+  function saveCurrentIteration() {
+    if (!gridSource) {
+      setIterationStatus("Import a grid before saving iterations.", "error");
+      return;
+    }
+    if (!canSaveIteration()) {
+      setIterationStatus("Grow branches before saving an iteration.", "error");
+      return;
+    }
+    if (savedIterations.length >= MAX_SAVED_ITERATIONS) {
+      savedIterations.shift();
+    }
+    const snap = serializeSimSnapshot();
+    const sameGen = savedIterations.filter(
+      (item) => item.gridToken === gridToken && item.generation === snap.generation
+    ).length;
+    const label =
+      sameGen > 0
+        ? `Iteration ${snap.generation} (${sameGen + 1})`
+        : `Iteration ${snap.generation}`;
+    const record = {
+      id: nextSavedIterationId++,
+      label,
+      createdAt: Date.now(),
+      gridToken,
+      gridName: gridNameForToken(gridToken),
+      params: readParamsFromUI(),
+      seeds: seeds.map((seed) => ({ x: seed.x, y: seed.y })),
+      generation: snap.generation,
+      nodes: snap.nodes,
+      attractorsLeft: snap.attractorsLeft,
+      thumbDataUrl: makeVariantThumb(snap.nodes),
+    };
+    savedIterations.push(record);
+    activeSavedIterationId = record.id;
+    activeVariantId = null;
+    persistSavedIterations();
+    setIterationStatus(`${label} saved · ${record.attractorsLeft.length} attractors left`, "active");
+    updateIterationUI();
+    updateVariantUI();
+  }
+
+  function restoreSavedIteration(record) {
+    if (record.gridToken !== gridToken || !gridEntryExists(record.gridToken)) {
+      setIterationStatus("Grid changed — cannot load this iteration.", "error");
+      return false;
+    }
+    applySimSnapshot(record.params, record.seeds, {
+      generation: record.generation,
+      nodes: record.nodes,
+      attractorsLeft: record.attractorsLeft,
+    });
+    activeSavedIterationId = record.id;
+    activeVariantId = null;
+    setIterationStatus(`Loaded ${record.label}`, "active");
+    updateIterationUI();
+    updateVariantUI();
+    return true;
+  }
+
+  function deleteSavedIteration(id) {
+    const index = savedIterations.findIndex((item) => item.id === id);
+    if (index < 0) return;
+    savedIterations.splice(index, 1);
+    if (activeSavedIterationId === id) activeSavedIterationId = null;
+    persistSavedIterations();
+    setIterationStatus(
+      savedIterations.some((item) => item.gridToken === gridToken)
+        ? `${savedIterations.filter((item) => item.gridToken === gridToken).length} saved on this grid`
+        : "Grow, then save the current step to reload later."
+    );
+    updateIterationUI();
+    updatePlayState();
+  }
+
+  function clearSavedIterationsForGrid() {
+    for (let i = savedIterations.length - 1; i >= 0; i--) {
+      if (savedIterations[i].gridToken === gridToken) savedIterations.splice(i, 1);
+    }
+    activeSavedIterationId = null;
+    persistSavedIterations();
+    setIterationStatus("Cleared saved iterations for this grid");
+    updateIterationUI();
+    updatePlayState();
+  }
+
+  function updateIterationUI() {
+    if (!ui.iterationList) return;
+    ui.iterationList.innerHTML = "";
+    const forGrid = savedIterations
+      .filter((item) => item.gridToken === gridToken)
+      .sort((a, b) => b.createdAt - a.createdAt);
+    for (const record of forGrid) {
+      const item = document.createElement("li");
+      item.className = record.id === activeSavedIterationId ? "selected" : "";
+      const label = document.createElement("span");
+      label.textContent = `${record.label} · ${record.attractorsLeft.length} attr`;
+      const actions = document.createElement("span");
+      actions.className = "iteration-actions";
+      const loadBtn = document.createElement("button");
+      loadBtn.type = "button";
+      loadBtn.textContent = "Load";
+      loadBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        restoreSavedIteration(record);
+      });
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.textContent = "×";
+      delBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteSavedIteration(record.id);
+      });
+      actions.appendChild(loadBtn);
+      actions.appendChild(delBtn);
+      item.appendChild(label);
+      item.appendChild(actions);
+      item.addEventListener("click", () => restoreSavedIteration(record));
+      ui.iterationList.appendChild(item);
+    }
+    if (ui.clearIterations) {
+      ui.clearIterations.disabled = !forGrid.length || batchRunning;
+    }
+  }
+
   function serializeSimSnapshot() {
     const indexOf = new Map();
     sim.nodes.forEach((node, index) => indexOf.set(node, index));
@@ -1303,8 +1516,10 @@
     };
     variants.push(variant);
     activeVariantId = variant.id;
+    activeSavedIterationId = null;
     setVariantStatus(`${variant.label} saved · gen ${variant.generation}`, "active");
     updateVariantUI();
+    updateIterationUI();
     updatePlayState();
     if (appPage === "analyze") renderAnalyzeView();
   }
@@ -1325,42 +1540,16 @@
       setVariantStatus("Grid changed — cannot load this variant.", "error");
       return false;
     }
-    applyParamsFromSnapshot(variant.params);
-    seeds.length = 0;
-    nextSeedId = 1;
-    for (const seed of variant.seeds) {
-      seeds.push({ id: nextSeedId++, x: seed.x, y: seed.y });
-    }
-    selectedSeedId = seeds.length ? seeds[seeds.length - 1].id : null;
-
-    sim.clearAll();
-    const path = currentPathPoints();
-    if (path && path.length) {
-      sim.pathIndex = buildPathIndex(path, sim.stepSize);
-    }
-    syncCircles();
-
-    const nodes = [];
-    for (const rec of variant.nodes) {
-      const parent = rec.parentIndex >= 0 ? nodes[rec.parentIndex] : null;
-      const node = new Node(new Vec2(rec.x, rec.y), parent);
-      node.thickness = rec.thickness;
-      node.order = rec.order;
-      if (parent) parent.children.push(node);
-      nodes.push(node);
-    }
-    sim.nodes = nodes;
-    sim.generation = variant.generation;
-    sim.addAttractors(variant.attractorsLeft);
-
-    playing = false;
-    ui.play.textContent = "Grow";
-    flashes.length = 0;
+    applySimSnapshot(variant.params, variant.seeds, {
+      generation: variant.generation,
+      nodes: variant.nodes,
+      attractorsLeft: variant.attractorsLeft,
+    });
     activeVariantId = variant.id;
-    updateSeedUI();
+    activeSavedIterationId = null;
     setVariantStatus(`Loaded ${variant.label} · gen ${variant.generation}`, "active");
     updateVariantUI();
-    updatePlayState();
+    updateIterationUI();
     return true;
   }
 
@@ -1452,9 +1641,11 @@
   function newAttempt() {
     if (!gridSource) return;
     activeVariantId = null;
+    activeSavedIterationId = null;
     resetSim();
     setVariantStatus("New attempt — adjust seeds, then grow");
     updateVariantUI();
+    updateIterationUI();
   }
 
   function updatePlayState() {
@@ -1465,7 +1656,9 @@
     ui.newAttempt.disabled = !ready || batchRunning;
     ui.generateVariants.disabled = !ready || batchRunning;
     ui.captureVariant.disabled = !ready || batchRunning || !canCaptureVariant();
+    if (ui.saveIteration) ui.saveIteration.disabled = !ready || batchRunning || !canSaveIteration();
     ui.clearVariants.disabled = !variants.some((v) => v.gridToken === gridToken) || batchRunning;
+    updateIterationUI();
     if (!ready) {
       playing = false;
       ui.play.textContent = "Grow";
@@ -1677,8 +1870,8 @@
     }
   }
 
-  function applyViewTransform() {
-    ctx.setTransform(
+  function applyViewTransform(targetCtx = ctx) {
+    targetCtx.setTransform(
       dpr * view.scale,
       0,
       0,
@@ -1686,6 +1879,195 @@
       dpr * view.x,
       dpr * view.y
     );
+  }
+
+  function renderStudioFrame(targetCtx, options = {}) {
+    const transparent = !!options.transparentBackground;
+    if (!transparent) {
+      targetCtx.fillStyle = "#000";
+      targetCtx.fillRect(0, 0, width, height);
+    }
+
+    targetCtx.save();
+    applyViewTransform(targetCtx);
+
+    if (!transparent && !gridSource) {
+      targetCtx.fillStyle = "#dce7f0";
+      for (const star of stars) {
+        targetCtx.globalAlpha = star.a;
+        targetCtx.beginPath();
+        targetCtx.arc(star.x, star.y, star.r, 0, Math.PI * 2);
+        targetCtx.fill();
+      }
+      targetCtx.globalAlpha = 1;
+    }
+
+    const gridAlpha = Number(ui.gridOpacity?.value ?? 90) / 100;
+
+    if (gridSource && imageLayout) {
+      targetCtx.save();
+      targetCtx.globalAlpha = Math.max(0, Math.min(1, gridAlpha));
+      targetCtx.drawImage(
+        gridSource,
+        imageLayout.x,
+        imageLayout.y,
+        imageLayout.w,
+        imageLayout.h
+      );
+      targetCtx.restore();
+    }
+
+    if (!transparent && ui.showVoidMask.checked && gridLayout) {
+      targetCtx.fillStyle = "rgba(4, 6, 10, 0.72)";
+      targetCtx.fillRect(gridLayout.x, gridLayout.y, gridLayout.w, gridLayout.h);
+    }
+
+    if (gridOverlay && imageLayout) {
+      targetCtx.save();
+      targetCtx.globalAlpha = Math.max(0, Math.min(1, gridAlpha * 0.8));
+      targetCtx.drawImage(
+        gridOverlay,
+        imageLayout.x,
+        imageLayout.y,
+        imageLayout.w,
+        imageLayout.h
+      );
+      targetCtx.restore();
+    }
+
+    if (!options.hideSiteBoundary && gridLayout && gridSource) {
+      targetCtx.strokeStyle = "rgba(232, 213, 163, 0.85)";
+      targetCtx.lineWidth = 2;
+      targetCtx.setLineDash([10, 6]);
+      targetCtx.strokeRect(gridLayout.x, gridLayout.y, gridLayout.w, gridLayout.h);
+      targetCtx.setLineDash([]);
+      targetCtx.font = "12px system-ui, sans-serif";
+      targetCtx.fillStyle = "rgba(232, 213, 163, 0.9)";
+      targetCtx.fillText(`${SITE_FEET}' × ${SITE_FEET}'`, gridLayout.x + 6, gridLayout.y + 16);
+    }
+
+    if (gridShapes && gridShapes.rectangles.length) {
+      targetCtx.strokeStyle = "rgba(232, 213, 163, 0.75)";
+      targetCtx.lineWidth = 1.5;
+      targetCtx.setLineDash([7, 5]);
+      for (const rect of gridShapes.rectangles) {
+        targetCtx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+      }
+      targetCtx.setLineDash([]);
+    }
+
+    targetCtx.strokeStyle = "rgba(232, 213, 163, 0.9)";
+    targetCtx.lineWidth = 1.5;
+    const circles = draft ? sim.circles.concat(draft) : sim.circles;
+    for (const circle of circles) {
+      targetCtx.beginPath();
+      targetCtx.arc(circle.x, circle.y, circle.r, 0, Math.PI * 2);
+      targetCtx.stroke();
+    }
+
+    const attractorR = Math.max(0.2, Number(ui.attractorSize?.value ?? 2.5));
+    const palette = displayColors();
+    targetCtx.fillStyle = rgbaFromHex(palette.attractor, 0.82);
+    targetCtx.strokeStyle = rgbaFromHex(palette.attractor, 1);
+    targetCtx.lineWidth = attractorR >= 2 ? 1.1 : 0.7;
+    for (const p of sim.attractors) {
+      targetCtx.beginPath();
+      targetCtx.arc(p.x, p.y, attractorR, 0, Math.PI * 2);
+      targetCtx.fill();
+      targetCtx.stroke();
+    }
+
+    targetCtx.lineCap = "round";
+    targetCtx.lineJoin = "round";
+    const identify = ui.identifyBranches.checked;
+    const visible = {
+      1: ui.showPrimary.checked,
+      2: ui.showSecondary.checked,
+      3: ui.showTertiary.checked,
+    };
+    const widths = { 1: 3.2, 2: 1.8, 3: 1.1 };
+    const drawOrder = identify ? [3, 2, 1] : [0];
+    for (const rank of drawOrder) {
+      if (identify && !visible[rank]) continue;
+      targetCtx.strokeStyle = identify ? palette[rank] : palette.branch;
+      for (const node of sim.nodes) {
+        if (!node.parent) continue;
+        const order = node.order || 1;
+        if (identify && order !== rank) continue;
+        const thick = Math.min(8, 0.8 + Math.log2(node.parent.thickness + 1) * 0.9);
+        targetCtx.lineWidth = identify
+          ? Math.max(widths[order], thick * (order === 1 ? 1 : order === 2 ? 0.65 : 0.4))
+          : thick;
+        targetCtx.beginPath();
+        targetCtx.moveTo(node.parent.pos.x, node.parent.pos.y);
+        targetCtx.lineTo(node.pos.x, node.pos.y);
+        targetCtx.stroke();
+      }
+    }
+
+    targetCtx.fillStyle = "#e8d5a3";
+    for (const seed of seeds) {
+      const selected = seed.id === selectedSeedId;
+      if (selected) {
+        targetCtx.beginPath();
+        targetCtx.strokeStyle = "rgba(232, 213, 163, 0.85)";
+        targetCtx.lineWidth = 2;
+        targetCtx.arc(seed.x, seed.y, 8, 0, Math.PI * 2);
+        targetCtx.stroke();
+      }
+      targetCtx.beginPath();
+      targetCtx.arc(seed.x, seed.y, selected ? 4.2 : 3.4, 0, Math.PI * 2);
+      targetCtx.fill();
+    }
+    for (const node of sim.nodes) {
+      if (node.parent) continue;
+      if (seeds.some((seed) => Math.hypot(seed.x - node.pos.x, seed.y - node.pos.y) < 3)) continue;
+      targetCtx.beginPath();
+      targetCtx.arc(node.pos.x, node.pos.y, 3.4, 0, Math.PI * 2);
+      targetCtx.fill();
+    }
+
+    for (let i = flashes.length - 1; i >= 0; i--) {
+      const f = flashes[i];
+      targetCtx.beginPath();
+      targetCtx.fillStyle = `rgba(232, 213, 163, ${0.35 * f.life})`;
+      targetCtx.arc(f.x, f.y, 4 + (1 - f.life) * 8, 0, Math.PI * 2);
+      targetCtx.fill();
+    }
+
+    targetCtx.restore();
+  }
+
+  function tickFlashes() {
+    for (let i = flashes.length - 1; i >= 0; i--) {
+      flashes[i].life -= 0.045;
+      if (flashes[i].life <= 0) flashes.splice(i, 1);
+    }
+  }
+
+  function exportFileBaseName() {
+    const raw = (gridName || "studio").replace(/\.[^.]+$/, "");
+    const safe = raw.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "");
+    return safe || "studio";
+  }
+
+  function exportStudioPng() {
+    if (!width || !height) return;
+    const off = document.createElement("canvas");
+    off.width = canvas.width;
+    off.height = canvas.height;
+    const ectx = off.getContext("2d");
+    ectx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    renderStudioFrame(ectx, {
+      transparentBackground: ui.exportTransparent.checked,
+      hideSiteBoundary: true,
+    });
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    const suffix = ui.exportTransparent.checked ? "transparent" : "opaque";
+    const link = document.createElement("a");
+    link.download = `${exportFileBaseName()}-d7-${suffix}-${stamp}.png`;
+    link.href = off.toDataURL("image/png");
+    link.click();
   }
 
   function screenToWorld(sx, sy) {
@@ -1724,22 +2106,8 @@
 
   function draw() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, width, height);
-
-    ctx.save();
-    applyViewTransform();
-
-    if (!gridSource) {
-      ctx.fillStyle = "#dce7f0";
-      for (const star of stars) {
-        ctx.globalAlpha = star.a;
-        ctx.beginPath();
-        ctx.arc(star.x, star.y, star.r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-    }
+    renderStudioFrame(ctx, { transparentBackground: false });
+    tickFlashes();
 
     if (debugDrawLogs < 8) {
       debugDrawLogs += 1;
@@ -1761,141 +2129,6 @@
       });
       // #endregion
     }
-
-    const gridAlpha = Number(ui.gridOpacity?.value ?? 90) / 100;
-
-    if (gridSource && imageLayout) {
-      ctx.save();
-      ctx.globalAlpha = Math.max(0, Math.min(1, gridAlpha));
-      ctx.drawImage(
-        gridSource,
-        imageLayout.x,
-        imageLayout.y,
-        imageLayout.w,
-        imageLayout.h
-      );
-      ctx.restore();
-    }
-
-    if (ui.showVoidMask.checked && gridLayout) {
-      ctx.fillStyle = "rgba(4, 6, 10, 0.72)";
-      ctx.fillRect(gridLayout.x, gridLayout.y, gridLayout.w, gridLayout.h);
-    }
-
-    if (gridOverlay && imageLayout) {
-      ctx.save();
-      ctx.globalAlpha = Math.max(0, Math.min(1, gridAlpha * 0.8));
-      ctx.drawImage(
-        gridOverlay,
-        imageLayout.x,
-        imageLayout.y,
-        imageLayout.w,
-        imageLayout.h
-      );
-      ctx.restore();
-    }
-
-    if (gridLayout && gridSource) {
-      ctx.strokeStyle = "rgba(232, 213, 163, 0.85)";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([10, 6]);
-      ctx.strokeRect(gridLayout.x, gridLayout.y, gridLayout.w, gridLayout.h);
-      ctx.setLineDash([]);
-      ctx.font = "12px system-ui, sans-serif";
-      ctx.fillStyle = "rgba(232, 213, 163, 0.9)";
-      ctx.fillText(`${SITE_FEET}' × ${SITE_FEET}'`, gridLayout.x + 6, gridLayout.y + 16);
-    }
-
-    if (gridShapes && gridShapes.rectangles.length) {
-      ctx.strokeStyle = "rgba(232, 213, 163, 0.75)";
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([7, 5]);
-      for (const rect of gridShapes.rectangles) {
-        ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
-      }
-      ctx.setLineDash([]);
-    }
-
-    ctx.strokeStyle = "rgba(232, 213, 163, 0.9)";
-    ctx.lineWidth = 1.5;
-    const circles = draft ? sim.circles.concat(draft) : sim.circles;
-    for (const circle of circles) {
-      ctx.beginPath();
-      ctx.arc(circle.x, circle.y, circle.r, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    const attractorR = Math.max(0.2, Number(ui.attractorSize?.value ?? 2.5));
-    const palette = displayColors();
-    ctx.fillStyle = rgbaFromHex(palette.attractor, 0.82);
-    ctx.strokeStyle = rgbaFromHex(palette.attractor, 1);
-    ctx.lineWidth = attractorR >= 2 ? 1.1 : 0.7;
-    for (const p of sim.attractors) {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, attractorR, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    }
-
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    const identify = ui.identifyBranches.checked;
-    const visible = {
-      1: ui.showPrimary.checked,
-      2: ui.showSecondary.checked,
-      3: ui.showTertiary.checked,
-    };
-    const widths = { 1: 3.2, 2: 1.8, 3: 1.1 };
-    const drawOrder = identify ? [3, 2, 1] : [0];
-    for (const rank of drawOrder) {
-      if (identify && !visible[rank]) continue;
-      ctx.strokeStyle = identify ? palette[rank] : palette.branch;
-      for (const node of sim.nodes) {
-        if (!node.parent) continue;
-        const order = node.order || 1;
-        if (identify && order !== rank) continue;
-        const thick = Math.min(8, 0.8 + Math.log2(node.parent.thickness + 1) * 0.9);
-        ctx.lineWidth = identify ? Math.max(widths[order], thick * (order === 1 ? 1 : order === 2 ? 0.65 : 0.4)) : thick;
-        ctx.beginPath();
-        ctx.moveTo(node.parent.pos.x, node.parent.pos.y);
-        ctx.lineTo(node.pos.x, node.pos.y);
-        ctx.stroke();
-      }
-    }
-
-    ctx.fillStyle = "#e8d5a3";
-    for (const seed of seeds) {
-      const selected = seed.id === selectedSeedId;
-      if (selected) {
-        ctx.beginPath();
-        ctx.strokeStyle = "rgba(232, 213, 163, 0.85)";
-        ctx.lineWidth = 2;
-        ctx.arc(seed.x, seed.y, 8, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      ctx.beginPath();
-      ctx.arc(seed.x, seed.y, selected ? 4.2 : 3.4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    for (const node of sim.nodes) {
-      if (node.parent) continue;
-      if (seeds.some((seed) => Math.hypot(seed.x - node.pos.x, seed.y - node.pos.y) < 3)) continue;
-      ctx.beginPath();
-      ctx.arc(node.pos.x, node.pos.y, 3.4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    for (let i = flashes.length - 1; i >= 0; i--) {
-      const f = flashes[i];
-      ctx.beginPath();
-      ctx.fillStyle = `rgba(232, 213, 163, ${0.35 * f.life})`;
-      ctx.arc(f.x, f.y, 4 + (1 - f.life) * 8, 0, Math.PI * 2);
-      ctx.fill();
-      f.life -= 0.045;
-      if (f.life <= 0) flashes.splice(i, 1);
-    }
-
-    ctx.restore();
 
     ui.genCount.textContent = `${sim.generation} / ${ui.iterations.value}`;
     ui.attrCount.textContent = String(sim.attractors.length);
@@ -1956,6 +2189,9 @@
     ui.branchLegend.classList.toggle("hidden", !ui.identifyBranches.checked);
   });
   ui.captureVariant.addEventListener("click", captureVariant);
+  if (ui.saveIteration) ui.saveIteration.addEventListener("click", saveCurrentIteration);
+  if (ui.clearIterations) ui.clearIterations.addEventListener("click", clearSavedIterationsForGrid);
+  ui.exportPng.addEventListener("click", exportStudioPng);
   ui.newAttempt.addEventListener("click", newAttempt);
   ui.generateVariants.addEventListener("click", () => generateVariantsBatch());
   ui.clearVariants.addEventListener("click", clearVariantsForActiveGrid);
@@ -2145,6 +2381,7 @@
   if (window.ResizeObserver) {
     new ResizeObserver(resize).observe(viewport);
   }
+  loadSavedIterationsFromStorage();
   updateSeedUI();
   initSliderBounds();
   initDisplayColors();
@@ -2152,6 +2389,7 @@
   ui.batchCountVal.textContent = ui.batchCount.value;
   updateGridCycleUI();
   updateVariantUI();
+  updateIterationUI();
   resize();
   loop();
 })();
