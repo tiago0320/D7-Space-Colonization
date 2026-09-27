@@ -541,6 +541,11 @@ label.ctrl.compact select {
   border-radius: 2px;
 }
 
+.analyze-toolbar button {
+  flex: 0 0 auto;
+  width: auto;
+}
+
 .analyze-summary {
   font-family: "IBM Plex Mono", monospace;
   font-size: 12px;
@@ -549,11 +554,21 @@ label.ctrl.compact select {
   margin-bottom: 14px;
 }
 
+.analyze-filter.analyze-size {
+  flex: 1 1 220px;
+  min-width: 200px;
+}
+
+.analyze-filter.analyze-size input[type="range"] {
+  flex: 1;
+  min-width: 120px;
+}
+
 .analyze-composite {
   display: block;
   width: 100%;
   max-width: 100%;
-  height: 220px;
+  height: 480px;
   margin-bottom: 16px;
   background: #000;
   border: 1px solid var(--line);
@@ -566,14 +581,14 @@ label.ctrl.compact select {
 
 .analyze-matrix {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(var(--analyze-card-size, 420px), 1fr));
+  gap: 14px;
   margin-bottom: 20px;
 }
 
 .analyze-card {
   border: 1px solid var(--line);
-  padding: 8px;
+  padding: 10px;
   cursor: pointer;
   background: var(--elevated);
 }
@@ -582,12 +597,14 @@ label.ctrl.compact select {
   border-color: var(--gold);
 }
 
+.analyze-card-preview,
 .analyze-card img {
   width: 100%;
   aspect-ratio: 1;
   object-fit: contain;
   background: #000;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  display: block;
 }
 
 .analyze-card-meta {

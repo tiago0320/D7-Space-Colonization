@@ -107,6 +107,8 @@
     studioHud: document.getElementById("studioHud"),
     analyzeScope: document.getElementById("analyzeScope"),
     analyzeOverlay: document.getElementById("analyzeOverlay"),
+    analyzePreviewSize: document.getElementById("analyzePreviewSize"),
+    analyzePreviewSizeVal: document.getElementById("analyzePreviewSizeVal"),
     analyzeSelectAll: document.getElementById("analyzeSelectAll"),
     analyzeClearSel: document.getElementById("analyzeClearSel"),
     analyzeSummary: document.getElementById("analyzeSummary"),
@@ -353,6 +355,21 @@
     "tertiaryColor",
   ];
 
+  const DEFAULT_DISPLAY_COLORS = {
+    attractorColor: "#9fd6e8",
+    branchColor: "#ff0000",
+    primaryColor: "#C80000",
+    secondaryColor: "#007AC7",
+    tertiaryColor: "#C7C400",
+  };
+
+  const LEGACY_DISPLAY_COLORS = {
+    branchColor: "#9fd6e8",
+    primaryColor: "#e8d5a3",
+    secondaryColor: "#9fd6e8",
+    tertiaryColor: "#d4785a",
+  };
+
   function hexToRgb(hex) {
     const raw = String(hex || "").replace("#", "").trim();
     const full =
@@ -380,11 +397,11 @@
 
   function displayColors() {
     return {
-      attractor: readDisplayColor("attractorColor", "#9fd6e8"),
-      branch: readDisplayColor("branchColor", "#9fd6e8"),
-      1: readDisplayColor("primaryColor", "#e8d5a3"),
-      2: readDisplayColor("secondaryColor", "#9fd6e8"),
-      3: readDisplayColor("tertiaryColor", "#d4785a"),
+      attractor: readDisplayColor("attractorColor", DEFAULT_DISPLAY_COLORS.attractorColor),
+      branch: readDisplayColor("branchColor", DEFAULT_DISPLAY_COLORS.branchColor),
+      1: readDisplayColor("primaryColor", DEFAULT_DISPLAY_COLORS.primaryColor),
+      2: readDisplayColor("secondaryColor", DEFAULT_DISPLAY_COLORS.secondaryColor),
+      3: readDisplayColor("tertiaryColor", DEFAULT_DISPLAY_COLORS.tertiaryColor),
     };
   }
 
@@ -409,6 +426,16 @@
       stored = {};
     }
     for (const id of DISPLAY_COLOR_IDS) {
+      if (id === "branchColor" && ui.branchColor) {
+        ui.branchColor.value = DEFAULT_DISPLAY_COLORS.branchColor;
+        continue;
+      }
+      const storedHex = String(stored[id] || "").toLowerCase();
+      const legacy = String(LEGACY_DISPLAY_COLORS[id] || "").toLowerCase();
+      if (legacy && storedHex === legacy && ui[id] && DEFAULT_DISPLAY_COLORS[id]) {
+        ui[id].value = DEFAULT_DISPLAY_COLORS[id];
+        continue;
+      }
       if (ui[id] && /^#[0-9a-fA-F]{6}$/.test(stored[id] || "")) ui[id].value = stored[id];
     }
     const thickness = Number(stored.branchThickness);
@@ -1145,6 +1172,7 @@
     persistSavedIterations();
     updateIterationUI();
     updateVariantUI();
+    if (appPage === "analyze") renderAnalyzeView();
     return record;
   }
 
@@ -1204,6 +1232,7 @@
     );
     updateIterationUI();
     updatePlayState();
+    if (appPage === "analyze") renderAnalyzeView();
   }
 
   function clearSavedIterationsForGrid() {
@@ -1215,6 +1244,7 @@
     setIterationStatus("Cleared saved iterations for this grid");
     updateIterationUI();
     updatePlayState();
+    if (appPage === "analyze") renderAnalyzeView();
   }
 
   function updateIterationUI() {
@@ -1275,16 +1305,7 @@
     };
   }
 
-  function makeVariantThumb(flatNodes) {
-    const thumbSize = 120;
-    const c = document.createElement("canvas");
-    c.width = thumbSize;
-    c.height = thumbSize;
-    const g = c.getContext("2d");
-    g.fillStyle = "#000";
-    g.fillRect(0, 0, thumbSize, thumbSize);
-    if (!flatNodes.length) return c.toDataURL("image/png");
-
+  function fitNodesToBox(flatNodes, size, pad) {
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
@@ -1295,27 +1316,49 @@
       if (node.y < minY) minY = node.y;
       if (node.y > maxY) maxY = node.y;
     }
-    const pad = 10;
+    if (!Number.isFinite(minX)) return null;
     const w = Math.max(1, maxX - minX);
     const h = Math.max(1, maxY - minY);
-    const scale = Math.min((thumbSize - pad * 2) / w, (thumbSize - pad * 2) / h);
-    const ox = (thumbSize - w * scale) / 2 - minX * scale;
-    const oy = (thumbSize - h * scale) / 2 - minY * scale;
+    const scale = Math.min((size - pad * 2) / w, (size - pad * 2) / h);
+    return {
+      scale,
+      ox: (size - w * scale) / 2 - minX * scale,
+      oy: (size - h * scale) / 2 - minY * scale,
+    };
+  }
 
-    g.lineWidth = 1.2;
-    g.lineCap = "round";
+  function drawNodesPreview(g, flatNodes, size, options = {}) {
+    g.fillStyle = "#000";
+    g.fillRect(0, 0, size, size);
+    if (!flatNodes.length) return;
+    const fit = fitNodesToBox(flatNodes, size, options.pad ?? 16);
+    if (!fit) return;
+    const { scale, ox, oy } = fit;
     const palette = displayColors();
     const identify = ui.identifyBranches.checked;
+    g.lineCap = "round";
+    g.lineJoin = "round";
     for (const node of flatNodes) {
       if (node.parentIndex < 0) continue;
       const parent = flatNodes[node.parentIndex];
+      if (!parent) continue;
       const order = node.order || 1;
+      const parentThickness = parent.thickness != null ? parent.thickness : 1;
       g.strokeStyle = identify ? palette[order] || palette.branch : palette.branch;
+      g.lineWidth = Math.max(0.6, branchStrokeWidth(parentThickness, order, identify) * (options.widthScale ?? 0.55));
       g.beginPath();
       g.moveTo(parent.x * scale + ox, parent.y * scale + oy);
       g.lineTo(node.x * scale + ox, node.y * scale + oy);
       g.stroke();
     }
+  }
+
+  function makeVariantThumb(flatNodes) {
+    const thumbSize = 120;
+    const c = document.createElement("canvas");
+    c.width = thumbSize;
+    c.height = thumbSize;
+    drawNodesPreview(c.getContext("2d"), flatNodes, thumbSize, { pad: 10, widthScale: 0.4 });
     return c.toDataURL("image/png");
   }
 
@@ -1356,13 +1399,37 @@
     };
   }
 
-  function getAnalyzeVariantList() {
+  function getAnalyzeIterationList() {
     const scope = ui.analyzeScope.value;
-    return variants.filter((variant) => {
-      if (!gridEntryExists(variant.gridToken)) return false;
-      if (scope === "current") return variant.gridToken === gridToken;
-      return true;
-    });
+    return savedIterations
+      .filter((item) => {
+        if (!gridEntryExists(item.gridToken)) return false;
+        if (scope === "current") return item.gridToken === gridToken;
+        return true;
+      })
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  function analyzeIterKey(record) {
+    return `iter-${record.id}`;
+  }
+
+  function getAnalyzePreviewSize() {
+    return Math.max(220, Math.min(720, Number(ui.analyzePreviewSize?.value ?? 420)));
+  }
+
+  function applyAnalyzePreviewLayout() {
+    const size = getAnalyzePreviewSize();
+    if (ui.analyzeView) ui.analyzeView.style.setProperty("--analyze-card-size", `${size}px`);
+    if (ui.analyzePreviewSizeVal) ui.analyzePreviewSizeVal.textContent = `${size}px`;
+    return size;
+  }
+
+  function openIterationInStudio(record) {
+    setAppPage("studio");
+    const entry = gridLibrary.find((item) => item.id === record.gridToken);
+    if (entry && entry.id !== activeGridId) activateGrid(entry);
+    restoreSavedIteration(record);
   }
 
   function setAppPage(page) {
@@ -1390,19 +1457,23 @@
 
   function drawAnalyzeComposite(list) {
     const show = ui.analyzeOverlay.checked;
-    const selected = list.filter((variant) => analyzeSelected.has(variant.id));
+    const selected = list.filter((item) => analyzeSelected.has(analyzeIterKey(item)));
     ui.analyzeComposite.classList.toggle("hidden-canvas", !show || !selected.length);
     if (!show || !selected.length) return;
 
     const canvas = ui.analyzeComposite;
     const rect = canvas.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(rect.width));
-    const h = Math.max(1, Math.floor(canvas.clientHeight || 220));
+    const cssW = Math.max(1, Math.floor(rect.width));
+    const cssH = Math.max(1, Math.floor(rect.height || 480));
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.floor(cssW * pixelRatio);
+    const h = Math.floor(cssH * pixelRatio);
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w;
       canvas.height = h;
     }
     const g = analyzeCompositeCtx;
+    g.setTransform(1, 0, 0, 1, 0, 0);
     g.fillStyle = "#000";
     g.fillRect(0, 0, w, h);
 
@@ -1410,8 +1481,8 @@
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
-    for (const variant of selected) {
-      for (const node of variant.nodes) {
+    for (const item of selected) {
+      for (const node of item.nodes) {
         if (node.x < minX) minX = node.x;
         if (node.x > maxX) maxX = node.x;
         if (node.y < minY) minY = node.y;
@@ -1420,22 +1491,23 @@
     }
     if (!Number.isFinite(minX)) return;
 
-    const pad = 24;
+    const pad = 36 * pixelRatio;
     const bw = Math.max(1, maxX - minX);
     const bh = Math.max(1, maxY - minY);
     const scale = Math.min((w - pad * 2) / bw, (h - pad * 2) / bh);
     const ox = (w - bw * scale) / 2 - minX * scale;
     const oy = (h - bh * scale) / 2 - minY * scale;
-    const colors = ["#e8d5a3", "#9fd6e8", "#d4785a", "#a8e6cf", "#c9a0dc", "#f4a261"];
+    const colors = ["#ff0000", "#007AC7", "#C7C400", "#C80000", "#a8e6cf", "#c9a0dc"];
 
-    selected.forEach((variant, index) => {
+    selected.forEach((item, index) => {
       g.strokeStyle = colors[index % colors.length];
-      g.globalAlpha = 0.85;
-      g.lineWidth = 1.4;
+      g.globalAlpha = 0.82;
+      g.lineWidth = Math.max(1.2, 1.8 * pixelRatio);
       g.lineCap = "round";
-      for (const node of variant.nodes) {
+      for (const node of item.nodes) {
         if (node.parentIndex < 0) continue;
-        const parent = variant.nodes[node.parentIndex];
+        const parent = item.nodes[node.parentIndex];
+        if (!parent) continue;
         g.beginPath();
         g.moveTo(parent.x * scale + ox, parent.y * scale + oy);
         g.lineTo(node.x * scale + ox, node.y * scale + oy);
@@ -1446,14 +1518,17 @@
   }
 
   function renderAnalyzeView() {
-    const list = getAnalyzeVariantList();
+    const list = getAnalyzeIterationList();
+    const validKeys = new Set(list.map(analyzeIterKey));
     for (const id of [...analyzeSelected]) {
-      if (!list.some((variant) => variant.id === id)) analyzeSelected.delete(id);
+      if (!validKeys.has(id)) analyzeSelected.delete(id);
     }
+
+    const previewSize = applyAnalyzePreviewLayout();
 
     if (!list.length) {
       ui.analyzeSummary.textContent =
-        "No captured variants yet. Grow in Studio, capture or batch-generate, then return here.";
+        "No saved iterations yet. Grow in Studio, Save PNG snapshot, then return here.";
       ui.analyzeMatrix.innerHTML = "";
       ui.analyzeTableBody.innerHTML = "";
       ui.analyzeComposite.classList.add("hidden-canvas");
@@ -1463,68 +1538,69 @@
     let totalBranches = 0;
     let totalGen = 0;
     const gridSet = new Set();
-    for (const variant of list) {
-      const stats = variantMetrics(variant);
+    for (const record of list) {
+      const stats = variantMetrics(record);
       totalBranches += stats.branches;
-      totalGen += variant.generation;
-      gridSet.add(variant.gridName || gridNameForToken(variant.gridToken));
+      totalGen += record.generation;
+      gridSet.add(record.gridName || gridNameForToken(record.gridToken));
     }
     const avgGen = (totalGen / list.length).toFixed(1);
     const avgBranches = (totalBranches / list.length).toFixed(0);
-    ui.analyzeSummary.textContent = `${list.length} variant${list.length === 1 ? "" : "s"} · ${gridSet.size} grid${gridSet.size === 1 ? "" : "s"} · avg gen ${avgGen} · avg branches ${avgBranches}`;
+    ui.analyzeSummary.textContent = `${list.length} iteration${list.length === 1 ? "" : "s"} · ${gridSet.size} grid${gridSet.size === 1 ? "" : "s"} · avg gen ${avgGen} · avg branches ${avgBranches}`;
+
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const drawSize = Math.round(previewSize * pixelRatio);
 
     ui.analyzeMatrix.innerHTML = "";
-    for (const variant of list) {
-      const stats = variantMetrics(variant);
+    for (const record of list) {
+      const stats = variantMetrics(record);
+      const key = analyzeIterKey(record);
       const card = document.createElement("article");
-      card.className = `analyze-card${analyzeSelected.has(variant.id) ? " selected" : ""}`;
-      const gname = variant.gridName || gridNameForToken(variant.gridToken);
-      card.innerHTML = `
-        <img src="${variant.thumbDataUrl}" alt="" />
-        <div class="analyze-card-meta">
-          <strong>${variant.label}</strong>
-          ${gname}<br />
-          gen ${variant.generation} · ${stats.branches} branches
-        </div>`;
-      card.addEventListener("click", () => toggleAnalyzeSelection(variant.id));
-      card.addEventListener("dblclick", () => {
-        setAppPage("studio");
-        const entry = gridLibrary.find((item) => item.id === variant.gridToken);
-        if (entry) activateGrid(entry);
-        restoreVariant(variant);
+      card.className = `analyze-card${analyzeSelected.has(key) ? " selected" : ""}`;
+      const gname = record.gridName || gridNameForToken(record.gridToken);
+      const preview = document.createElement("canvas");
+      preview.width = drawSize;
+      preview.height = drawSize;
+      preview.className = "analyze-card-preview";
+      drawNodesPreview(preview.getContext("2d"), record.nodes, drawSize, {
+        pad: 18 * pixelRatio,
+        widthScale: 0.7,
       });
+      const meta = document.createElement("div");
+      meta.className = "analyze-card-meta";
+      meta.innerHTML = `<strong>${record.label}</strong>${gname}<br />gen ${record.generation} · ${stats.branches} branches`;
+      card.appendChild(preview);
+      card.appendChild(meta);
+      card.addEventListener("click", () => toggleAnalyzeSelection(key));
+      card.addEventListener("dblclick", () => openIterationInStudio(record));
       ui.analyzeMatrix.appendChild(card);
     }
 
     ui.analyzeTableBody.innerHTML = "";
-    for (const variant of list) {
-      const stats = variantMetrics(variant);
-      const gname = variant.gridName || gridNameForToken(variant.gridToken);
+    for (const record of list) {
+      const stats = variantMetrics(record);
+      const gname = record.gridName || gridNameForToken(record.gridToken);
+      const key = analyzeIterKey(record);
       const row = document.createElement("tr");
-      const checked = analyzeSelected.has(variant.id);
+      const checked = analyzeSelected.has(key);
       row.innerHTML = `
-        <td><input type="checkbox" data-variant-id="${variant.id}" ${checked ? "checked" : ""} /></td>
-        <td>${variant.label}</td>
+        <td><input type="checkbox" data-iter-key="${key}" ${checked ? "checked" : ""} /></td>
+        <td>${record.label}</td>
         <td>${gname}</td>
-        <td>${variant.generation}</td>
+        <td>${record.generation}</td>
         <td>${stats.branches}</td>
         <td>${stats.nodes}</td>
         <td>${stats.attractors}</td>`;
       const box = row.querySelector("input");
       box.addEventListener("change", () => {
-        if (box.checked) analyzeSelected.add(variant.id);
-        else analyzeSelected.delete(variant.id);
+        if (box.checked) analyzeSelected.add(key);
+        else analyzeSelected.delete(key);
         renderAnalyzeView();
       });
       const loadBtn = document.createElement("button");
       loadBtn.type = "button";
       loadBtn.textContent = "Studio";
-      loadBtn.addEventListener("click", () => {
-        setAppPage("studio");
-        const entry = gridLibrary.find((item) => item.id === variant.gridToken);
-        if (entry) activateGrid(entry);
-        restoreVariant(variant);
-      });
+      loadBtn.addEventListener("click", () => openIterationInStudio(record));
       const cell = document.createElement("td");
       cell.appendChild(loadBtn);
       row.appendChild(cell);
@@ -2849,8 +2925,11 @@
   ui.openAnalyze.addEventListener("click", () => setAppPage("analyze"));
   ui.analyzeScope.addEventListener("change", renderAnalyzeView);
   ui.analyzeOverlay.addEventListener("change", renderAnalyzeView);
+  if (ui.analyzePreviewSize) {
+    ui.analyzePreviewSize.addEventListener("input", renderAnalyzeView);
+  }
   ui.analyzeSelectAll.addEventListener("click", () => {
-    for (const variant of getAnalyzeVariantList()) analyzeSelected.add(variant.id);
+    for (const record of getAnalyzeIterationList()) analyzeSelected.add(analyzeIterKey(record));
     renderAnalyzeView();
   });
   ui.analyzeClearSel.addEventListener("click", () => {

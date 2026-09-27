@@ -137,7 +137,7 @@
         </label>
         <label class="ctrl color-ctrl" title="Stroke color when rank identification is off.">
           Branch color
-          <input id="branchColor" type="color" value="#9fd6e8" aria-label="Branch color" />
+          <input id="branchColor" type="color" value="#ff0000" aria-label="Branch color" />
         </label>
         <label class="check">
           <input id="identifyBranches" type="checkbox" />
@@ -146,17 +146,17 @@
         <div id="branchLegend" class="legend hidden">
           <div class="legend-item">
             <input id="showPrimary" type="checkbox" checked />
-            <input id="primaryColor" type="color" value="#e8d5a3" aria-label="Primary branch color" />
+            <input id="primaryColor" type="color" value="#C80000" aria-label="Primary branch color" />
             <label for="showPrimary">Primary</label>
           </div>
           <div class="legend-item">
             <input id="showSecondary" type="checkbox" checked />
-            <input id="secondaryColor" type="color" value="#9fd6e8" aria-label="Secondary branch color" />
+            <input id="secondaryColor" type="color" value="#007AC7" aria-label="Secondary branch color" />
             <label for="showSecondary">Secondary</label>
           </div>
           <div class="legend-item">
             <input id="showTertiary" type="checkbox" checked />
-            <input id="tertiaryColor" type="color" value="#d4785a" aria-label="Tertiary branch color" />
+            <input id="tertiaryColor" type="color" value="#C7C400" aria-label="Tertiary branch color" />
             <label for="showTertiary">Tertiary</label>
           </div>
         </div>
@@ -230,7 +230,7 @@
       <p class="view-hint">Scroll to zoom · Middle-drag to pan</p>
     </div>
 
-      <div id="analyzeView" class="analyze-view hidden" aria-label="Variant analysis">
+      <div id="analyzeView" class="analyze-view hidden" aria-label="Iteration analysis">
         <div class="analyze-toolbar">
           <label class="analyze-filter">
             <span>Show</span>
@@ -243,6 +243,11 @@
             <input id="analyzeOverlay" type="checkbox" />
             Overlay selected
           </label>
+          <label class="analyze-filter analyze-size">
+            <span>Preview size</span>
+            <span class="value" id="analyzePreviewSizeVal">420px</span>
+            <input id="analyzePreviewSize" type="range" min="220" max="720" step="20" value="420" />
+          </label>
           <button id="analyzeSelectAll" type="button" class="ghost">Select all</button>
           <button id="analyzeClearSel" type="button" class="ghost">Clear selection</button>
         </div>
@@ -253,7 +258,7 @@
           <thead>
             <tr>
               <th></th>
-              <th>Variant</th>
+              <th>Iteration</th>
               <th>Grid</th>
               <th>Gen</th>
               <th>Branches</th>
