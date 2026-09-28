@@ -9,6 +9,8 @@
     sampleCirclePerimeter,
     sampleRectPerimeter,
     parseSvgGridShapes,
+    hitTestObstacles,
+    obstacleAabb,
   } = window.SpaceColonization;
 
   const canvas = document.getElementById("stage");
@@ -45,23 +47,40 @@
     influence: document.getElementById("influence"),
     kill: document.getElementById("kill"),
     stepSize: document.getElementById("stepSize"),
+    growthDirection: document.getElementById("growthDirection"),
     iterations: document.getElementById("iterations"),
-    importGrid: document.getElementById("importGrid"),
+    gridSlots: document.getElementById("gridSlots"),
+    replaceGrid: document.getElementById("replaceGrid"),
     clearGrid: document.getElementById("clearGrid"),
-    prevGrid: document.getElementById("prevGrid"),
-    nextGrid: document.getElementById("nextGrid"),
     gridCycleStatus: document.getElementById("gridCycleStatus"),
     gridFile: document.getElementById("gridFile"),
     gridStatus: document.getElementById("gridStatus"),
     seedMode: document.getElementById("seedMode"),
+    selectRoot: document.getElementById("selectRoot"),
+    drawObstacle: document.getElementById("drawObstacle"),
+    deleteSelectedRoot: document.getElementById("deleteSelectedRoot"),
     clearSeeds: document.getElementById("clearSeeds"),
     seedStatus: document.getElementById("seedStatus"),
     seedList: document.getElementById("seedList"),
     seedCount: document.getElementById("seedCount"),
+    obstacleRect: document.getElementById("obstacleRect"),
+    obstacleCircle: document.getElementById("obstacleCircle"),
+    obstaclePolygon: document.getElementById("obstaclePolygon"),
+    obstacleHard: document.getElementById("obstacleHard"),
+    obstacleRepel: document.getElementById("obstacleRepel"),
+    repulsionDistance: document.getElementById("repulsionDistance"),
+    repulsionDistanceVal: document.getElementById("repulsionDistanceVal"),
+    repulsionStrength: document.getElementById("repulsionStrength"),
+    repulsionStrengthVal: document.getElementById("repulsionStrengthVal"),
+    deleteSelectedObstacle: document.getElementById("deleteSelectedObstacle"),
+    clearObstacles: document.getElementById("clearObstacles"),
+    obstacleStatus: document.getElementById("obstacleStatus"),
+    obstacleList: document.getElementById("obstacleList"),
     countVal: document.getElementById("countVal"),
     influenceVal: document.getElementById("influenceVal"),
     killVal: document.getElementById("killVal"),
     stepVal: document.getElementById("stepVal"),
+    growthDirectionVal: document.getElementById("growthDirectionVal"),
     iterVal: document.getElementById("iterVal"),
     gridOpacity: document.getElementById("gridOpacity"),
     gridOpacityVal: document.getElementById("gridOpacityVal"),
@@ -77,11 +96,15 @@
     genCount: document.getElementById("genCount"),
     attrCount: document.getElementById("attrCount"),
     identifyBranches: document.getElementById("identifyBranches"),
+    mergeBranches: document.getElementById("mergeBranches"),
+    mergeDistance: document.getElementById("mergeDistance"),
+    mergeDistanceVal: document.getElementById("mergeDistanceVal"),
     branchLegend: document.getElementById("branchLegend"),
     showPrimary: document.getElementById("showPrimary"),
     showSecondary: document.getElementById("showSecondary"),
     showTertiary: document.getElementById("showTertiary"),
     showVoidMask: document.getElementById("showVoidMask"),
+    showInfluenceRadius: document.getElementById("showInfluenceRadius"),
     exportTransparent: document.getElementById("exportTransparent"),
     importSnapshot: document.getElementById("importSnapshot"),
     importSnapshotFile: document.getElementById("importSnapshotFile"),
@@ -159,18 +182,58 @@
   let activeGridId = null;
   let nextGridId = 1;
   const gridLibrary = [];
+  const GRID_SLOT_COUNT = 3;
+  const GRID_IDB_NAME = "d7-space-colonization";
+  const GRID_IDB_STORE = "grid-slots";
+  const GRID_IDB_VERSION = 1;
+  const ACTIVE_SLOT_STORAGE_KEY = "d7-active-grid-slot";
+
+  function createEmptyGridSlots(count = GRID_SLOT_COUNT) {
+    return Array.from({ length: count }, () => ({ entry: null }));
+  }
+
+  let gridSlots = createEmptyGridSlots();
+  let activeSlotIndex = 0;
+  let pendingSlotIndex = 0;
+  let restoringGridSlots = false;
+  let pendingGridRestore = false;
   const seeds = [];
   let nextSeedId = 1;
   let selectedSeedId = null;
-  let seedPlacementMode = false;
-  const placedCircles = [];
-  let draft = null;
+  let interactionMode = "select";
+  const obstacles = [];
+  let nextObstacleId = 1;
+  let selectedObstacleId = null;
+  let obstacleTool = "circle";
+  let obstacleDraft = null;
   const view = { scale: 1, x: 0, y: 0 };
 
   function findRootNode(seed) {
     return sim.nodes.find(
       (node) => !node.parent && Math.hypot(node.pos.x - seed.x, node.pos.y - seed.y) < 3
     );
+  }
+
+  function pruneRootNetwork(seed) {
+    const node = findRootNode(seed);
+    if (!node) return;
+    const removeSet = new Set();
+    const collect = (item) => {
+      removeSet.add(item);
+      for (const child of item.children) collect(child);
+    };
+    collect(node);
+    sim.nodes = sim.nodes.filter((item) => !removeSet.has(item));
+    for (const item of sim.nodes) {
+      if (item.children && item.children.length) {
+        item.children = item.children.filter((child) => !removeSet.has(child));
+      }
+    }
+    if (sim.dropMergeLinksFor) sim.dropMergeLinksFor(removeSet);
+    if (!sim.nodes.length) {
+      sim.lastInfluences = [];
+      stopPlaying();
+    }
   }
 
   function moveSubtree(node, dx, dy) {
@@ -198,23 +261,34 @@
     return seed;
   }
 
+  function selectSeed(id) {
+    if (selectedSeedId === id) return;
+    selectedSeedId = id;
+    selectedObstacleId = null;
+    updateSeedUI();
+    updateObstacleUI();
+  }
+
+  function deselectSeed() {
+    if (selectedSeedId == null) return;
+    selectedSeedId = null;
+    updateSeedUI();
+  }
+
   function removeSeed(id) {
     const index = seeds.findIndex((seed) => seed.id === id);
     if (index < 0) return;
     const seed = seeds[index];
-    const node = findRootNode(seed);
-    if (node) {
-      const removeSet = new Set();
-      const collect = (item) => {
-        removeSet.add(item);
-        for (const child of item.children) collect(child);
-      };
-      collect(node);
-      sim.nodes = sim.nodes.filter((item) => !removeSet.has(item));
-    }
+    pruneRootNetwork(seed);
     seeds.splice(index, 1);
-    if (selectedSeedId === id) selectedSeedId = seeds.length ? seeds[seeds.length - 1].id : null;
+    if (selectedSeedId === id) selectedSeedId = null;
     updateSeedUI();
+    updatePlayState();
+  }
+
+  function deleteSelectedRoot() {
+    if (selectedSeedId == null) return;
+    removeSeed(selectedSeedId);
   }
 
   function moveSeed(id, x, y) {
@@ -233,11 +307,21 @@
   function clearSeeds() {
     seeds.length = 0;
     selectedSeedId = null;
-    sim.nodes = sim.nodes.filter((node) => node.parent);
+    sim.clearStructure();
+    stopPlaying();
     updateSeedUI();
+    updatePlayState();
   }
 
-  function hitSeed(point, radius = 14) {
+  function isTypingTarget(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (el.isContentEditable) return true;
+    return !!(el.closest && el.closest("input, textarea, select, [contenteditable='true']"));
+  }
+
+  function hitSeed(point, radius = 16) {
     for (let i = seeds.length - 1; i >= 0; i--) {
       const seed = seeds[i];
       if (Math.hypot(seed.x - point.x, seed.y - point.y) <= radius) return seed;
@@ -248,43 +332,287 @@
   function updateSeedUI() {
     ui.seedCount.textContent = String(seeds.length);
     ui.seedList.innerHTML = "";
+    const hasSelection = selectedSeedId != null && seeds.some((seed) => seed.id === selectedSeedId);
+    if (!hasSelection) selectedSeedId = null;
+    if (ui.deleteSelectedRoot) {
+      ui.deleteSelectedRoot.disabled = selectedSeedId == null || batchRunning;
+    }
     if (!seeds.length) {
-      ui.seedStatus.textContent = seedPlacementMode
-        ? "Click the canvas to place a seed"
-        : "0 seeds · turn on Place seed to add";
+      ui.seedStatus.textContent =
+        interactionMode === "add"
+          ? "Click the canvas to place a root"
+          : "0 roots · choose Add Root to place";
       ui.clearSeeds.disabled = true;
       return;
     }
-    ui.clearSeeds.disabled = false;
+    ui.clearSeeds.disabled = batchRunning;
     const selected = seeds.find((seed) => seed.id === selectedSeedId);
-    ui.seedStatus.textContent = selected
-      ? `Seed ${selected.id} · drag to move · Del to remove`
-      : `${seeds.length} seed${seeds.length === 1 ? "" : "s"} · click one to select`;
+    if (selected) {
+      ui.seedStatus.textContent =
+        interactionMode === "add"
+          ? `Root ${selected.id} selected · click canvas to add another`
+          : `Root ${selected.id} selected · Esc to deselect · Del to remove`;
+    } else if (interactionMode === "add") {
+      ui.seedStatus.textContent = `${seeds.length} root${seeds.length === 1 ? "" : "s"} · click empty canvas to add`;
+    } else {
+      ui.seedStatus.textContent = `${seeds.length} root${seeds.length === 1 ? "" : "s"} · click one to select`;
+    }
     for (const seed of seeds) {
       const item = document.createElement("li");
       item.className = seed.id === selectedSeedId ? "selected" : "";
-      item.innerHTML = `<span>S${seed.id} · ${Math.round(seed.x)}, ${Math.round(seed.y)}</span>`;
+      item.innerHTML = `<span>R${seed.id} · ${Math.round(seed.x)}, ${Math.round(seed.y)}</span>`;
       const remove = document.createElement("button");
       remove.type = "button";
       remove.textContent = "×";
+      remove.title = "Delete this root";
       remove.addEventListener("click", (event) => {
         event.stopPropagation();
         removeSeed(seed.id);
       });
       item.addEventListener("click", () => {
-        selectedSeedId = seed.id;
-        updateSeedUI();
+        if (selectedSeedId === seed.id) deselectSeed();
+        else selectSeed(seed.id);
       });
       item.appendChild(remove);
       ui.seedList.appendChild(item);
     }
   }
 
-  function setSeedPlacementMode(on) {
-    seedPlacementMode = on;
-    ui.seedMode.classList.toggle("active", on);
-    canvas.classList.toggle("seed-mode", on);
+  function setInteractionMode(mode) {
+    interactionMode = mode === "add" || mode === "draw" ? mode : "select";
+    if (interactionMode !== "draw") obstacleDraft = null;
+    if (interactionMode === "draw") selectedSeedId = null;
+    if (interactionMode === "add") selectedObstacleId = null;
+    ui.seedMode.classList.toggle("active", interactionMode === "add");
+    if (ui.selectRoot) ui.selectRoot.classList.toggle("active", interactionMode === "select");
+    if (ui.drawObstacle) ui.drawObstacle.classList.toggle("active", interactionMode === "draw");
+    canvas.classList.toggle("seed-mode", interactionMode === "add");
+    canvas.classList.toggle("select-mode", interactionMode === "select");
+    canvas.classList.toggle("draw-mode", interactionMode === "draw");
     updateSeedUI();
+    updateObstacleUI();
+  }
+
+  function setSeedInteractionMode(mode) {
+    setInteractionMode(mode === "add" ? "add" : "select");
+  }
+
+  function setSeedPlacementMode(on) {
+    setInteractionMode(on ? "add" : "select");
+  }
+
+  function setObstacleTool(tool) {
+    obstacleTool = tool === "rect" || tool === "polygon" ? tool : "circle";
+    if (ui.obstacleRect) ui.obstacleRect.classList.toggle("active", obstacleTool === "rect");
+    if (ui.obstacleCircle) ui.obstacleCircle.classList.toggle("active", obstacleTool === "circle");
+    if (ui.obstaclePolygon) ui.obstaclePolygon.classList.toggle("active", obstacleTool === "polygon");
+    obstacleDraft = null;
+    setInteractionMode("draw");
+  }
+
+  function setObstacleBehavior(mode) {
+    const next = mode === "repel" ? "repel" : "hard";
+    if (ui.obstacleHard) ui.obstacleHard.classList.toggle("active", next === "hard");
+    if (ui.obstacleRepel) ui.obstacleRepel.classList.toggle("active", next === "repel");
+    if (sim.obstacleMode !== next) {
+      sim.obstacleMode = next;
+      onLiveParamChange("obstacleMode");
+    } else {
+      applyParams();
+    }
+    updateObstacleUI();
+  }
+
+  function cloneObstacle(obs) {
+    if (!obs) return null;
+    if (obs.type === "polygon") {
+      return {
+        id: obs.id,
+        type: "polygon",
+        points: (obs.points || []).map((p) => ({ x: p.x, y: p.y })),
+      };
+    }
+    if (obs.type === "rect") {
+      return { id: obs.id, type: "rect", x: obs.x, y: obs.y, w: obs.w, h: obs.h };
+    }
+    return { id: obs.id, type: "circle", x: obs.x, y: obs.y, r: obs.r };
+  }
+
+  function serializeObstacles() {
+    return obstacles.map((obs) => cloneObstacle(obs));
+  }
+
+  function restoreObstacles(list) {
+    obstacles.length = 0;
+    selectedObstacleId = null;
+    obstacleDraft = null;
+    let maxId = 0;
+    for (const rec of list || []) {
+      const cloned = cloneObstacle(rec);
+      if (!cloned) continue;
+      if (cloned.id == null) cloned.id = ++maxId;
+      maxId = Math.max(maxId, cloned.id);
+      obstacles.push(cloned);
+    }
+    nextObstacleId = maxId + 1;
+    syncObstacles();
+    updateObstacleUI();
+  }
+
+  function syncObstacles() {
+    sim.circles = [];
+    if (gridShapes && gridShapes.circles.length) {
+      sim.circles.push(...gridShapes.circles.map((circle) => ({ ...circle })));
+    }
+    sim.obstacles = obstacles.map((obs) => cloneObstacle(obs));
+  }
+
+  function syncCircles() {
+    syncObstacles();
+  }
+
+  function obstacleLabel(obs) {
+    if (obs.type === "rect") return `Rect ${obs.id}`;
+    if (obs.type === "polygon") return `Poly ${obs.id}`;
+    return `Circle ${obs.id}`;
+  }
+
+  function selectObstacle(id) {
+    selectedObstacleId = id;
+    selectedSeedId = null;
+    updateSeedUI();
+    updateObstacleUI();
+  }
+
+  function deselectObstacle() {
+    if (selectedObstacleId == null) return;
+    selectedObstacleId = null;
+    updateObstacleUI();
+  }
+
+  function addObstacle(obs) {
+    const item = cloneObstacle(obs);
+    item.id = nextObstacleId++;
+    obstacles.push(item);
+    selectedObstacleId = item.id;
+    selectedSeedId = null;
+    obstacleDraft = null;
+    syncObstacles();
+    updateObstacleUI();
+    updateSeedUI();
+    if (sim.generation > 0) replayGrowthFromSeeds();
+    return item;
+  }
+
+  function deleteSelectedObstacle() {
+    if (selectedObstacleId == null) return;
+    const index = obstacles.findIndex((obs) => obs.id === selectedObstacleId);
+    if (index < 0) return;
+    obstacles.splice(index, 1);
+    selectedObstacleId = null;
+    syncObstacles();
+    updateObstacleUI();
+    if (sim.generation > 0) replayGrowthFromSeeds();
+  }
+
+  function clearObstacles() {
+    if (!obstacles.length) return;
+    obstacles.length = 0;
+    selectedObstacleId = null;
+    obstacleDraft = null;
+    syncObstacles();
+    updateObstacleUI();
+    if (sim.generation > 0) replayGrowthFromSeeds();
+  }
+
+  function moveObstacleBy(obs, dx, dy) {
+    if (obs.type === "polygon") {
+      for (const p of obs.points) {
+        p.x += dx;
+        p.y += dy;
+      }
+      return;
+    }
+    obs.x += dx;
+    obs.y += dy;
+  }
+
+  function updateObstacleUI() {
+    const mode = sim.obstacleMode === "repel" ? "repel" : "hard";
+    if (ui.obstacleHard) ui.obstacleHard.classList.toggle("active", mode === "hard");
+    if (ui.obstacleRepel) ui.obstacleRepel.classList.toggle("active", mode === "repel");
+    if (ui.obstacleRect) ui.obstacleRect.classList.toggle("active", obstacleTool === "rect");
+    if (ui.obstacleCircle) ui.obstacleCircle.classList.toggle("active", obstacleTool === "circle");
+    if (ui.obstaclePolygon) ui.obstaclePolygon.classList.toggle("active", obstacleTool === "polygon");
+    if (ui.deleteSelectedObstacle) {
+      ui.deleteSelectedObstacle.disabled = selectedObstacleId == null || batchRunning;
+    }
+    if (ui.clearObstacles) ui.clearObstacles.disabled = !obstacles.length || batchRunning;
+    if (ui.obstacleList) {
+      ui.obstacleList.innerHTML = "";
+      for (const obs of obstacles) {
+        const item = document.createElement("li");
+        item.className = obs.id === selectedObstacleId ? "selected" : "";
+        item.innerHTML = `<span>${obstacleLabel(obs)}</span>`;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "×";
+        remove.title = "Delete this obstacle";
+        remove.addEventListener("click", (event) => {
+          event.stopPropagation();
+          selectedObstacleId = obs.id;
+          deleteSelectedObstacle();
+        });
+        item.addEventListener("click", () => {
+          if (selectedObstacleId === obs.id) deselectObstacle();
+          else selectObstacle(obs.id);
+        });
+        item.appendChild(remove);
+        ui.obstacleList.appendChild(item);
+      }
+    }
+    if (!ui.obstacleStatus) return;
+    if (interactionMode === "draw") {
+      if (obstacleTool === "rect") {
+        ui.obstacleStatus.textContent = "Draw Obstacle · drag to create a rectangle";
+      } else if (obstacleTool === "polygon") {
+        const n = obstacleDraft && obstacleDraft.points ? obstacleDraft.points.length : 0;
+        ui.obstacleStatus.textContent =
+          n < 3
+            ? "Draw Obstacle · click to add vertices · Enter or click first point to close"
+            : `Draw Obstacle · ${n} points · Enter / click first point to close`;
+      } else {
+        ui.obstacleStatus.textContent = "Draw Obstacle · drag from the center to set the radius";
+      }
+      return;
+    }
+    const selected = obstacles.find((obs) => obs.id === selectedObstacleId);
+    if (selected) {
+      ui.obstacleStatus.textContent = `${obstacleLabel(selected)} selected · Del to remove`;
+    } else if (!obstacles.length) {
+      ui.obstacleStatus.textContent = "No obstacles · Draw Obstacle to place geometry";
+    } else {
+      ui.obstacleStatus.textContent = `${obstacles.length} obstacle${
+        obstacles.length === 1 ? "" : "s"
+      } · Select to edit`;
+    }
+  }
+
+  function readObstacleMode() {
+    if (ui.obstacleRepel && ui.obstacleRepel.classList.contains("active")) return "repel";
+    return sim.obstacleMode === "repel" ? "repel" : "hard";
+  }
+
+  function readRepulsionDistance() {
+    const raw = Number(ui.repulsionDistance?.value ?? 40);
+    if (!Number.isFinite(raw)) return 40;
+    return Math.max(8, Math.min(160, raw));
+  }
+
+  function readRepulsionStrength() {
+    const raw = Number(ui.repulsionStrength?.value ?? 1.2);
+    if (!Number.isFinite(raw)) return 1.2;
+    return Math.max(0, Math.min(4, raw));
   }
 
   function activeGridEntry() {
@@ -306,10 +634,29 @@
     return growthAttractors || tracedGridPoints || gridPoints;
   }
 
+  function readGrowthDirection() {
+    const raw = Number(ui.growthDirection?.value ?? 0);
+    if (!Number.isFinite(raw)) return 0;
+    return Math.max(-1, Math.min(1, raw));
+  }
+
+  function formatGrowthDirection(value) {
+    const v = Number(value) || 0;
+    const signed = `${v >= 0 ? "+" : ""}${v.toFixed(2)}`;
+    if (Math.abs(v) < 0.05) return `${signed} · neutral`;
+    return v < 0 ? `${signed} · horizontal` : `${signed} · vertical`;
+  }
+
   function applyParams() {
     sim.attractionRadius = Number(ui.influence.value);
     sim.killDistance = Number(ui.kill.value);
     sim.stepSize = Number(ui.stepSize.value);
+    sim.growthDirection = readGrowthDirection();
+    sim.mergeBranches = !!(ui.mergeBranches && ui.mergeBranches.checked);
+    sim.mergeDistance = Math.max(0, Number(ui.mergeDistance?.value ?? 20) || 0);
+    sim.obstacleMode = readObstacleMode();
+    sim.repulsionDistance = readRepulsionDistance();
+    sim.repulsionStrength = readRepulsionStrength();
     resolveGrowthField();
     const path = currentPathPoints();
     if (path && path.length) {
@@ -319,6 +666,18 @@
     ui.influenceVal.textContent = `${ui.influence.value} px`;
     ui.killVal.textContent = `${ui.kill.value} px`;
     ui.stepVal.textContent = `${Number(ui.stepSize.value).toFixed(1)} px`;
+    if (ui.growthDirectionVal) {
+      ui.growthDirectionVal.textContent = formatGrowthDirection(sim.growthDirection);
+    }
+    if (ui.mergeDistanceVal) {
+      ui.mergeDistanceVal.textContent = `${Math.round(sim.mergeDistance)} px`;
+    }
+    if (ui.repulsionDistanceVal) {
+      ui.repulsionDistanceVal.textContent = `${Math.round(sim.repulsionDistance)} px`;
+    }
+    if (ui.repulsionStrengthVal) {
+      ui.repulsionStrengthVal.textContent = Number(sim.repulsionStrength).toFixed(1);
+    }
     ui.iterVal.textContent = ui.iterations.value;
     updateDisplayParams();
   }
@@ -357,14 +716,14 @@
 
   const DEFAULT_DISPLAY_COLORS = {
     attractorColor: "#9fd6e8",
-    branchColor: "#ff0000",
+    branchColor: "#FFFFFF",
     primaryColor: "#C80000",
     secondaryColor: "#00fffe",
     tertiaryColor: "#ffd900",
   };
 
   const LEGACY_DISPLAY_COLORS = {
-    branchColor: ["#9fd6e8"],
+    branchColor: ["#9fd6e8", "#ff0000"],
     primaryColor: ["#e8d5a3"],
     secondaryColor: ["#9fd6e8", "#007ac7"],
     tertiaryColor: ["#d4785a", "#c7c400"],
@@ -426,10 +785,6 @@
       stored = {};
     }
     for (const id of DISPLAY_COLOR_IDS) {
-      if (id === "branchColor" && ui.branchColor) {
-        ui.branchColor.value = DEFAULT_DISPLAY_COLORS.branchColor;
-        continue;
-      }
       const storedHex = String(stored[id] || "").toLowerCase();
       const legacyList = LEGACY_DISPLAY_COLORS[id] || [];
       const isLegacy = legacyList.some((hex) => String(hex).toLowerCase() === storedHex);
@@ -575,6 +930,9 @@
   function onLiveParamChange(kind) {
     applyParams();
     if (batchRunning) return;
+    if (kind === "mergeDistance" && !sim.mergeBranches) return;
+    if (kind === "repulsionDistance" && sim.obstacleMode !== "repel") return;
+    if (kind === "repulsionStrength" && sim.obstacleMode !== "repel") return;
 
     if (kind === "iterations") {
       const cap = Number(ui.iterations.value);
@@ -602,21 +960,220 @@
     return gridLibrary.some((entry) => entry.id === id);
   }
 
+  function filledGridSlotCount() {
+    return gridSlots.reduce((n, slot) => n + (slot.entry ? 1 : 0), 0);
+  }
+
+  function firstEmptyGridSlotIndex() {
+    return gridSlots.findIndex((slot) => !slot.entry);
+  }
+
+  function persistActiveSlotIndex() {
+    if (restoringGridSlots) return;
+    try {
+      localStorage.setItem(ACTIVE_SLOT_STORAGE_KEY, String(activeSlotIndex));
+    } catch (_) {
+      /* ignore quota / private mode */
+    }
+  }
+
+  function openGridSlotDb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error("IndexedDB is not available"));
+        return;
+      }
+      const request = indexedDB.open(GRID_IDB_NAME, GRID_IDB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(GRID_IDB_STORE)) {
+          db.createObjectStore(GRID_IDB_STORE, { keyPath: "slotIndex" });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  function idbPutGridSlot(db, record) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(GRID_IDB_STORE, "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.objectStore(GRID_IDB_STORE).put(record);
+    });
+  }
+
+  function idbDeleteGridSlot(db, slotIndex) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(GRID_IDB_STORE, "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.objectStore(GRID_IDB_STORE).delete(slotIndex);
+    });
+  }
+
+  function idbClearGridSlots(db) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(GRID_IDB_STORE, "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.objectStore(GRID_IDB_STORE).clear();
+    });
+  }
+
+  function idbGetAllGridSlots(db) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(GRID_IDB_STORE, "readonly");
+      const store = tx.objectStore(GRID_IDB_STORE);
+      if (typeof store.getAll === "function") {
+        const request = store.getAll();
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+        return;
+      }
+      const results = [];
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+          results.push(cursor.value);
+          cursor.continue();
+        } else {
+          resolve(results);
+        }
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function persistGridSlot(slotIndex, file, entry) {
+    if (restoringGridSlots || slotIndex < 0 || slotIndex >= GRID_SLOT_COUNT) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const db = await openGridSlotDb();
+      await idbPutGridSlot(db, {
+        slotIndex,
+        id: entry.id,
+        name: entry.name,
+        type: file.type || "",
+        svgText: entry.svgText || null,
+        buffer,
+      });
+      db.close();
+    } catch (err) {
+      console.warn("Could not persist grid slot", err);
+    }
+  }
+
+  async function deletePersistedGridSlot(slotIndex) {
+    try {
+      const db = await openGridSlotDb();
+      await idbDeleteGridSlot(db, slotIndex);
+      db.close();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  async function clearPersistedGridSlots() {
+    try {
+      const db = await openGridSlotDb();
+      await idbClearGridSlots(db);
+      db.close();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function buildGridSlotButtons() {
+    if (!ui.gridSlots) return;
+    ui.gridSlots.innerHTML = "";
+    for (let i = 0; i < GRID_SLOT_COUNT; i++) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "grid-slot empty";
+      btn.dataset.slot = String(i);
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-selected", "false");
+      btn.textContent = `Grid ${i + 1}`;
+      btn.addEventListener("click", () => onGridSlotClick(i));
+      ui.gridSlots.appendChild(btn);
+    }
+  }
+
   function updateGridCycleUI() {
-    const count = gridLibrary.length;
-    const multi = count > 1;
-    ui.prevGrid.disabled = !multi || batchRunning;
-    ui.nextGrid.disabled = !multi || batchRunning;
-    ui.clearGrid.disabled = count === 0;
-    if (!count) {
+    const buttons = ui.gridSlots
+      ? ui.gridSlots.querySelectorAll(".grid-slot")
+      : [];
+    buttons.forEach((btn) => {
+      const i = Number(btn.dataset.slot);
+      const entry = gridSlots[i]?.entry;
+      const isActive = !!(entry && entry.id === activeGridId);
+      btn.classList.toggle("empty", !entry);
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-selected", isActive ? "true" : "false");
+      btn.title = entry ? `${entry.name} · click to switch` : `Upload Grid ${i + 1}`;
+      btn.disabled = batchRunning;
+    });
+    const filled = filledGridSlotCount();
+    if (ui.clearGrid) ui.clearGrid.disabled = filled === 0 || batchRunning;
+    if (ui.replaceGrid) {
+      ui.replaceGrid.disabled = batchRunning;
+      ui.replaceGrid.textContent = gridSlots[activeSlotIndex]?.entry
+        ? "Replace this grid"
+        : "Upload grid";
+    }
+    if (!filled) {
       ui.gridCycleStatus.textContent = "No grids loaded";
+      ui.gridCycleStatus.classList.remove("active");
       return;
     }
-    const index = gridLibrary.findIndex((entry) => entry.id === activeGridId);
-    const pos = index >= 0 ? index + 1 : 1;
-    const entry = gridLibrary[index >= 0 ? index : 0];
-    ui.gridCycleStatus.textContent = `Grid ${pos} / ${count} · ${entry.name}`;
-    ui.gridCycleStatus.classList.add("active");
+    const entry = gridSlots[activeSlotIndex]?.entry || activeGridEntry();
+    if (entry) {
+      ui.gridCycleStatus.textContent = `Active: Grid ${activeSlotIndex + 1} · ${entry.name}`;
+      ui.gridCycleStatus.classList.add("active");
+    } else {
+      ui.gridCycleStatus.textContent = `${filled} grid${filled === 1 ? "" : "s"} loaded`;
+      ui.gridCycleStatus.classList.remove("active");
+    }
+  }
+
+  function openGridFilePicker(slotIndex) {
+    pendingSlotIndex = Math.max(0, Math.min(GRID_SLOT_COUNT - 1, slotIndex));
+    if (!ui.gridFile) return;
+    ui.gridFile.value = "";
+    ui.gridFile.click();
+  }
+
+  function onGridSlotClick(index) {
+    if (batchRunning) return;
+    selectGridSlot(index);
+  }
+
+  function selectGridSlot(index) {
+    if (index < 0 || index >= GRID_SLOT_COUNT) return;
+    const entry = gridSlots[index]?.entry;
+    if (!entry) {
+      openGridFilePicker(index);
+      return;
+    }
+    if (entry.id === activeGridId) {
+      updateGridCycleUI();
+      return;
+    }
+    activateGrid(entry);
+  }
+
+  function tryActivateRestoredGrid() {
+    if (!pendingGridRestore || !width || !height) return;
+    const preferred =
+      gridSlots[activeSlotIndex]?.entry || gridSlots.find((slot) => slot.entry)?.entry;
+    if (!preferred) {
+      pendingGridRestore = false;
+      return;
+    }
+    if (activateGrid(preferred)) pendingGridRestore = false;
   }
 
   function activateGrid(entry) {
@@ -635,6 +1192,10 @@
     });
     // #endregion
     if (!entry || !width || !height) return false;
+    if (typeof entry.slotIndex === "number") {
+      activeSlotIndex = entry.slotIndex;
+      persistActiveSlotIndex();
+    }
     activeGridId = entry.id;
     gridSource = entry.source;
     gridName = entry.name;
@@ -645,6 +1206,7 @@
     debugDrawLogs = 0;
     activeVariantId = null;
     clearSeeds();
+    restoreObstacles([]);
     resetSim();
     updateGridCycleUI();
     updateVariantUI();
@@ -653,17 +1215,86 @@
   }
 
   function cycleGrid(delta) {
-    if (gridLibrary.length < 2) return;
-    const index = gridLibrary.findIndex((entry) => entry.id === activeGridId);
-    const start = index >= 0 ? index : 0;
+    const filledIndexes = gridSlots
+      .map((slot, index) => (slot.entry ? index : -1))
+      .filter((index) => index >= 0);
+    if (filledIndexes.length < 2) return;
+    const currentPos = filledIndexes.indexOf(activeSlotIndex);
+    const start = currentPos >= 0 ? currentPos : 0;
     const next =
-      (start + delta + gridLibrary.length) % gridLibrary.length;
-    activateGrid(gridLibrary[next]);
+      filledIndexes[(start + delta + filledIndexes.length) % filledIndexes.length];
+    selectGridSlot(next);
   }
 
   function addGridEntry(entry) {
-    gridLibrary.push(entry);
+    const slotIndex =
+      typeof entry.slotIndex === "number" ? entry.slotIndex : firstEmptyGridSlotIndex();
+    if (slotIndex < 0) return false;
+    entry.slotIndex = slotIndex;
+    gridSlots[slotIndex].entry = entry;
+    if (!gridLibrary.some((item) => item.id === entry.id)) gridLibrary.push(entry);
     return activateGrid(entry);
+  }
+
+  async function restoreGridSlots() {
+    restoringGridSlots = true;
+    pendingGridRestore = false;
+    try {
+      const db = await openGridSlotDb();
+      const records = await idbGetAllGridSlots(db);
+      db.close();
+      records.sort((a, b) => a.slotIndex - b.slotIndex);
+      let maxId = 0;
+      for (const rec of records) {
+        if (rec.slotIndex < 0 || rec.slotIndex >= GRID_SLOT_COUNT || !rec.buffer) continue;
+        try {
+          const fallbackName = rec.svgText
+            ? `grid-${rec.slotIndex + 1}.svg`
+            : `grid-${rec.slotIndex + 1}.png`;
+          const file = new File([rec.buffer], rec.name || fallbackName, {
+            type: rec.type || (rec.svgText ? "image/svg+xml" : ""),
+          });
+          if (!isGridFile(file) && !rec.svgText) continue;
+          const { img, svgText } = await imageFromFile(file);
+          const id = Number.isFinite(rec.id) ? rec.id : nextGridId++;
+          maxId = Math.max(maxId, id);
+          const entry = {
+            id,
+            name: rec.name || file.name,
+            source: img,
+            svgText: rec.svgText || svgText,
+            kind: "file",
+            slotIndex: rec.slotIndex,
+          };
+          gridSlots[rec.slotIndex].entry = entry;
+          if (!gridLibrary.some((item) => item.id === entry.id)) gridLibrary.push(entry);
+        } catch (err) {
+          console.warn(`Could not restore grid slot ${rec.slotIndex + 1}`, err);
+        }
+      }
+      nextGridId = Math.max(nextGridId, maxId + 1);
+      let preferred = 0;
+      try {
+        const stored = parseInt(localStorage.getItem(ACTIVE_SLOT_STORAGE_KEY) || "0", 10);
+        if (Number.isFinite(stored) && stored >= 0 && stored < GRID_SLOT_COUNT) {
+          preferred = stored;
+        }
+      } catch (_) {
+        /* ignore */
+      }
+      activeSlotIndex = preferred;
+      const target =
+        gridSlots[preferred]?.entry || gridSlots.find((slot) => slot.entry)?.entry;
+      if (target) {
+        if (typeof target.slotIndex === "number") activeSlotIndex = target.slotIndex;
+        if (!activateGrid(target)) pendingGridRestore = true;
+      }
+    } catch (err) {
+      console.warn("Could not restore grid slots", err);
+    } finally {
+      restoringGridSlots = false;
+      updateGridCycleUI();
+    }
   }
 
   function removeVariantsForGrid(gridId) {
@@ -1036,6 +1667,12 @@
       influence: Number(ui.influence.value),
       kill: Number(ui.kill.value),
       stepSize: Number(ui.stepSize.value),
+      growthDirection: readGrowthDirection(),
+      mergeBranches: !!(ui.mergeBranches && ui.mergeBranches.checked),
+      mergeDistance: Math.max(0, Number(ui.mergeDistance?.value ?? 20) || 0),
+      obstacleMode: readObstacleMode(),
+      repulsionDistance: readRepulsionDistance(),
+      repulsionStrength: readRepulsionStrength(),
       iterationsCap: Number(ui.iterations.value),
       siteFeet: SITE_FEET,
       pixelsPerFoot,
@@ -1049,6 +1686,27 @@
     ui.influence.value = String(params.influence);
     ui.kill.value = String(params.kill);
     ui.stepSize.value = String(params.stepSize);
+    if (ui.growthDirection) {
+      const dir = Number(params.growthDirection);
+      ui.growthDirection.value = Number.isFinite(dir) ? String(Math.max(-1, Math.min(1, dir))) : "0";
+    }
+    if (ui.mergeBranches) ui.mergeBranches.checked = !!params.mergeBranches;
+    if (ui.mergeDistance) {
+      const dist = Number(params.mergeDistance);
+      ui.mergeDistance.value = Number.isFinite(dist) ? String(Math.max(4, Math.min(80, dist))) : "20";
+    }
+    const obsMode = params.obstacleMode === "repel" ? "repel" : "hard";
+    if (ui.obstacleHard) ui.obstacleHard.classList.toggle("active", obsMode === "hard");
+    if (ui.obstacleRepel) ui.obstacleRepel.classList.toggle("active", obsMode === "repel");
+    sim.obstacleMode = obsMode;
+    if (ui.repulsionDistance) {
+      const dist = Number(params.repulsionDistance);
+      ui.repulsionDistance.value = Number.isFinite(dist) ? String(Math.max(8, Math.min(160, dist))) : "40";
+    }
+    if (ui.repulsionStrength) {
+      const str = Number(params.repulsionStrength);
+      ui.repulsionStrength.value = Number.isFinite(str) ? String(Math.max(0, Math.min(4, str))) : "1.2";
+    }
     ui.iterations.value = String(params.iterationsCap);
     for (const item of SLIDER_BOUNDS) applySliderBound(item, true);
     if (
@@ -1123,17 +1781,37 @@
     syncCircles();
 
     const nodes = [];
+    let maxRoot = 0;
     for (const rec of snap.nodes) {
       const parent = rec.parentIndex >= 0 ? nodes[rec.parentIndex] : null;
       const node = new Node(new Vec2(rec.x, rec.y), parent);
       node.thickness = rec.thickness;
       node.order = rec.order;
+      node.fused = !!rec.fused;
+      if (rec.rootId != null) {
+        node.rootId = rec.rootId;
+      } else if (parent && parent.rootId != null) {
+        node.rootId = parent.rootId;
+      } else if (!parent) {
+        node.rootId = ++maxRoot;
+      }
+      if (node.rootId != null) maxRoot = Math.max(maxRoot, node.rootId);
       if (parent) parent.children.push(node);
       nodes.push(node);
     }
     sim.nodes = nodes;
+    sim.nextRootId = maxRoot + 1;
+    sim.mergeLinks = [];
+    sim.rebuildMergeComponents();
+    for (const link of snap.mergeLinks || []) {
+      const a = nodes[link.a];
+      const b = nodes[link.b];
+      if (a && b) sim._connectNetworks(a, b, { ignoreDistance: true });
+    }
     sim.generation = snap.generation;
     sim.addAttractors(snap.attractorsLeft);
+
+    restoreObstacles(snap.obstacles || []);
 
     playing = false;
     ui.play.textContent = "Grow";
@@ -1164,8 +1842,10 @@
       seeds: seeds.map((seed) => ({ x: seed.x, y: seed.y })),
       generation: snap.generation,
       nodes: snap.nodes,
+      mergeLinks: snap.mergeLinks || [],
       attractorsLeft: snap.attractorsLeft,
-      thumbDataUrl: makeVariantThumb(snap.nodes),
+      obstacles: serializeObstacles(),
+      thumbDataUrl: makeVariantThumb(snap.nodes, snap.mergeLinks),
     };
     savedIterations.push(record);
     activeSavedIterationId = record.id;
@@ -1211,6 +1891,8 @@
       generation: record.generation,
       nodes: record.nodes,
       attractorsLeft: record.attractorsLeft,
+      mergeLinks: record.mergeLinks || [],
+      obstacles: record.obstacles || [],
     });
     activeSavedIterationId = record.id;
     activeVariantId = null;
@@ -1298,11 +1980,20 @@
         parentIndex: node.parent ? indexOf.get(node.parent) : -1,
         thickness: node.thickness,
         order: node.order,
+        rootId: node.rootId,
+        fused: !!node.fused,
       })),
+      mergeLinks: (sim.mergeLinks || [])
+        .map((link) => ({
+          a: indexOf.get(link.a),
+          b: indexOf.get(link.b),
+        }))
+        .filter((link) => link.a != null && link.b != null),
       attractorsLeft: sim.attractors.map((attractor) => ({
         x: attractor.x,
         y: attractor.y,
       })),
+      obstacles: serializeObstacles(),
     };
   }
 
@@ -1352,14 +2043,35 @@
       g.lineTo(node.x * scale + ox, node.y * scale + oy);
       g.stroke();
     }
+    const links = options.mergeLinks || [];
+    for (const link of links) {
+      const a = flatNodes[link.a];
+      const b = flatNodes[link.b];
+      if (!a || !b) continue;
+      const order = Math.min(a.order || 1, b.order || 1);
+      const parentThickness = Math.max(a.thickness || 1, b.thickness || 1);
+      g.strokeStyle = identify ? palette[order] || palette.branch : palette.branch;
+      g.lineWidth = Math.max(
+        0.6,
+        branchStrokeWidth(parentThickness, order, identify) * (options.widthScale ?? 0.55)
+      );
+      g.beginPath();
+      g.moveTo(a.x * scale + ox, a.y * scale + oy);
+      g.lineTo(b.x * scale + ox, b.y * scale + oy);
+      g.stroke();
+    }
   }
 
-  function makeVariantThumb(flatNodes) {
+  function makeVariantThumb(flatNodes, mergeLinks) {
     const thumbSize = 120;
     const c = document.createElement("canvas");
     c.width = thumbSize;
     c.height = thumbSize;
-    drawNodesPreview(c.getContext("2d"), flatNodes, thumbSize, { pad: 10, widthScale: 0.4 });
+    drawNodesPreview(c.getContext("2d"), flatNodes, thumbSize, {
+      pad: 10,
+      widthScale: 0.4,
+      mergeLinks,
+    });
     return c.toDataURL("image/png");
   }
 
@@ -1514,6 +2226,15 @@
         g.lineTo(node.x * scale + ox, node.y * scale + oy);
         g.stroke();
       }
+      for (const link of item.mergeLinks || []) {
+        const a = item.nodes[link.a];
+        const b = item.nodes[link.b];
+        if (!a || !b) continue;
+        g.beginPath();
+        g.moveTo(a.x * scale + ox, a.y * scale + oy);
+        g.lineTo(b.x * scale + ox, b.y * scale + oy);
+        g.stroke();
+      }
     });
     g.globalAlpha = 1;
   }
@@ -1566,6 +2287,7 @@
       drawNodesPreview(preview.getContext("2d"), record.nodes, drawSize, {
         pad: 18 * pixelRatio,
         widthScale: 0.7,
+        mergeLinks: record.mergeLinks || [],
       });
       const meta = document.createElement("div");
       meta.className = "analyze-card-meta";
@@ -1631,8 +2353,10 @@
       seeds: seeds.map((seed) => ({ x: seed.x, y: seed.y })),
       generation: snap.generation,
       nodes: snap.nodes,
+      mergeLinks: snap.mergeLinks || [],
       attractorsLeft: snap.attractorsLeft,
-      thumbDataUrl: makeVariantThumb(snap.nodes),
+      obstacles: serializeObstacles(),
+      thumbDataUrl: makeVariantThumb(snap.nodes, snap.mergeLinks),
     };
     variants.push(variant);
     activeVariantId = variant.id;
@@ -1664,6 +2388,8 @@
       generation: variant.generation,
       nodes: variant.nodes,
       attractorsLeft: variant.attractorsLeft,
+      mergeLinks: variant.mergeLinks || [],
+      obstacles: variant.obstacles || [],
     });
     activeVariantId = variant.id;
     activeSavedIterationId = null;
@@ -1734,6 +2460,8 @@
     playing = false;
     ui.play.textContent = "Grow";
     updatePlayState();
+    updateGridCycleUI();
+    updateSeedUI();
 
     const total = Number(ui.batchCount.value);
     const savedJitter = sim.jitter;
@@ -1755,6 +2483,8 @@
     setVariantStatus(`Batch done · ${onGrid} variant${onGrid === 1 ? "" : "s"} on this grid`, "active");
     updateVariantUI();
     updatePlayState();
+    updateGridCycleUI();
+    updateSeedUI();
     if (appPage === "analyze") renderAnalyzeView();
   }
 
@@ -1848,8 +2578,11 @@
   }
 
   function clearGrid() {
+    gridSlots = createEmptyGridSlots();
     gridLibrary.length = 0;
     activeGridId = null;
+    activeSlotIndex = 0;
+    pendingSlotIndex = 0;
     gridSource = null;
     gridName = "";
     gridOverlay = null;
@@ -1872,10 +2605,20 @@
     clearVariants();
     updateGridCycleUI();
     resetSim();
+    clearPersistedGridSlots();
+    try {
+      localStorage.removeItem(ACTIVE_SLOT_STORAGE_KEY);
+    } catch (_) {
+      /* ignore */
+    }
   }
 
-  async function importGridFile(file) {
+  async function importGridFile(file, slotIndex = pendingSlotIndex) {
     if (!file) return false;
+    if (slotIndex == null || slotIndex < 0 || slotIndex >= GRID_SLOT_COUNT) {
+      const empty = firstEmptyGridSlotIndex();
+      slotIndex = empty >= 0 ? empty : activeSlotIndex;
+    }
     if (!isGridFile(file)) {
       setGridStatus("Use a PNG, JPG, or SVG file.", "error");
       return false;
@@ -1883,17 +2626,30 @@
     setGridStatus(`Reading ${file.name}…`);
     try {
       const { img, svgText } = await imageFromFile(file);
+      const slot = gridSlots[slotIndex];
+      const previous = slot.entry;
       const entry = {
         id: nextGridId++,
         name: file.name,
         source: img,
         svgText,
         kind: "file",
+        slotIndex,
       };
+      if (previous) {
+        const libIndex = gridLibrary.findIndex((item) => item.id === previous.id);
+        if (libIndex >= 0) gridLibrary.splice(libIndex, 1);
+      }
+      slot.entry = entry;
       gridLibrary.push(entry);
       if (!activateGrid(entry)) {
         gridLibrary.pop();
+        slot.entry = previous;
+        if (previous && !gridLibrary.some((item) => item.id === previous.id)) {
+          gridLibrary.push(previous);
+        }
         nextGridId -= 1;
+        if (previous) activateGrid(previous);
         setGridStatus("Could not trace solid paths in that file.", "error");
         // #region agent log
         dbg("B", "app.js:importGridFile", "activateGrid failed", {
@@ -1904,6 +2660,8 @@
         // #endregion
         return false;
       }
+      if (previous) removeVariantsForGrid(previous.id);
+      await persistGridSlot(slotIndex, file, entry);
       return true;
     } catch (err) {
       setGridStatus(err.message || "Could not read that file.", "error");
@@ -1989,30 +2747,148 @@
     } else if (usingGrid && sizeChanged) {
       resetSim();
     }
+    tryActivateRestoredGrid();
   }
 
-  function applyViewTransform(targetCtx = ctx) {
+  function applyViewTransform(targetCtx = ctx, camera = view, pixelRatio = dpr) {
     targetCtx.setTransform(
-      dpr * view.scale,
+      pixelRatio * camera.scale,
       0,
       0,
-      dpr * view.scale,
-      dpr * view.x,
-      dpr * view.y
+      pixelRatio * camera.scale,
+      pixelRatio * camera.x,
+      pixelRatio * camera.y
     );
+  }
+
+  function obstacleStrokeFill(obs, selected) {
+    const repel = sim.obstacleMode === "repel";
+    if (selected) {
+      return {
+        stroke: "rgba(232, 213, 163, 0.95)",
+        fill: "rgba(232, 213, 163, 0.16)",
+        line: 2.2,
+      };
+    }
+    if (repel) {
+      return {
+        stroke: "rgba(120, 176, 232, 0.92)",
+        fill: "rgba(120, 176, 232, 0.12)",
+        line: 1.6,
+      };
+    }
+    return {
+      stroke: "rgba(232, 140, 96, 0.92)",
+      fill: "rgba(232, 140, 96, 0.12)",
+      line: 1.6,
+    };
+  }
+
+  function drawOneObstacle(targetCtx, obs, selected) {
+    if (!obs) return;
+    const style = obstacleStrokeFill(obs, selected);
+    targetCtx.save();
+    targetCtx.fillStyle = style.fill;
+    targetCtx.strokeStyle = style.stroke;
+    targetCtx.lineWidth = style.line;
+    if (obs.type === "circle") {
+      targetCtx.beginPath();
+      targetCtx.arc(obs.x, obs.y, obs.r, 0, Math.PI * 2);
+      targetCtx.fill();
+      targetCtx.stroke();
+      if (sim.obstacleMode === "repel" && sim.repulsionDistance > 0) {
+        targetCtx.setLineDash([7, 5]);
+        targetCtx.globalAlpha = 0.55;
+        targetCtx.beginPath();
+        targetCtx.arc(obs.x, obs.y, obs.r + sim.repulsionDistance, 0, Math.PI * 2);
+        targetCtx.stroke();
+        targetCtx.setLineDash([]);
+        targetCtx.globalAlpha = 1;
+      }
+    } else if (obs.type === "rect") {
+      const x = Math.min(obs.x, obs.x + obs.w);
+      const y = Math.min(obs.y, obs.y + obs.h);
+      const w = Math.abs(obs.w);
+      const h = Math.abs(obs.h);
+      targetCtx.beginPath();
+      targetCtx.rect(x, y, w, h);
+      targetCtx.fill();
+      targetCtx.stroke();
+      if (sim.obstacleMode === "repel" && sim.repulsionDistance > 0) {
+        const pad = sim.repulsionDistance;
+        targetCtx.setLineDash([7, 5]);
+        targetCtx.globalAlpha = 0.55;
+        targetCtx.strokeRect(x - pad, y - pad, w + pad * 2, h + pad * 2);
+        targetCtx.setLineDash([]);
+        targetCtx.globalAlpha = 1;
+      }
+    } else if (obs.type === "polygon" && obs.points && obs.points.length) {
+      const pts = obs.points;
+      const drafting = !!obs.draft;
+      targetCtx.beginPath();
+      targetCtx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) targetCtx.lineTo(pts[i].x, pts[i].y);
+      if (obs.hover) targetCtx.lineTo(obs.hover.x, obs.hover.y);
+      if (!drafting && pts.length >= 3) {
+        targetCtx.closePath();
+        targetCtx.fill();
+      }
+      targetCtx.stroke();
+      if (drafting) {
+        targetCtx.fillStyle = style.stroke;
+        for (const p of pts) {
+          targetCtx.beginPath();
+          targetCtx.arc(p.x, p.y, 3.2, 0, Math.PI * 2);
+          targetCtx.fill();
+        }
+      }
+    }
+    if (selected && obs.type === "rect") {
+      const box = obstacleAabb(obs);
+      const corners = [
+        [box.minX, box.minY],
+        [box.maxX, box.minY],
+        [box.maxX, box.maxY],
+        [box.minX, box.maxY],
+      ];
+      targetCtx.fillStyle = "#fff";
+      for (const [cx, cy] of corners) {
+        targetCtx.fillRect(cx - 3, cy - 3, 6, 6);
+      }
+    }
+    targetCtx.restore();
+  }
+
+  function drawObstacleShapes(targetCtx, list, options = {}) {
+    for (const obs of list) {
+      if (!obs) continue;
+      const selected =
+        !options.hideEditingChrome && obs.id != null && obs.id === selectedObstacleId;
+      drawOneObstacle(targetCtx, obs, selected);
+    }
   }
 
   function renderStudioFrame(targetCtx, options = {}) {
     const transparent = !!options.transparentBackground;
+    const outW = options.outputWidth ?? width;
+    const outH = options.outputHeight ?? height;
+    const camera = options.camera || view;
+    const pixelRatio = options.pixelRatio ?? dpr;
+    const hideChrome = !!options.hideEditingChrome;
     if (!transparent) {
       targetCtx.fillStyle = "#000";
-      targetCtx.fillRect(0, 0, width, height);
+      targetCtx.fillRect(0, 0, outW, outH);
     }
 
     targetCtx.save();
-    applyViewTransform(targetCtx);
+    if (options.clipToOutput) {
+      targetCtx.beginPath();
+      targetCtx.rect(0, 0, outW, outH);
+      targetCtx.clip();
+    }
+    applyViewTransform(targetCtx, camera, pixelRatio);
 
-    if (!transparent && !gridSource) {
+    if (!transparent && !gridSource && !hideChrome) {
       targetCtx.fillStyle = "#dce7f0";
       for (const star of stars) {
         targetCtx.globalAlpha = star.a;
@@ -2079,15 +2955,39 @@
 
     targetCtx.strokeStyle = "rgba(232, 213, 163, 0.9)";
     targetCtx.lineWidth = 1.5;
-    const circles = draft ? sim.circles.concat(draft) : sim.circles;
-    for (const circle of circles) {
+    const gridCircles = sim.circles || [];
+    for (const circle of gridCircles) {
       targetCtx.beginPath();
       targetCtx.arc(circle.x, circle.y, circle.r, 0, Math.PI * 2);
       targetCtx.stroke();
     }
+    drawObstacleShapes(
+      targetCtx,
+      hideChrome || options.hideDraft ? obstacles : obstacles.concat(obstacleDraft ? [obstacleDraft] : []),
+      { hideEditingChrome: hideChrome }
+    );
 
     const attractorR = Math.max(0.2, Number(ui.attractorSize?.value ?? 2.5));
     const palette = displayColors();
+    if (
+      !options.hideInfluencePreview &&
+      ui.showInfluenceRadius?.checked &&
+      sim.attractors.length
+    ) {
+      const radius = Number(ui.influence?.value ?? sim.attractionRadius);
+      const { r, g, b } = hexToRgb(palette.attractor);
+      const zoom = Math.max(0.25, camera.scale);
+      targetCtx.save();
+      targetCtx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.38)`;
+      targetCtx.lineWidth = Math.max(0.5, 1 / zoom);
+      targetCtx.setLineDash([6 / zoom, 5 / zoom]);
+      for (const p of sim.attractors) {
+        targetCtx.beginPath();
+        targetCtx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+        targetCtx.stroke();
+      }
+      targetCtx.restore();
+    }
     targetCtx.fillStyle = rgbaFromHex(palette.attractor, 0.82);
     targetCtx.strokeStyle = rgbaFromHex(palette.attractor, 1);
     targetCtx.lineWidth = attractorR >= 2 ? 1.1 : 0.7;
@@ -2123,18 +3023,45 @@
       }
     }
 
-    targetCtx.fillStyle = "#e8d5a3";
+    if (sim.mergeLinks && sim.mergeLinks.length) {
+      targetCtx.strokeStyle = identify ? palette[1] : palette.branch;
+      for (const link of sim.mergeLinks) {
+        if (!link.a || !link.b) continue;
+        const order = Math.min(link.a.order || 1, link.b.order || 1);
+        if (identify && !visible[order]) continue;
+        targetCtx.strokeStyle = identify ? palette[order] || palette.branch : palette.branch;
+        const thick = branchStrokeWidth(
+          Math.max(link.a.thickness || 1, link.b.thickness || 1),
+          order,
+          identify
+        );
+        targetCtx.lineWidth = thick;
+        targetCtx.beginPath();
+        targetCtx.moveTo(link.a.pos.x, link.a.pos.y);
+        targetCtx.lineTo(link.b.pos.x, link.b.pos.y);
+        targetCtx.stroke();
+      }
+    }
+
     for (const seed of seeds) {
-      const selected = seed.id === selectedSeedId;
+      const selected = !hideChrome && seed.id === selectedSeedId;
       if (selected) {
         targetCtx.beginPath();
-        targetCtx.strokeStyle = "rgba(232, 213, 163, 0.85)";
-        targetCtx.lineWidth = 2;
-        targetCtx.arc(seed.x, seed.y, 8, 0, Math.PI * 2);
+        targetCtx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+        targetCtx.lineWidth = 1.2;
+        targetCtx.setLineDash([4, 3]);
+        targetCtx.arc(seed.x, seed.y, 16, 0, Math.PI * 2);
+        targetCtx.stroke();
+        targetCtx.setLineDash([]);
+        targetCtx.beginPath();
+        targetCtx.strokeStyle = "#ffffff";
+        targetCtx.lineWidth = 2.4;
+        targetCtx.arc(seed.x, seed.y, 10, 0, Math.PI * 2);
         targetCtx.stroke();
       }
       targetCtx.beginPath();
-      targetCtx.arc(seed.x, seed.y, selected ? 4.2 : 3.4, 0, Math.PI * 2);
+      targetCtx.fillStyle = selected ? "#ffffff" : "#e8d5a3";
+      targetCtx.arc(seed.x, seed.y, selected ? 5 : 3.4, 0, Math.PI * 2);
       targetCtx.fill();
     }
     for (const node of sim.nodes) {
@@ -2145,12 +3072,14 @@
       targetCtx.fill();
     }
 
-    for (let i = flashes.length - 1; i >= 0; i--) {
-      const f = flashes[i];
-      targetCtx.beginPath();
-      targetCtx.fillStyle = `rgba(232, 213, 163, ${0.35 * f.life})`;
-      targetCtx.arc(f.x, f.y, 4 + (1 - f.life) * 8, 0, Math.PI * 2);
-      targetCtx.fill();
+    if (!hideChrome) {
+      for (let i = flashes.length - 1; i >= 0; i--) {
+        const f = flashes[i];
+        targetCtx.beginPath();
+        targetCtx.fillStyle = `rgba(232, 213, 163, ${0.35 * f.life})`;
+        targetCtx.arc(f.x, f.y, 4 + (1 - f.life) * 8, 0, Math.PI * 2);
+        targetCtx.fill();
+      }
     }
 
     targetCtx.restore();
@@ -2185,9 +3114,11 @@
       .catch(() => {});
   }
 
-  function drawExportCaption(targetCtx, meta) {
-    const y0 = height;
-    const band = EXPORT_CAPTION_HEIGHT;
+  function drawExportCaption(targetCtx, meta, frame = {}) {
+    const y0 = frame.y0 ?? height;
+    const band = frame.band ?? EXPORT_CAPTION_HEIGHT;
+    const outW = frame.width ?? width;
+    const pixelRatio = frame.dpr ?? dpr;
     const params = meta.params || {};
     const simSnap = meta.sim || {};
     const gridLabel = meta.gridName || "untitled grid";
@@ -2195,16 +3126,16 @@
     const line2 = `gen ${simSnap.generation ?? 0}  ·  attractors ${
       simSnap.attractorsLeft ? simSnap.attractorsLeft.length : 0
     }  ·  seeds ${(meta.seeds || []).length}`;
-    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  cap ${params.iterationsCap}  ·  thick ${Number(ui.branchThickness?.value ?? 1).toFixed(1)}`;
+    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  dir ${Number(params.growthDirection ?? 0).toFixed(2)}  ·  merge ${params.mergeBranches ? "on" : "off"}/${Number(params.mergeDistance ?? 20).toFixed(0)}  ·  obs ${params.obstacleMode === "repel" ? "repel" : "hard"}/${Number(params.repulsionDistance ?? 40).toFixed(0)}/${Number(params.repulsionStrength ?? 1.2).toFixed(1)}  ·  cap ${params.iterationsCap}  ·  thick ${Number(ui.branchThickness?.value ?? 1).toFixed(1)}`;
 
     targetCtx.save();
-    targetCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    targetCtx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     targetCtx.fillStyle = "#111";
-    targetCtx.fillRect(0, y0, width, band);
+    targetCtx.fillRect(0, y0, outW, band);
     targetCtx.fillStyle = "#2a2a2a";
-    targetCtx.fillRect(0, y0, width, 1);
+    targetCtx.fillRect(0, y0, outW, 1);
     const pad = 12;
-    const maxW = Math.max(40, width - pad * 2);
+    const maxW = Math.max(40, outW - pad * 2);
     targetCtx.textBaseline = "top";
     targetCtx.font = EXPORT_CAPTION_FONT;
     if (targetCtx.letterSpacing !== undefined) targetCtx.letterSpacing = "0.06em";
@@ -2230,6 +3161,7 @@
       params: readParamsFromUI(),
       jitter: sim.jitter,
       seeds: seeds.map((seed) => ({ x: seed.x, y: seed.y })),
+      obstacles: serializeObstacles(),
       display: {
         gridOpacity: Number(ui.gridOpacity?.value ?? 90),
         attractorSize: Number(ui.attractorSize?.value ?? 2),
@@ -2239,6 +3171,7 @@
         showSecondary: !!ui.showSecondary?.checked,
         showTertiary: !!ui.showTertiary?.checked,
         showVoidMask: !!ui.showVoidMask?.checked,
+        showInfluenceRadius: !!ui.showInfluenceRadius?.checked,
         colors: {
           attractor: colors.attractor,
           branch: colors.branch,
@@ -2443,6 +3376,9 @@
     if (ui.showSecondary) ui.showSecondary.checked = !!display.showSecondary;
     if (ui.showTertiary) ui.showTertiary.checked = !!display.showTertiary;
     if (ui.showVoidMask) ui.showVoidMask.checked = !!display.showVoidMask;
+    if (ui.showInfluenceRadius && display.showInfluenceRadius != null) {
+      ui.showInfluenceRadius.checked = !!display.showInfluenceRadius;
+    }
     const colors = display.colors;
     if (colors) {
       if (ui.attractorColor && colors.attractor) ui.attractorColor.value = colors.attractor;
@@ -2492,7 +3428,10 @@
     if (meta.transparentBackground != null && ui.exportTransparent) {
       ui.exportTransparent.checked = !!meta.transparentBackground;
     }
-    applySimSnapshot(meta.params, meta.seeds || [], meta.sim);
+    applySimSnapshot(meta.params, meta.seeds || [], {
+      ...meta.sim,
+      obstacles: (meta.sim && meta.sim.obstacles) || meta.obstacles || [],
+    });
     activeVariantId = null;
     activeSavedIterationId = null;
     const loadedMsg = `Loaded snapshot · gen ${meta.sim.generation} · ${meta.sim.attractorsLeft.length} attractors left`;
@@ -2629,6 +3568,32 @@
       parts.push(`</g>`);
     }
 
+    if (obstacles.length) {
+      const repel = sim.obstacleMode === "repel";
+      const stroke = repel ? "rgba(120,176,232,0.92)" : "rgba(232,140,96,0.92)";
+      const fill = repel ? "rgba(120,176,232,0.12)" : "rgba(232,140,96,0.12)";
+      parts.push(`<g fill="${fill}" stroke="${stroke}" stroke-width="1.6">`);
+      for (const obs of obstacles) {
+        if (obs.type === "circle") {
+          parts.push(
+            `<circle cx="${svgNum(obs.x)}" cy="${svgNum(obs.y)}" r="${svgNum(obs.r)}"/>`
+          );
+        } else if (obs.type === "rect") {
+          const x = Math.min(obs.x, obs.x + obs.w);
+          const y = Math.min(obs.y, obs.y + obs.h);
+          parts.push(
+            `<rect x="${svgNum(x)}" y="${svgNum(y)}" width="${svgNum(Math.abs(obs.w))}" height="${svgNum(
+              Math.abs(obs.h)
+            )}"/>`
+          );
+        } else if (obs.type === "polygon" && obs.points && obs.points.length >= 3) {
+          const d = obs.points.map((p, i) => `${i ? "L" : "M"}${svgNum(p.x)} ${svgNum(p.y)}`).join(" ");
+          parts.push(`<path d="${d} Z"/>`);
+        }
+      }
+      parts.push(`</g>`);
+    }
+
     if (sim.attractors.length) {
       const fill = rgbaFromHex(palette.attractor, 0.82);
       const stroke = rgbaFromHex(palette.attractor, 1);
@@ -2657,28 +3622,53 @@
         );
       }
     }
+    if (sim.mergeLinks && sim.mergeLinks.length) {
+      for (const link of sim.mergeLinks) {
+        if (!link.a || !link.b) continue;
+        const order = Math.min(link.a.order || 1, link.b.order || 1);
+        if (identify && !visible[order]) continue;
+        const color = identify ? palette[order] || palette.branch : palette.branch;
+        const thick = branchStrokeWidth(
+          Math.max(link.a.thickness || 1, link.b.thickness || 1),
+          order,
+          identify
+        );
+        parts.push(
+          `<line x1="${svgNum(link.a.pos.x)}" y1="${svgNum(link.a.pos.y)}" x2="${svgNum(
+            link.b.pos.x
+          )}" y2="${svgNum(link.b.pos.y)}" stroke="${xmlEscape(color)}" stroke-width="${svgNum(thick)}"/>`
+        );
+      }
+    }
     parts.push(`</g>`);
 
-    parts.push(`<g fill="#e8d5a3">`);
     for (const seed of seeds) {
       const selected = seed.id === selectedSeedId;
       if (selected) {
         parts.push(
           `<circle cx="${svgNum(seed.x)}" cy="${svgNum(
             seed.y
-          )}" r="8" fill="none" stroke="rgba(232,213,163,0.85)" stroke-width="2"/>`
+          )}" r="16" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="1.2" stroke-dasharray="4 3"/>`
+        );
+        parts.push(
+          `<circle cx="${svgNum(seed.x)}" cy="${svgNum(
+            seed.y
+          )}" r="10" fill="none" stroke="#ffffff" stroke-width="2.4"/>`
         );
       }
       parts.push(
-        `<circle cx="${svgNum(seed.x)}" cy="${svgNum(seed.y)}" r="${selected ? 4.2 : 3.4}"/>`
+        `<circle cx="${svgNum(seed.x)}" cy="${svgNum(seed.y)}" r="${
+          selected ? 5 : 3.4
+        }" fill="${selected ? "#ffffff" : "#e8d5a3"}"/>`
       );
     }
     for (const node of sim.nodes) {
       if (node.parent) continue;
       if (seeds.some((seed) => Math.hypot(seed.x - node.pos.x, seed.y - node.pos.y) < 3)) continue;
-      parts.push(`<circle cx="${svgNum(node.pos.x)}" cy="${svgNum(node.pos.y)}" r="3.4"/>`);
+      parts.push(
+        `<circle cx="${svgNum(node.pos.x)}" cy="${svgNum(node.pos.y)}" r="3.4" fill="#e8d5a3"/>`
+      );
     }
-    parts.push(`</g>`);
     parts.push(`</g>`);
 
     const params = meta.params || {};
@@ -2688,7 +3678,7 @@
     const line2 = `gen ${simSnap.generation ?? 0}  ·  attractors ${
       simSnap.attractorsLeft ? simSnap.attractorsLeft.length : 0
     }  ·  seeds ${(meta.seeds || []).length}`;
-    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  cap ${params.iterationsCap}  ·  thick ${Number(ui.branchThickness?.value ?? 1).toFixed(1)}`;
+    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  dir ${Number(params.growthDirection ?? 0).toFixed(2)}  ·  merge ${params.mergeBranches ? "on" : "off"}/${Number(params.mergeDistance ?? 20).toFixed(0)}  ·  obs ${params.obstacleMode === "repel" ? "repel" : "hard"}/${Number(params.repulsionDistance ?? 40).toFixed(0)}/${Number(params.repulsionStrength ?? 1.2).toFixed(1)}  ·  cap ${params.iterationsCap}  ·  thick ${Number(ui.branchThickness?.value ?? 1).toFixed(1)}`;
     const y0 = height;
     parts.push(`<g>`);
     parts.push(`<rect x="0" y="${svgNum(y0)}" width="${svgNum(svgW)}" height="${svgNum(EXPORT_CAPTION_HEIGHT)}" fill="#111"/>`);
@@ -2723,26 +3713,63 @@
     return true;
   }
 
+  const EXPORT_SITE_PX = 2000;
+
+  function currentSiteRect() {
+    if (gridLayout && gridLayout.w > 0 && gridLayout.h > 0) return gridLayout;
+    return computeSiteLayout(width || EXPORT_SITE_PX, height || EXPORT_SITE_PX).layout;
+  }
+
+  function cameraForSiteRect(site, destSize) {
+    const scale = destSize / Math.max(1, site.w);
+    return {
+      scale,
+      x: -site.x * scale,
+      y: -site.y * scale,
+    };
+  }
+
+  function buildPngExportCanvas(transparentBackground) {
+    const site = currentSiteRect();
+    const scene = EXPORT_SITE_PX;
+    const band = EXPORT_CAPTION_HEIGHT;
+    const off = document.createElement("canvas");
+    off.width = scene;
+    off.height = scene + band;
+    const ectx = off.getContext("2d");
+    ectx.setTransform(1, 0, 0, 1, 0, 0);
+    renderStudioFrame(ectx, {
+      transparentBackground,
+      outputWidth: scene,
+      outputHeight: scene,
+      camera: cameraForSiteRect(site, scene),
+      pixelRatio: 1,
+      clipToOutput: true,
+      hideSiteBoundary: true,
+      hideInfluencePreview: true,
+      hideEditingChrome: true,
+      hideDraft: true,
+    });
+    return { canvas: off, ctx: ectx, scene, band };
+  }
+
   function downloadPngSnapshot() {
-    if (!width || !height) {
-      setExportStatus("Canvas is not ready to export.", "error");
+    if (!gridLayout && !gridSource) {
+      setExportStatus("Import a grid before exporting a PNG.", "error");
       return Promise.resolve(false);
     }
     return ensureExportCaptionFont().then(
       () =>
         new Promise((resolve) => {
-          const off = document.createElement("canvas");
-          off.width = Math.floor(width * dpr);
-          off.height = Math.floor((height + EXPORT_CAPTION_HEIGHT) * dpr);
-          const ectx = off.getContext("2d");
-          ectx.setTransform(dpr, 0, 0, dpr, 0, 0);
           const transparentBackground = !!(ui.exportTransparent && ui.exportTransparent.checked);
-          renderStudioFrame(ectx, {
-            transparentBackground,
-            hideSiteBoundary: true,
-          });
+          const { canvas: off, ctx: ectx, scene, band } = buildPngExportCanvas(transparentBackground);
           const meta = buildExportMetadata(transparentBackground);
-          drawExportCaption(ectx, meta);
+          drawExportCaption(ectx, meta, {
+            width: scene,
+            y0: scene,
+            band,
+            dpr: 1,
+          });
           const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
           const suffix = transparentBackground ? "transparent" : "opaque";
           const filename = `${exportFileBaseName()}-d7-${suffix}-${stamp}.png`;
@@ -2870,29 +3897,61 @@
   });
 
   ui.reset.addEventListener("click", resetSim);
-  ui.importGrid.addEventListener("click", () => ui.gridFile.click());
+  if (ui.replaceGrid) {
+    ui.replaceGrid.addEventListener("click", () => {
+      const target = gridSlots[activeSlotIndex]?.entry
+        ? activeSlotIndex
+        : Math.max(0, firstEmptyGridSlotIndex());
+      openGridFilePicker(target);
+    });
+  }
   ui.clearGrid.addEventListener("click", clearGrid);
-  ui.prevGrid.addEventListener("click", () => cycleGrid(-1));
-  ui.nextGrid.addEventListener("click", () => cycleGrid(1));
-  ui.seedMode.addEventListener("click", () => setSeedPlacementMode(!seedPlacementMode));
+  ui.seedMode.addEventListener("click", () => setInteractionMode("add"));
+  if (ui.selectRoot) {
+    ui.selectRoot.addEventListener("click", () => setInteractionMode("select"));
+  }
+  if (ui.drawObstacle) {
+    ui.drawObstacle.addEventListener("click", () => setInteractionMode("draw"));
+  }
+  if (ui.deleteSelectedRoot) {
+    ui.deleteSelectedRoot.addEventListener("click", deleteSelectedRoot);
+  }
   ui.clearSeeds.addEventListener("click", clearSeeds);
+  if (ui.obstacleRect) ui.obstacleRect.addEventListener("click", () => setObstacleTool("rect"));
+  if (ui.obstacleCircle) ui.obstacleCircle.addEventListener("click", () => setObstacleTool("circle"));
+  if (ui.obstaclePolygon) ui.obstaclePolygon.addEventListener("click", () => setObstacleTool("polygon"));
+  if (ui.obstacleHard) ui.obstacleHard.addEventListener("click", () => setObstacleBehavior("hard"));
+  if (ui.obstacleRepel) ui.obstacleRepel.addEventListener("click", () => setObstacleBehavior("repel"));
+  if (ui.deleteSelectedObstacle) {
+    ui.deleteSelectedObstacle.addEventListener("click", deleteSelectedObstacle);
+  }
+  if (ui.clearObstacles) ui.clearObstacles.addEventListener("click", clearObstacles);
+  if (ui.repulsionDistance) {
+    ui.repulsionDistance.addEventListener("input", () => onLiveParamChange("repulsionDistance"));
+  }
+  if (ui.repulsionStrength) {
+    ui.repulsionStrength.addEventListener("input", () => onLiveParamChange("repulsionStrength"));
+  }
   ui.gridFile.addEventListener("change", async () => {
-    const files = ui.gridFile.files ? [...ui.gridFile.files] : [];
-    if (!files.length) return;
-    let added = 0;
-    for (const file of files) {
-      if (await importGridFile(file)) added += 1;
-    }
+    const file = ui.gridFile.files && ui.gridFile.files[0];
     ui.gridFile.value = "";
-    if (added > 1) {
-      setGridStatus(`${added} grids loaded · use Prev / Next to cycle`, "active");
-    }
+    if (!file) return;
+    await importGridFile(file, pendingSlotIndex);
   });
 
   ui.count.addEventListener("input", () => onLiveParamChange("count"));
   ui.influence.addEventListener("input", () => onLiveParamChange("influence"));
   ui.kill.addEventListener("input", () => onLiveParamChange("kill"));
   ui.stepSize.addEventListener("input", () => onLiveParamChange("step"));
+  if (ui.growthDirection) {
+    ui.growthDirection.addEventListener("input", () => onLiveParamChange("growthDirection"));
+  }
+  if (ui.mergeBranches) {
+    ui.mergeBranches.addEventListener("change", () => onLiveParamChange("merge"));
+  }
+  if (ui.mergeDistance) {
+    ui.mergeDistance.addEventListener("input", () => onLiveParamChange("mergeDistance"));
+  }
   ui.iterations.addEventListener("input", () => onLiveParamChange("iterations"));
   ui.gridOpacity.addEventListener("input", updateDisplayParams);
   ui.attractorSize.addEventListener("input", updateDisplayParams);
@@ -2942,6 +4001,43 @@
     return screenToWorld(event.clientX, event.clientY);
   }
 
+  function closePolygonDraft() {
+    if (!obstacleDraft || obstacleDraft.type !== "polygon") return false;
+    const pts = obstacleDraft.points || [];
+    if (pts.length < 3) {
+      obstacleDraft = null;
+      updateObstacleUI();
+      return false;
+    }
+    addObstacle({ type: "polygon", points: pts });
+    return true;
+  }
+
+  function resizeRectObstacle(obs, handle, point) {
+    const box = obstacleAabb(obs);
+    let minX = box.minX;
+    let minY = box.minY;
+    let maxX = box.maxX;
+    let maxY = box.maxY;
+    if (handle === "nw") {
+      minX = point.x;
+      minY = point.y;
+    } else if (handle === "ne") {
+      maxX = point.x;
+      minY = point.y;
+    } else if (handle === "se") {
+      maxX = point.x;
+      maxY = point.y;
+    } else if (handle === "sw") {
+      minX = point.x;
+      maxY = point.y;
+    }
+    obs.x = Math.min(minX, maxX);
+    obs.y = Math.min(minY, maxY);
+    obs.w = Math.max(8, Math.abs(maxX - minX));
+    obs.h = Math.max(8, Math.abs(maxY - minY));
+  }
+
   canvas.addEventListener(
     "wheel",
     (event) => {
@@ -2954,30 +4050,6 @@
   canvas.addEventListener("auxclick", (event) => {
     if (event.button === 1) event.preventDefault();
   });
-
-  function hitCircle(point) {
-    for (let i = placedCircles.length - 1; i >= 0; i--) {
-      const circle = placedCircles[i];
-      const d = Math.hypot(point.x - circle.x, point.y - circle.y);
-      if (Math.abs(d - circle.r) < 10 || d < 12) return { circle, placed: true, index: i };
-    }
-    if (gridShapes) {
-      for (let i = gridShapes.circles.length - 1; i >= 0; i--) {
-        const circle = gridShapes.circles[i];
-        const d = Math.hypot(point.x - circle.x, point.y - circle.y);
-        if (Math.abs(d - circle.r) < 10 || d < 12) return { circle, placed: false, index: i };
-      }
-    }
-    return null;
-  }
-
-  function syncCircles() {
-    sim.circles = [];
-    if (gridShapes && gridShapes.circles.length) {
-      sim.circles.push(...gridShapes.circles.map((circle) => ({ ...circle })));
-    }
-    sim.circles.push(...placedCircles.map((circle) => ({ ...circle })));
-  }
 
   canvas.addEventListener("pointerdown", (event) => {
     if (event.button === 1) {
@@ -2994,38 +4066,76 @@
     }
     if (event.button !== 0) return;
     const point = canvasPoint(event);
-    const seed = hitSeed(point);
-    if (seed) {
-      selectedSeedId = seed.id;
-      updateSeedUI();
+
+    if (interactionMode === "draw") {
       canvas.setPointerCapture(event.pointerId);
-      canvas._drag = { kind: "seed", seed, origin: point, x: seed.x, y: seed.y };
+      if (obstacleTool === "polygon") {
+        canvas._drag = { kind: "poly-click", origin: point };
+        return;
+      }
+      canvas._drag = { kind: "draw-shape", origin: point };
       return;
     }
-    const hit = hitCircle(point);
-    if (hit) {
-      const d = Math.hypot(point.x - hit.circle.x, point.y - hit.circle.y);
-      draft = null;
-      canvas.setPointerCapture(event.pointerId);
-      canvas._drag = {
-        kind: Math.abs(d - hit.circle.r) < 10 ? "resize" : "move",
-        placed: hit.placed,
-        index: hit.index,
-        circle: hit.circle,
-        origin: point,
-        x: hit.circle.x,
-        y: hit.circle.y,
-        r: hit.circle.r,
-      };
-      return;
-    }
-    if (seedPlacementMode) {
+
+    if (interactionMode === "add") {
+      const seed = hitSeed(point);
+      if (seed) {
+        const wasSelected = selectedSeedId === seed.id;
+        if (!wasSelected) selectSeed(seed.id);
+        canvas.setPointerCapture(event.pointerId);
+        canvas._drag = {
+          kind: "seed",
+          seed,
+          origin: point,
+          x: seed.x,
+          y: seed.y,
+          toggleDeselect: wasSelected,
+          moved: false,
+        };
+        return;
+      }
       canvas.setPointerCapture(event.pointerId);
       canvas._drag = { kind: "place-seed", origin: point };
       return;
     }
+
+    const seed = hitSeed(point);
+    if (seed) {
+      deselectObstacle();
+      const wasSelected = selectedSeedId === seed.id;
+      if (!wasSelected) selectSeed(seed.id);
+      canvas.setPointerCapture(event.pointerId);
+      canvas._drag = {
+        kind: "seed",
+        seed,
+        origin: point,
+        x: seed.x,
+        y: seed.y,
+        toggleDeselect: wasSelected,
+        moved: false,
+      };
+      return;
+    }
+
+    const hit = hitTestObstacles(obstacles, point.x, point.y, 10);
+    if (hit) {
+      deselectSeed();
+      selectObstacle(hit.obs.id);
+      canvas.setPointerCapture(event.pointerId);
+      canvas._drag = {
+        kind: "obstacle",
+        obs: hit.obs,
+        handle: hit.handle,
+        vertex: hit.vertex,
+        origin: point,
+        start: cloneObstacle(hit.obs),
+        moved: false,
+      };
+      return;
+    }
+
     canvas.setPointerCapture(event.pointerId);
-    canvas._drag = { kind: "new", origin: point };
+    canvas._drag = { kind: "empty-select", origin: point };
   });
 
   canvas.addEventListener("pointermove", (event) => {
@@ -3034,21 +4144,71 @@
       view.y = canvas._pan.vy + (event.clientY - canvas._pan.oy);
       return;
     }
-    const drag = canvas._drag;
-    if (!drag) return;
     const point = canvasPoint(event);
-    if (drag.kind === "seed") {
-      moveSeed(drag.seed.id, drag.x + (point.x - drag.origin.x), drag.y + (point.y - drag.origin.y));
+    const drag = canvas._drag;
+    if (
+      !drag &&
+      interactionMode === "draw" &&
+      obstacleTool === "polygon" &&
+      obstacleDraft &&
+      obstacleDraft.points
+    ) {
+      obstacleDraft.hover = point;
       return;
     }
-    if (drag.kind === "move") {
-      drag.circle.x = drag.x + (point.x - drag.origin.x);
-      drag.circle.y = drag.y + (point.y - drag.origin.y);
-    } else if (drag.kind === "resize") {
-      drag.circle.r = Math.max(8, Math.hypot(point.x - drag.circle.x, point.y - drag.circle.y));
-    } else {
-      const r = Math.hypot(point.x - drag.origin.x, point.y - drag.origin.y);
-      draft = r >= 8 ? { x: drag.origin.x, y: drag.origin.y, r } : null;
+    if (!drag) return;
+    if (drag.kind === "seed") {
+      const nx = drag.x + (point.x - drag.origin.x);
+      const ny = drag.y + (point.y - drag.origin.y);
+      if (Math.hypot(point.x - drag.origin.x, point.y - drag.origin.y) >= 4) {
+        drag.moved = true;
+        drag.toggleDeselect = false;
+      }
+      if (drag.moved) moveSeed(drag.seed.id, nx, ny);
+      return;
+    }
+    if (drag.kind === "place-seed" || drag.kind === "empty-select" || drag.kind === "poly-click") {
+      return;
+    }
+    if (drag.kind === "draw-shape") {
+      if (obstacleTool === "circle") {
+        const r = Math.hypot(point.x - drag.origin.x, point.y - drag.origin.y);
+        obstacleDraft = r >= 8 ? { type: "circle", x: drag.origin.x, y: drag.origin.y, r, draft: true } : null;
+      } else {
+        const w = point.x - drag.origin.x;
+        const h = point.y - drag.origin.y;
+        obstacleDraft =
+          Math.abs(w) >= 8 && Math.abs(h) >= 8
+            ? { type: "rect", x: drag.origin.x, y: drag.origin.y, w, h, draft: true }
+            : null;
+      }
+      return;
+    }
+    if (drag.kind === "obstacle") {
+      const dx = point.x - drag.origin.x;
+      const dy = point.y - drag.origin.y;
+      if (Math.hypot(dx, dy) >= 3) drag.moved = true;
+      const obs = drag.obs;
+      const start = drag.start;
+      if (obs.type === "circle" && drag.handle === "rim") {
+        obs.r = Math.max(8, Math.hypot(point.x - obs.x, point.y - obs.y));
+      } else if (obs.type === "circle") {
+        obs.x = start.x + dx;
+        obs.y = start.y + dy;
+      } else if (obs.type === "rect" && drag.handle && drag.handle !== "body") {
+        resizeRectObstacle(obs, drag.handle, point);
+      } else if (obs.type === "polygon" && drag.handle === "vertex") {
+        const p = obs.points[drag.vertex];
+        if (p) {
+          p.x = start.points[drag.vertex].x + dx;
+          p.y = start.points[drag.vertex].y + dy;
+        }
+      } else {
+        moveObstacleBy(obs, dx - (drag._lastDx || 0), dy - (drag._lastDy || 0));
+        drag._lastDx = dx;
+        drag._lastDy = dy;
+      }
+      syncObstacles();
     }
   });
 
@@ -3064,39 +4224,124 @@
     const point = canvasPoint(event);
     if (drag.kind === "place-seed") {
       if (Math.hypot(point.x - drag.origin.x, point.y - drag.origin.y) < 4) {
-        addSeedRecord(drag.origin);
+        if (!hitSeed(drag.origin)) addSeedRecord(drag.origin);
       }
       return;
     }
-    if (drag.kind === "new") {
-      const r = Math.hypot(point.x - drag.origin.x, point.y - drag.origin.y);
-      draft = null;
-      if (r < 8) return;
-      placedCircles.push({ x: drag.origin.x, y: drag.origin.y, r });
-      syncCircles();
+    if (drag.kind === "seed") {
+      if (drag.toggleDeselect && !drag.moved) deselectSeed();
+      return;
     }
-    syncCircles();
+    if (drag.kind === "empty-select") {
+      if (Math.hypot(point.x - drag.origin.x, point.y - drag.origin.y) < 4) {
+        deselectSeed();
+        deselectObstacle();
+      }
+      return;
+    }
+    if (drag.kind === "poly-click") {
+      if (Math.hypot(point.x - drag.origin.x, point.y - drag.origin.y) >= 4) return;
+      if (!obstacleDraft || obstacleDraft.type !== "polygon") {
+        obstacleDraft = { type: "polygon", points: [{ x: point.x, y: point.y }], draft: true };
+        updateObstacleUI();
+        return;
+      }
+      const first = obstacleDraft.points[0];
+      if (
+        obstacleDraft.points.length >= 3 &&
+        Math.hypot(point.x - first.x, point.y - first.y) <= 12
+      ) {
+        closePolygonDraft();
+        return;
+      }
+      obstacleDraft.points.push({ x: point.x, y: point.y });
+      obstacleDraft.hover = null;
+      updateObstacleUI();
+      return;
+    }
+    if (drag.kind === "draw-shape") {
+      const draft = obstacleDraft;
+      obstacleDraft = null;
+      if (!draft) return;
+      if (draft.type === "circle" && draft.r >= 8) {
+        addObstacle({ type: "circle", x: draft.x, y: draft.y, r: draft.r });
+      } else if (draft.type === "rect" && Math.abs(draft.w) >= 8 && Math.abs(draft.h) >= 8) {
+        addObstacle({
+          type: "rect",
+          x: Math.min(draft.x, draft.x + draft.w),
+          y: Math.min(draft.y, draft.y + draft.h),
+          w: Math.abs(draft.w),
+          h: Math.abs(draft.h),
+        });
+      }
+      return;
+    }
+    if (drag.kind === "obstacle") {
+      if (drag.moved) {
+        syncObstacles();
+        if (sim.generation > 0) replayGrowthFromSeeds();
+      }
+    }
+  });
+
+  canvas.addEventListener("dblclick", (event) => {
+    if (interactionMode !== "draw" || obstacleTool !== "polygon") return;
+    event.preventDefault();
+    closePolygonDraft();
   });
 
   canvas.addEventListener("contextmenu", (event) => {
     event.preventDefault();
+    if (interactionMode === "draw" && obstacleDraft) {
+      obstacleDraft = null;
+      updateObstacleUI();
+      return;
+    }
     const point = canvasPoint(event);
+    if (interactionMode === "add") {
+      const seed = hitSeed(point);
+      if (seed) removeSeed(seed.id);
+      return;
+    }
     const seed = hitSeed(point);
     if (seed) {
       removeSeed(seed.id);
       return;
     }
-    const hit = hitCircle(point);
-    if (!hit) return;
-    if (hit.placed) placedCircles.splice(hit.index, 1);
-    else if (gridShapes) gridShapes.circles.splice(hit.index, 1);
-    syncCircles();
+    const hit = hitTestObstacles(obstacles, point.x, point.y, 10);
+    if (hit) {
+      selectedObstacleId = hit.obs.id;
+      deleteSelectedObstacle();
+    }
   });
 
   window.addEventListener("keydown", (event) => {
-    if (event.target && ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName)) return;
-    if (event.key === "Delete" && selectedSeedId != null) {
-      removeSeed(selectedSeedId);
+    if (isTypingTarget(event.target)) return;
+    if (event.key === "Escape") {
+      if (obstacleDraft) {
+        obstacleDraft = null;
+        updateObstacleUI();
+        return;
+      }
+      deselectSeed();
+      deselectObstacle();
+      return;
+    }
+    if (event.key === "Enter" && interactionMode === "draw" && obstacleTool === "polygon") {
+      event.preventDefault();
+      closePolygonDraft();
+      return;
+    }
+    if (event.key === "Delete" || event.key === "Backspace") {
+      if (selectedObstacleId != null) {
+        event.preventDefault();
+        deleteSelectedObstacle();
+        return;
+      }
+      if (selectedSeedId != null) {
+        event.preventDefault();
+        deleteSelectedRoot();
+      }
     }
   });
 
@@ -3108,14 +4353,17 @@
     new ResizeObserver(resize).observe(viewport);
   }
   loadSavedIterationsFromStorage();
-  updateSeedUI();
+  setInteractionMode("select");
+  applyParams();
   initSliderBounds();
   initDisplayColors();
   updateDisplayParams();
   ui.batchCountVal.textContent = ui.batchCount.value;
+  buildGridSlotButtons();
   updateGridCycleUI();
   updateVariantUI();
   updateIterationUI();
   resize();
+  restoreGridSlots();
   loop();
 })();

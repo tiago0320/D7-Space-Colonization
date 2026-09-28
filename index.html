@@ -19,30 +19,29 @@
       <div class="kicker">Runions et al. 2007</div>
       <h1>D7-Space-Colonization</h1>
       <p class="lede">
-        Import PNG, JPG, or SVG — add several grids and use Prev / Next to cycle. Grow and capture variants per grid.
+        Import PNG, JPG, or SVG into Grid 1, Grid 2, or Grid 3. Switch slots any time — each grid stays loaded. Grow and capture variants per grid.
       </p>
 
       <div class="row">
         <button id="play" class="primary" type="button" disabled>Grow</button>
         <button id="reset" class="ghost" type="button">Reset</button>
       </div>
-      <div class="row">
-        <button id="importGrid" class="ghost" type="button">Add grid</button>
-        <button id="clearGrid" class="ghost" type="button" disabled>Clear all</button>
+      <div class="section">
+        <div class="section-head">Grids</div>
+        <div id="gridSlots" class="grid-slots" role="tablist" aria-label="Grid slots"></div>
+        <p id="gridCycleStatus" class="grid-status">No grids loaded</p>
+        <div class="row">
+          <button id="replaceGrid" class="ghost" type="button">Replace this grid</button>
+          <button id="clearGrid" class="ghost" type="button" disabled>Clear all</button>
+        </div>
+        <input
+          id="gridFile"
+          type="file"
+          accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml"
+          hidden
+        />
+        <p id="gridStatus" class="grid-status">Import a grid to begin</p>
       </div>
-      <div class="row">
-        <button id="prevGrid" class="ghost" type="button" disabled>Prev grid</button>
-        <button id="nextGrid" class="ghost" type="button" disabled>Next grid</button>
-      </div>
-      <p id="gridCycleStatus" class="grid-status">No grids loaded</p>
-      <input
-        id="gridFile"
-        type="file"
-        accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml"
-        multiple
-        hidden
-      />
-      <p id="gridStatus" class="grid-status">Import a grid to begin</p>
       <label class="check">
         <input id="showVoidMask" type="checkbox" />
         Show void mask (dim non-solid areas)
@@ -54,13 +53,53 @@
       </label>
 
       <div class="section">
-        <div class="section-head">Seeds</div>
+        <div class="section-head">Roots</div>
         <div class="row">
-          <button id="seedMode" class="ghost" type="button">Place seed</button>
-          <button id="clearSeeds" class="ghost" type="button">Clear</button>
+          <button id="seedMode" class="ghost" type="button">Add Root</button>
+          <button id="selectRoot" class="ghost active" type="button">Select</button>
+          <button id="drawObstacle" class="ghost" type="button">Draw Obstacle</button>
         </div>
-        <p id="seedStatus" class="grid-status">0 seeds</p>
+        <div class="row">
+          <button id="deleteSelectedRoot" class="ghost" type="button" disabled>Delete Selected Root</button>
+          <button id="clearSeeds" class="ghost" type="button" disabled>Clear</button>
+        </div>
+        <p id="seedStatus" class="grid-status">0 roots</p>
         <ul id="seedList" class="seed-list"></ul>
+      </div>
+
+      <div class="section">
+        <div class="section-head">Repulsion Geometry</div>
+        <div class="row">
+          <button id="obstacleRect" class="ghost" type="button">Rectangle</button>
+          <button id="obstacleCircle" class="ghost active" type="button">Circle</button>
+          <button id="obstaclePolygon" class="ghost" type="button">Polygon</button>
+        </div>
+        <div class="row">
+          <button id="obstacleHard" class="ghost active" type="button">Hard Boundary</button>
+          <button id="obstacleRepel" class="ghost" type="button">Repulsion</button>
+        </div>
+        <label
+          class="ctrl"
+          title="How far from an obstacle the steering field begins. Used when Repulsion is selected."
+        >
+          Repulsion Distance
+          <span class="value" id="repulsionDistanceVal"></span>
+          <input id="repulsionDistance" type="range" min="8" max="160" step="1" value="40" />
+        </label>
+        <label
+          class="ctrl"
+          title="How strongly branches are pushed away from obstacles. Mixes with attraction; does not replace it."
+        >
+          Repulsion Strength
+          <span class="value" id="repulsionStrengthVal"></span>
+          <input id="repulsionStrength" type="range" min="0" max="4" step="0.1" value="1.2" />
+        </label>
+        <div class="row">
+          <button id="deleteSelectedObstacle" class="ghost" type="button" disabled>Delete Selected Geometry</button>
+          <button id="clearObstacles" class="ghost" type="button" disabled>Clear Repulsion Geometry</button>
+        </div>
+        <p id="obstacleStatus" class="grid-status">No obstacles</p>
+        <ul id="obstacleList" class="seed-list"></ul>
       </div>
 
       <label class="ctrl">
@@ -94,6 +133,10 @@
           <span>max</span>
         </span>
       </label>
+      <label class="check" title="Dashed circle around each remaining attractor, sized to the current Influence value.">
+        <input id="showInfluenceRadius" type="checkbox" />
+        Show influence radius
+      </label>
       <label class="ctrl">
         Kill distance
         <span class="value" id="killVal"></span>
@@ -116,6 +159,26 @@
           <span>max</span>
         </span>
       </label>
+      <label
+        class="ctrl"
+        title="Bias growth toward horizontal or vertical. Attractors still steer; 0 keeps the current simulation."
+      >
+        Growth Direction
+        <span class="value" id="growthDirectionVal"></span>
+        <input
+          id="growthDirection"
+          type="range"
+          min="-1"
+          max="1"
+          step="0.05"
+          value="0"
+          aria-label="Growth Direction"
+        />
+        <span class="range-bounds axis-labels">
+          <span>Horizontal</span>
+          <span>Vertical</span>
+        </span>
+      </label>
       <label class="ctrl">
         Iterations
         <span class="value" id="iterVal"></span>
@@ -130,6 +193,18 @@
 
       <div class="section">
         <div class="section-head">Branches</div>
+        <label class="check" title="When on, nearby tips from different roots can join. Off keeps networks independent.">
+          <input id="mergeBranches" type="checkbox" />
+          Merge Branches
+        </label>
+        <label
+          class="ctrl"
+          title="Maximum distance for two tips from different roots to form a connection. Used only when Merge Branches is on."
+        >
+          Merge Distance
+          <span class="value" id="mergeDistanceVal"></span>
+          <input id="mergeDistance" type="range" min="4" max="80" step="1" value="20" />
+        </label>
         <label class="ctrl" title="Scales the trunk-to-tip taper: bases with more descendants stay thicker, tips stay thinner.">
           Branch thickness
           <span class="value" id="branchThicknessVal"></span>
@@ -137,7 +212,7 @@
         </label>
         <label class="ctrl color-ctrl" title="Stroke color when rank identification is off.">
           Branch color
-          <input id="branchColor" type="color" value="#ff0000" aria-label="Branch color" />
+          <input id="branchColor" type="color" value="#FFFFFF" aria-label="Branch color" />
         </label>
         <label class="check">
           <input id="identifyBranches" type="checkbox" />
@@ -165,7 +240,7 @@
       <div class="stats">
         <div>Iteration<b id="genCount">0</b></div>
         <div>Attractors left<b id="attrCount">0</b></div>
-        <div>Seeds<b id="seedCount">0</b></div>
+        <div>Roots<b id="seedCount">0</b></div>
       </div>
 
       <div class="section">

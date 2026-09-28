@@ -128,7 +128,7 @@
     const local = pickPathStep(x, y, dirX, dirY, step, index);
     if (local) return local;
 
-    const wide = pickPathStep(x, y, dirX, dirY, step, index, 4);
+    const wide = pickPathStep(x, y, dirX, dirY, step, index, 8);
     if (wide) return wide;
 
     const ahead = pickPathAhead(x, y, dirX, dirY, step, index, bridgeReach);
@@ -136,50 +136,447 @@
       const vx = ahead.x - x;
       const vy = ahead.y - y;
       const d = Math.hypot(vx, vy) || 1;
-      if (d <= step * 1.25) return new Vec2(ahead.x, ahead.y);
+      if (d <= step * 3) return new Vec2(ahead.x, ahead.y);
       return new Vec2(x + (vx / d) * step, y + (vy / d) * step);
     }
 
     const nx = x + dirX * step;
     const ny = y + dirY * step;
-    const snap = nearestPathPoint(nx, ny, index, step * 2);
+    const snap = nearestPathPoint(nx, ny, index, Math.max(step * 8, bridgeReach * 0.35));
     if (snap) return new Vec2(snap.x, snap.y);
     return new Vec2(nx, ny);
   }
 
-  class Node {
-    constructor(pos, parent = null) {
-      this.pos = pos;
-      this.parent = parent;
-      this.children = [];
-      this.thickness = 1;
-      this.order = 1;
-      this.age = 0;
+  function obstacleAabb(obs) {
+    if (obs.type === "circle") {
+      return {
+        minX: obs.x - obs.r,
+        minY: obs.y - obs.r,
+        maxX: obs.x + obs.r,
+        maxY: obs.y + obs.r,
+      };
     }
+    if (obs.type === "rect") {
+      const x0 = Math.min(obs.x, obs.x + obs.w);
+      const y0 = Math.min(obs.y, obs.y + obs.h);
+      const x1 = Math.max(obs.x, obs.x + obs.w);
+      const y1 = Math.max(obs.y, obs.y + obs.h);
+      return { minX: x0, minY: y0, maxX: x1, maxY: y1 };
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const p of obs.points || []) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return { minX, minY, maxX, maxY };
   }
 
-  class Simulator {
-    constructor() {
-      this.nodes = [];
-      this.attractors = [];
-      this.attractionRadius = 90;
-      this.killDistance = 12;
-      this.stepSize = 6;
-      this.jitter = 0.12;
-      this.pathIndex = null;
-      this.bias = new Vec2(0, 0);
-      this.generation = 0;
-      this.lastInfluences = [];
-      this.consumed = [];
-      this.circles = [];
+  function aabbHitsPoint(box, x, y, pad = 0) {
+    return x >= box.minX - pad && x <= box.maxX + pad && y >= box.minY - pad && y <= box.maxY + pad;
+  }
+
+  function aabbHitsSegment(box, x1, y1, x2, y2, pad = 0) {
+    const minX = box.minX - pad;
+    const minY = box.minY - pad;
+    const maxX = box.maxX + pad;
+    const maxY = box.maxY + pad;
+    if (
+      (x1 < minX && x2 < minX) ||
+      (x1 > maxX && x2 > maxX) ||
+      (y1 < minY && y2 < minY) ||
+      (y1 > maxY && y2 > maxY)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function pointInPolygon(points, x, y) {
+    if (!points || points.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const xi = points[i].x;
+      const yi = points[i].y;
+      const xj = points[j].x;
+      const yj = points[j].y;
+      const denom = yj - yi || 1e-12;
+      const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / denom + xi;
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  function closestOnSegment(x, y, ax, ay, bx, by) {
+    const vx = bx - ax;
+    const vy = by - ay;
+    const lenSq = vx * vx + vy * vy;
+    let t = 0;
+    if (lenSq > 1e-12) t = Math.max(0, Math.min(1, ((x - ax) * vx + (y - ay) * vy) / lenSq));
+    const px = ax + vx * t;
+    const py = ay + vy * t;
+    return { x: px, y: py, t, dSq: (x - px) * (x - px) + (y - py) * (y - py) };
+  }
+
+  function segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+    const abx = bx - ax;
+    const aby = by - ay;
+    const cdx = dx - cx;
+    const cdy = dy - cy;
+    const den = abx * cdy - aby * cdx;
+    if (Math.abs(den) < 1e-12) return false;
+    const acx = cx - ax;
+    const acy = cy - ay;
+    const t = (acx * cdy - acy * cdx) / den;
+    const u = (acx * aby - acy * abx) / den;
+    return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+  }
+
+  function obstacleContains(obs, x, y) {
+    if (!obs) return false;
+    const box = obstacleAabb(obs);
+    if (!aabbHitsPoint(box, x, y, 0.5)) return false;
+    if (obs.type === "circle") {
+      const dx = x - obs.x;
+      const dy = y - obs.y;
+      return dx * dx + dy * dy <= obs.r * obs.r;
+    }
+    if (obs.type === "rect") {
+      return x >= box.minX && x <= box.maxX && y >= box.minY && y <= box.maxY;
+    }
+    return pointInPolygon(obs.points, x, y);
+  }
+
+  function closestOnObstacle(obs, x, y) {
+    if (obs.type === "circle") {
+      const dx = x - obs.x;
+      const dy = y - obs.y;
+      const d = Math.hypot(dx, dy);
+      const inside = d <= obs.r;
+      if (d < 1e-8) {
+        return { x: obs.x + obs.r, y: obs.y, nx: 1, ny: 0, dist: -obs.r, inside: true };
+      }
+      const nx = dx / d;
+      const ny = dy / d;
+      return {
+        x: obs.x + nx * obs.r,
+        y: obs.y + ny * obs.r,
+        nx,
+        ny,
+        dist: d - obs.r,
+        inside,
+      };
     }
 
-    clearStructure() {
-      this.nodes = [];
-      this.generation = 0;
-      this.lastInfluences = [];
-      this.consumed = [];
+    if (obs.type === "rect") {
+      const box = obstacleAabb(obs);
+      const cx = Math.max(box.minX, Math.min(box.maxX, x));
+      const cy = Math.max(box.minY, Math.min(box.maxY, y));
+      const inside = x >= box.minX && x <= box.maxX && y >= box.minY && y <= box.maxY;
+      if (!inside) {
+        const d = Math.hypot(x - cx, y - cy) || 1e-8;
+        return { x: cx, y: cy, nx: (x - cx) / d, ny: (y - cy) / d, dist: d, inside: false };
+      }
+      const dLeft = x - box.minX;
+      const dRight = box.maxX - x;
+      const dTop = y - box.minY;
+      const dBottom = box.maxY - y;
+      const m = Math.min(dLeft, dRight, dTop, dBottom);
+      if (m === dLeft) return { x: box.minX, y, nx: -1, ny: 0, dist: -m, inside: true };
+      if (m === dRight) return { x: box.maxX, y, nx: 1, ny: 0, dist: -m, inside: true };
+      if (m === dTop) return { x, y: box.minY, nx: 0, ny: -1, dist: -m, inside: true };
+      return { x, y: box.maxY, nx: 0, ny: 1, dist: -m, inside: true };
     }
+
+    const pts = obs.points || [];
+    if (pts.length < 2) {
+      return { x, y, nx: 0, ny: 1, dist: Infinity, inside: false };
+    }
+    let best = null;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const hit = closestOnSegment(x, y, a.x, a.y, b.x, b.y);
+      if (!best || hit.dSq < best.dSq) best = { ...hit, a, b };
+    }
+    const inside = pointInPolygon(pts, x, y);
+    const dx = x - best.x;
+    const dy = y - best.y;
+    let nx;
+    let ny;
+    const d = Math.hypot(dx, dy);
+    if (d > 1e-8) {
+      nx = dx / d;
+      ny = dy / d;
+    } else {
+      const ex = best.b.x - best.a.x;
+      const ey = best.b.y - best.a.y;
+      const el = Math.hypot(ex, ey) || 1;
+      nx = ey / el;
+      ny = -ex / el;
+    }
+    if (inside && nx * dx + ny * dy > 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    if (!inside && nx * dx + ny * dy < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    const dist = Math.sqrt(best.dSq);
+    return { x: best.x, y: best.y, nx, ny, dist: inside ? -dist : dist, inside };
+  }
+
+  function segmentHitsObstacle(obs, x1, y1, x2, y2) {
+    const box = obstacleAabb(obs);
+    if (!aabbHitsSegment(box, x1, y1, x2, y2, 0.5)) return false;
+    if (obstacleContains(obs, x1, y1) || obstacleContains(obs, x2, y2)) return true;
+    if (obs.type === "circle") {
+      const hit = closestOnSegment(obs.x, obs.y, x1, y1, x2, y2);
+      return hit.dSq <= obs.r * obs.r;
+    }
+    if (obs.type === "rect") {
+      const x0 = box.minX;
+      const y0 = box.minY;
+      const x3 = box.maxX;
+      const y3 = box.maxY;
+      return (
+        segmentsIntersect(x1, y1, x2, y2, x0, y0, x3, y0) ||
+        segmentsIntersect(x1, y1, x2, y2, x3, y0, x3, y3) ||
+        segmentsIntersect(x1, y1, x2, y2, x3, y3, x0, y3) ||
+        segmentsIntersect(x1, y1, x2, y2, x0, y3, x0, y0)
+      );
+    }
+    const pts = obs.points || [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      if (segmentsIntersect(x1, y1, x2, y2, a.x, a.y, b.x, b.y)) return true;
+    }
+    return false;
+  }
+
+  function anyObstacleContains(obstacles, x, y) {
+    for (const obs of obstacles) {
+      if (obstacleContains(obs, x, y)) return obs;
+    }
+    return null;
+  }
+
+  function anyObstacleHitsSegment(obstacles, x1, y1, x2, y2) {
+    for (const obs of obstacles) {
+      if (segmentHitsObstacle(obs, x1, y1, x2, y2)) return obs;
+    }
+    return null;
+  }
+
+  function pushOutsideObstacles(x, y, obstacles) {
+    for (let pass = 0; pass < 3; pass++) {
+      let moved = false;
+      for (const obs of obstacles) {
+        const hit = closestOnObstacle(obs, x, y);
+        if (!hit.inside && hit.dist > 1.25) continue;
+        const nx = hit.nx;
+        const ny = hit.ny;
+        const nlen = Math.hypot(nx, ny) || 1;
+        x = hit.x + (nx / nlen) * 1.35;
+        y = hit.y + (ny / nlen) * 1.35;
+        moved = true;
+      }
+      if (!moved) break;
+    }
+    return { x, y };
+  }
+
+  function clipStepAgainstObstacles(x1, y1, x2, y2, obstacles) {
+    if (!obstacles || !obstacles.length) return { x: x2, y: y2 };
+    if (anyObstacleContains(obstacles, x1, y1)) {
+      const pushed = pushOutsideObstacles(x1, y1, obstacles);
+      if (anyObstacleContains(obstacles, pushed.x, pushed.y)) return null;
+      return pushed;
+    }
+    if (!anyObstacleHitsSegment(obstacles, x1, y1, x2, y2) && !anyObstacleContains(obstacles, x2, y2)) {
+      return { x: x2, y: y2 };
+    }
+    let lo = 0;
+    let hi = 1;
+    let last = { x: x1, y: y1 };
+    for (let i = 0; i < 14; i++) {
+      const mid = (lo + hi) * 0.5;
+      const x = x1 + (x2 - x1) * mid;
+      const y = y1 + (y2 - y1) * mid;
+      if (anyObstacleContains(obstacles, x, y) || anyObstacleHitsSegment(obstacles, x1, y1, x, y)) {
+        hi = mid;
+      } else {
+        last = { x, y };
+        lo = mid;
+      }
+    }
+    const d = Math.hypot(last.x - x1, last.y - y1);
+    if (d < 0.6) return null;
+    return last;
+  }
+
+  function obstacleRepulsionAt(x, y, obstacles, distance, strength) {
+    let rx = 0;
+    let ry = 0;
+    if (!(distance > 0) || !(strength > 0) || !obstacles.length) return { x: 0, y: 0 };
+    for (const obs of obstacles) {
+      const box = obstacleAabb(obs);
+      if (!aabbHitsPoint(box, x, y, distance)) continue;
+      const hit = closestOnObstacle(obs, x, y);
+      const d = hit.inside ? 0 : Math.max(0, hit.dist);
+      if (d >= distance) continue;
+      const t = 1 - d / distance;
+      const mag = strength * t * t;
+      const nlen = Math.hypot(hit.nx, hit.ny) || 1;
+      rx += (hit.nx / nlen) * mag;
+      ry += (hit.ny / nlen) * mag;
+    }
+    return { x: rx, y: ry };
+  }
+
+  function hitTestObstacle(obs, x, y, pad = 10) {
+    const box = obstacleAabb(obs);
+    if (!aabbHitsPoint(box, x, y, pad)) return null;
+    if (obs.type === "circle") {
+      const d = Math.hypot(x - obs.x, y - obs.y);
+      if (Math.abs(d - obs.r) <= pad) return { obs, handle: "rim" };
+      if (d <= obs.r) return { obs, handle: "body" };
+      return null;
+    }
+    if (obs.type === "rect") {
+      const corners = [
+        { x: box.minX, y: box.minY, handle: "nw" },
+        { x: box.maxX, y: box.minY, handle: "ne" },
+        { x: box.maxX, y: box.maxY, handle: "se" },
+        { x: box.minX, y: box.maxY, handle: "sw" },
+      ];
+      for (const c of corners) {
+        if (Math.hypot(x - c.x, y - c.y) <= pad) return { obs, handle: c.handle };
+      }
+      const onEdge =
+        (Math.abs(x - box.minX) <= pad || Math.abs(x - box.maxX) <= pad) &&
+        y >= box.minY - pad &&
+        y <= box.maxY + pad;
+      const onHorz =
+        (Math.abs(y - box.minY) <= pad || Math.abs(y - box.maxY) <= pad) &&
+        x >= box.minX - pad &&
+        x <= box.maxX + pad;
+      if (x >= box.minX && x <= box.maxX && y >= box.minY && y <= box.maxY) {
+        return { obs, handle: "body" };
+      }
+      if (onEdge || onHorz) return { obs, handle: "body" };
+      return null;
+    }
+    const pts = obs.points || [];
+    for (let i = 0; i < pts.length; i++) {
+      if (Math.hypot(x - pts[i].x, y - pts[i].y) <= pad) return { obs, handle: "vertex", vertex: i };
+    }
+    if (pointInPolygon(pts, x, y)) return { obs, handle: "body" };
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const hit = closestOnSegment(x, y, a.x, a.y, b.x, b.y);
+      if (Math.sqrt(hit.dSq) <= pad) return { obs, handle: "body" };
+    }
+    return null;
+  }
+
+  function hitTestObstacles(obstacles, x, y, pad = 10) {
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      const hit = hitTestObstacle(obstacles[i], x, y, pad);
+      if (hit) return { ...hit, index: i };
+    }
+    return null;
+  }
+
+    class Node {
+      constructor(pos, parent = null) {
+        this.pos = pos;
+        this.parent = parent;
+        this.children = [];
+        this.thickness = 1;
+        this.order = 1;
+        this.age = 0;
+        this.rootId = parent && parent.rootId != null ? parent.rootId : null;
+        this.fused = false;
+      }
+    }
+
+    function hashNodes(nodes, cell) {
+      const map = new Map();
+      const size = Math.max(4, cell);
+      for (const node of nodes) {
+        const key = `${Math.floor(node.pos.x / size)},${Math.floor(node.pos.y / size)}`;
+        let bucket = map.get(key);
+        if (!bucket) {
+          bucket = [];
+          map.set(key, bucket);
+        }
+        bucket.push(node);
+      }
+      return { map, cell: size };
+    }
+
+    function forNodesNear(hash, x, y, radius, fn) {
+      const cell = hash.cell;
+      const r = Math.max(1, Math.ceil(radius / cell));
+      const cx = Math.floor(x / cell);
+      const cy = Math.floor(y / cell);
+      const rSq = radius * radius;
+      for (let iy = -r; iy <= r; iy++) {
+        for (let ix = -r; ix <= r; ix++) {
+          const bucket = hash.map.get(`${cx + ix},${cy + iy}`);
+          if (!bucket) continue;
+          for (const node of bucket) {
+            const dx = node.pos.x - x;
+            const dy = node.pos.y - y;
+            if (dx * dx + dy * dy <= rSq) fn(node);
+          }
+        }
+      }
+    }
+
+    class Simulator {
+      constructor() {
+        this.nodes = [];
+        this.attractors = [];
+        this.attractionRadius = 90;
+        this.killDistance = 12;
+        this.stepSize = 6;
+        this.jitter = 0.12;
+        this.pathIndex = null;
+        this.bias = new Vec2(0, 0);
+        this.growthDirection = 0;
+        this.mergeBranches = false;
+        this.mergeDistance = 20;
+        this.mergeLinks = [];
+        this._mergeParent = new Map();
+        this.nextRootId = 1;
+        this.generation = 0;
+        this.lastInfluences = [];
+        this.consumed = [];
+        this.circles = [];
+        this.obstacles = [];
+        this.obstacleMode = "hard";
+        this.repulsionDistance = 40;
+        this.repulsionStrength = 1.2;
+      }
+
+      clearStructure() {
+        this.nodes = [];
+        this.generation = 0;
+        this.lastInfluences = [];
+        this.consumed = [];
+        this.mergeLinks = [];
+        this._mergeParent = new Map();
+        this.nextRootId = 1;
+      }
 
     clearAll() {
       this.clearStructure();
@@ -194,16 +591,136 @@
       for (const p of points) this.attractors.push(new Vec2(p.x, p.y));
     }
 
-    addSeed(x, y) {
-      let pos = { x, y };
-      if (this.pathIndex) {
-        const hit = nearestPathPoint(x, y, this.pathIndex, this.stepSize * 2.5);
-        if (hit) pos = hit;
+      addSeed(x, y) {
+        let pos = { x, y };
+        if (this.pathIndex) {
+          const hit = nearestPathPoint(x, y, this.pathIndex, this.stepSize * 2.5);
+          if (hit) pos = hit;
+        }
+        const seed = new Node(new Vec2(pos.x, pos.y), null);
+        seed.rootId = this.nextRootId++;
+        this._mergeParent.set(seed.rootId, seed.rootId);
+        this.nodes.push(seed);
+        return seed;
       }
-      const seed = new Node(new Vec2(pos.x, pos.y), null);
-      this.nodes.push(seed);
-      return seed;
-    }
+
+      findComponent(rootId) {
+        if (rootId == null) return null;
+        let cur = rootId;
+        const seen = [];
+        while (true) {
+          const parent = this._mergeParent.get(cur);
+          if (parent == null) {
+            this._mergeParent.set(cur, cur);
+            break;
+          }
+          seen.push(cur);
+          if (parent === cur) break;
+          cur = parent;
+        }
+        for (const id of seen) this._mergeParent.set(id, cur);
+        return cur;
+      }
+
+      unionComponents(a, b) {
+        const ra = this.findComponent(a);
+        const rb = this.findComponent(b);
+        if (ra == null || rb == null || ra === rb) return false;
+        this._mergeParent.set(ra, rb);
+        return true;
+      }
+
+      rebuildMergeComponents() {
+        this._mergeParent = new Map();
+        for (const node of this.nodes) {
+          if (node.rootId == null) continue;
+          this._mergeParent.set(node.rootId, node.rootId);
+        }
+        for (const link of this.mergeLinks) {
+          if (link.a && link.b) this.unionComponents(link.a.rootId, link.b.rootId);
+        }
+      }
+
+      dropMergeLinksFor(removeSet) {
+        const before = this.mergeLinks.length;
+        this.mergeLinks = this.mergeLinks.filter(
+          (link) => !removeSet.has(link.a) && !removeSet.has(link.b)
+        );
+        if (this.mergeLinks.length !== before) this.rebuildMergeComponents();
+      }
+
+      _connectNetworks(a, b, opts = {}) {
+        if (!a || !b || a === b) return false;
+        if (a.rootId == null || b.rootId == null || a.rootId === b.rootId) return false;
+        if (this.findComponent(a.rootId) === this.findComponent(b.rootId)) return false;
+        if (!opts.ignoreDistance) {
+          const max = this.mergeDistance;
+          if (!(max > 0) || dist(a.pos, b.pos) > max + 0.5) return false;
+        }
+        for (const link of this.mergeLinks) {
+          if ((link.a === a && link.b === b) || (link.a === b && link.b === a)) return false;
+        }
+        this.mergeLinks.push({ a, b });
+        this.unionComponents(a.rootId, b.rootId);
+        return true;
+      }
+
+      _blockingNode(from, x, y, radius) {
+        if (!(radius > 0) || !this._nodeHash) return null;
+        let best = null;
+        let bestSq = radius * radius;
+        forNodesNear(this._nodeHash, x, y, radius, (other) => {
+          if (other === from || other === from.parent) return;
+          if (other.rootId == null || other.rootId === from.rootId) return;
+          const dx = other.pos.x - x;
+          const dy = other.pos.y - y;
+          const dSq = dx * dx + dy * dy;
+          if (dSq <= bestSq) {
+            bestSq = dSq;
+            best = other;
+          }
+        });
+        return best;
+      }
+
+      _mergeNearbyTips() {
+        const distMax = this.mergeDistance;
+        if (!(distMax > 0)) return 0;
+        const tips = [];
+        for (const node of this.nodes) {
+          if (node.children.length || node.rootId == null) continue;
+          tips.push(node);
+        }
+        if (tips.length < 2) return 0;
+        const hash = hashNodes(tips, distMax);
+        const candidates = [];
+        const seen = new Set();
+        const indexOf = new Map();
+        for (let i = 0; i < tips.length; i++) indexOf.set(tips[i], i);
+        for (let i = 0; i < tips.length; i++) {
+          const tip = tips[i];
+          forNodesNear(hash, tip.pos.x, tip.pos.y, distMax, (other) => {
+            if (other === tip) return;
+            if (other.rootId === tip.rootId) return;
+            if (this.findComponent(tip.rootId) === this.findComponent(other.rootId)) return;
+            const ib = indexOf.get(other);
+            if (ib == null) return;
+            const key = i < ib ? `${i}:${ib}` : `${ib}:${i}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            const dx = other.pos.x - tip.pos.x;
+            const dy = other.pos.y - tip.pos.y;
+            candidates.push({ a: tip, b: other, dSq: dx * dx + dy * dy });
+          });
+        }
+        candidates.sort((p, q) => p.dSq - q.dSq);
+        let merged = 0;
+        for (const pair of candidates) {
+          if (merged >= 8) break;
+          if (this._connectNetworks(pair.a, pair.b)) merged += 1;
+        }
+        return merged;
+      }
 
     step() {
       this.consumed = [];
@@ -261,6 +778,13 @@
 
       this.lastInfluences = [];
       const newborns = [];
+      let mergedThisStep = 0;
+      const mergeOn = !!this.mergeBranches;
+      if (mergeOn) {
+        this._nodeHash = hashNodes(this.nodes, Math.max(4, this.mergeDistance || this.stepSize));
+      } else {
+        this._nodeHash = null;
+      }
 
       for (const [node, nearby] of influence) {
         let dirX = 0;
@@ -277,11 +801,38 @@
         dirX += this.bias.x * nearby.length;
         dirY += this.bias.y * nearby.length;
 
+        const growthDir = this.growthDirection || 0;
+        if (growthDir < 0) {
+          const w = -growthDir;
+          dirX += Math.sign(dirX) * 0.8 * w * nearby.length;
+          dirY *= 1 - 0.28 * w;
+        } else if (growthDir > 0) {
+          const w = growthDir;
+          dirY += Math.sign(dirY) * 0.8 * w * nearby.length;
+          dirX *= 1 - 0.28 * w;
+        }
+
+        const userObstacles = this.obstacles || [];
+        if (this.obstacleMode === "repel" && userObstacles.length) {
+          const push = obstacleRepulsionAt(
+            node.pos.x,
+            node.pos.y,
+            userObstacles,
+            this.repulsionDistance,
+            this.repulsionStrength
+          );
+          dirX += push.x * nearby.length;
+          dirY += push.y * nearby.length;
+        }
+
         const len = Math.hypot(dirX, dirY);
         if (len < 1e-8) continue;
 
         const step = this.stepSize;
-        const bridgeReach = Math.max(this.attractionRadius, step * 8);
+        const bridgeReach = Math.min(
+          480,
+          Math.max(this.attractionRadius * 3, step * 24)
+        );
         let nextPos = pickPathOrBridgeStep(
           node.pos.x,
           node.pos.y,
@@ -296,34 +847,88 @@
           const hit = nearestPathPoint(outside.x, outside.y, this.pathIndex, step * 1.5);
           nextPos = hit ? new Vec2(hit.x, hit.y) : new Vec2(outside.x, outside.y);
         }
+        if (userObstacles.length) {
+          const clipped = clipStepAgainstObstacles(
+            node.pos.x,
+            node.pos.y,
+            nextPos.x,
+            nextPos.y,
+            userObstacles
+          );
+          if (!clipped) continue;
+          if (clipped.x !== nextPos.x || clipped.y !== nextPos.y) {
+            const snapped = nearestPathPoint(
+              clipped.x,
+              clipped.y,
+              this.pathIndex,
+              step * 1.5
+            );
+            nextPos = snapped ? new Vec2(snapped.x, snapped.y) : new Vec2(clipped.x, clipped.y);
+            if (anyObstacleContains(userObstacles, nextPos.x, nextPos.y)) continue;
+            if (
+              anyObstacleHitsSegment(
+                userObstacles,
+                node.pos.x,
+                node.pos.y,
+                nextPos.x,
+                nextPos.y
+              )
+            ) {
+              continue;
+            }
+          }
+        }
+
+        if (mergeOn) {
+          const collideR = Math.max(this.stepSize * 0.85, 2);
+          const blocker = this._blockingNode(
+            node,
+            nextPos.x,
+            nextPos.y,
+            Math.max(this.mergeDistance, collideR)
+          );
+          if (blocker) {
+            const joined =
+              this.findComponent(node.rootId) === this.findComponent(blocker.rootId);
+            const nodeGap = dist(node.pos, blocker.pos);
+            const nextGap = dist(nextPos, blocker.pos);
+            if (!joined && nodeGap <= this.mergeDistance) {
+              if (this._connectNetworks(node, blocker)) mergedThisStep += 1;
+              continue;
+            }
+            if (nextGap <= collideR) continue;
+          }
+        }
 
         const next = new Node(nextPos, node);
         node.children.push(next);
         newborns.push(next);
       }
 
-      if (!newborns.length) return false;
-
-      this.nodes.push(...newborns);
-      this.generation += 1;
-
-      const killSq = this.killDistance * this.killDistance;
-      const remaining = [];
-      for (const attractor of this.attractors) {
-        let eaten = false;
-        for (const node of newborns) {
-          const dx = attractor.x - node.pos.x;
-          const dy = attractor.y - node.pos.y;
-          if (dx * dx + dy * dy < killSq) {
-            eaten = true;
-            break;
+      if (newborns.length) {
+        this.nodes.push(...newborns);
+        const killSq = this.killDistance * this.killDistance;
+        const remaining = [];
+        for (const attractor of this.attractors) {
+          let eaten = false;
+          for (const node of newborns) {
+            const dx = attractor.x - node.pos.x;
+            const dy = attractor.y - node.pos.y;
+            if (dx * dx + dy * dy < killSq) {
+              eaten = true;
+              break;
+            }
           }
+          if (eaten) this.consumed.push(attractor);
+          else remaining.push(attractor);
         }
-        if (eaten) this.consumed.push(attractor);
-        else remaining.push(attractor);
+        this.attractors = remaining;
       }
-      this.attractors = remaining;
 
+      if (mergeOn) mergedThisStep += this._mergeNearbyTips();
+      if (!newborns.length && !mergedThisStep) return false;
+
+      this.generation += 1;
       this._computeThickness();
       this._computeOrders();
       return true;
@@ -829,5 +1434,8 @@
     sampleCirclePerimeter,
     sampleRectPerimeter,
     parseSvgGridShapes,
+    obstacleContains,
+    hitTestObstacles,
+    obstacleAabb,
   };
 })(window);

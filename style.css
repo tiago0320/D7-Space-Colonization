@@ -68,6 +68,14 @@ body {
   cursor: cell;
 }
 
+#stage.select-mode {
+  cursor: default;
+}
+
+#stage.draw-mode {
+  cursor: crosshair;
+}
+
 #stage.pan-mode {
   cursor: grab;
 }
@@ -114,6 +122,30 @@ h1 {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
+}
+
+.grid-slots {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 8px;
+}
+
+.grid-slot {
+  flex: 1;
+  min-width: 0;
+}
+
+.grid-slot.empty {
+  opacity: 0.55;
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.grid-slot.active {
+  opacity: 1;
+  border-style: solid;
+  border-color: var(--gold);
+  color: var(--gold);
 }
 
 .row {
@@ -331,6 +363,10 @@ input[type="range"] {
   font-family: "IBM Plex Mono", monospace;
   font-size: 10px;
   color: var(--muted);
+}
+
+.range-bounds.axis-labels {
+  justify-content: space-between;
 }
 
 .range-bounds input[type="number"] {
