@@ -49,7 +49,7 @@
       <label class="ctrl" title="Fade the imported drawing so growth and attractors read more clearly.">
         Grid opacity
         <span class="value" id="gridOpacityVal"></span>
-        <input id="gridOpacity" type="range" min="0" max="100" step="1" value="90" />
+        <input id="gridOpacity" type="range" min="0" max="100" step="1" value="10" />
       </label>
 
       <div class="section">
@@ -116,11 +116,11 @@
       <label class="ctrl" title="Visual size of attractors on the canvas. The full original field stays visible; killed attractors no longer affect growth.">
         Attractor size
         <span class="value" id="attractorSizeVal"></span>
-        <input id="attractorSize" type="range" min="0.5" max="10" step="0.1" value="2.5" />
+        <input id="attractorSize" type="range" min="0.5" max="10" step="0.1" value="2" />
       </label>
       <label class="ctrl color-ctrl" title="Fill color for the original attractor field.">
         Attractor color
-        <input id="attractorColor" type="color" value="#9fd6e8" aria-label="Attractor color" />
+        <input id="attractorColor" type="color" value="#FF0000" aria-label="Attractor color" />
       </label>
       <label class="ctrl">
         Influence
@@ -208,7 +208,7 @@
         <label class="ctrl" title="Scales the trunk-to-tip taper: bases with more descendants stay thicker, tips stay thinner.">
           Branch thickness
           <span class="value" id="branchThicknessVal"></span>
-          <input id="branchThickness" type="range" min="0.3" max="5" step="0.1" value="1" />
+          <input id="branchThickness" type="range" min="0.3" max="5" step="0.1" value="0.5" />
         </label>
         <label class="ctrl color-ctrl" title="Stroke color when rank identification is off.">
           Branch color
@@ -316,9 +316,6 @@
         </div>
         <ul id="variantList" class="variant-list"></ul>
       </div>
-      <div class="section section-compact">
-        <button id="openAnalyze" class="ghost analyze-link" type="button">Open Analyze page →</button>
-      </div>
     </aside>
 
     <div class="main-pane">
@@ -326,55 +323,82 @@
         <button id="tabStudio" type="button" class="page-tab active" role="tab" aria-selected="true">
           Studio
         </button>
-        <button id="tabAnalyze" type="button" class="page-tab" role="tab" aria-selected="false">
-          Analyze
+        <button id="tabMatrix" type="button" class="page-tab" role="tab" aria-selected="false">
+          Descriptor Matrix
         </button>
       </nav>
 
       <div class="viewport" id="studioView">
-      <canvas id="stage" aria-label="Space colonization growth canvas"></canvas>
-      <p class="view-hint">Scroll to zoom · Middle-drag to pan</p>
-    </div>
+        <canvas id="stage" aria-label="Space colonization growth canvas"></canvas>
+        <p class="view-hint">Scroll to zoom · Middle-drag to pan</p>
+      </div>
 
-      <div id="analyzeView" class="analyze-view hidden" aria-label="Iteration analysis">
-        <div class="analyze-toolbar">
-          <label class="analyze-filter">
-            <span>Show</span>
-            <select id="analyzeScope">
-              <option value="all">All grids</option>
-              <option value="current">Current grid only</option>
-            </select>
-          </label>
-          <label class="check analyze-filter">
-            <input id="analyzeOverlay" type="checkbox" />
-            Overlay selected
-          </label>
-          <label class="analyze-filter analyze-size">
-            <span>Preview size</span>
-            <span class="value" id="analyzePreviewSizeVal">420px</span>
-            <input id="analyzePreviewSize" type="range" min="220" max="720" step="20" value="420" />
-          </label>
-          <button id="analyzeSelectAll" type="button" class="ghost">Select all</button>
-          <button id="analyzeClearSel" type="button" class="ghost">Clear selection</button>
+      <div id="matrixView" class="matrix-view hidden" aria-label="Descriptor Matrix">
+        <div class="matrix-toolbar">
+          <div class="matrix-block">
+            <p class="save-sim-cat-label">Spatial Type</p>
+            <div class="row matrix-type-row" id="matrixTypeRow" role="group" aria-label="Spatial type">
+              <button type="button" class="ghost active" data-matrix-type="lobby">Lobby</button>
+              <button type="button" class="ghost" data-matrix-type="workspace">Workspace</button>
+              <button type="button" class="ghost" data-matrix-type="gathering">Gathering</button>
+            </div>
+          </div>
+          <div class="matrix-block">
+            <p class="save-sim-cat-label">Descriptor</p>
+            <div class="row matrix-desc-row" id="matrixDescriptorRow" role="group" aria-label="Descriptor"></div>
+          </div>
+          <div class="matrix-sliders">
+            <label class="ctrl" title="How strictly the selected descriptor is scored. Higher values require a clearer match.">
+              Descriptor Intensity
+              <span class="value" id="matrixIntensityVal">50</span>
+              <input id="matrixIntensity" type="range" min="0" max="100" step="1" value="50" />
+            </label>
+            <label class="ctrl" title="How widely candidate simulations explore parameter ranges before scoring.">
+              Variation
+              <span class="value" id="matrixVariationVal">40</span>
+              <input id="matrixVariation" type="range" min="0" max="100" step="1" value="40" />
+            </label>
+          </div>
+          <div class="row matrix-generate-row">
+            <button id="generateMatrix" class="primary" type="button">Generate Matrix</button>
+          </div>
+          <p id="matrixStatus" class="grid-status">Import a grid in Studio, then generate candidates and keep the best 9 for this descriptor.</p>
         </div>
-        <p id="analyzeSummary" class="analyze-summary"></p>
-        <canvas id="analyzeComposite" class="analyze-composite" aria-label="Overlay comparison"></canvas>
-        <div id="analyzeMatrix" class="analyze-matrix"></div>
-        <table id="analyzeTable" class="analyze-table">
-          <thead>
-            <tr>
-              <th></th>
-              <th>Iteration</th>
-              <th>Grid</th>
-              <th>Gen</th>
-              <th>Branches</th>
-              <th>Nodes</th>
-              <th>Attractors</th>
-              <th>Open</th>
-            </tr>
-          </thead>
-          <tbody id="analyzeTableBody"></tbody>
-        </table>
+        <div class="matrix-body">
+          <div id="matrixGrid" class="matrix-grid"></div>
+          <aside id="matrixDetail" class="matrix-detail">
+            <p class="matrix-detail-empty">Select a generated iteration to inspect it.</p>
+            <div id="matrixDetailBody" class="hidden">
+              <div class="matrix-detail-head">
+                <strong id="matrixDetailTitle">Iteration 01</strong>
+                <span id="matrixDetailDescriptor" class="saved-sim-card-cat"></span>
+              </div>
+              <img id="matrixDetailThumb" alt="Selected iteration preview" />
+              <div id="matrixDetailMeta" class="saved-sim-card-meta"></div>
+              <div class="saved-sim-card-actions">
+                <button id="matrixOpenStudio" type="button">Open in Simulator</button>
+                <button id="matrixSaveSim" class="ghost" type="button">Save Simulation</button>
+                <button id="matrixExportPng" class="ghost" type="button">Export PNG</button>
+              </div>
+              <div id="matrixSavePanel" class="save-sim-panel hidden">
+                <label class="ctrl save-sim-name">
+                  Simulation Name
+                  <input id="matrixSaveName" type="text" maxlength="80" autocomplete="off" placeholder="Iteration 01" />
+                </label>
+                <p class="save-sim-cat-label">Category</p>
+                <div class="row save-sim-cats" id="matrixSaveCats" role="group" aria-label="Category">
+                  <button type="button" class="ghost active" data-sim-cat="lobby">Lobby</button>
+                  <button type="button" class="ghost" data-sim-cat="workspace">Workspace</button>
+                  <button type="button" class="ghost" data-sim-cat="gathering">Gathering</button>
+                </div>
+                <div class="row">
+                  <button id="matrixConfirmSave" class="primary" type="button">Save Simulation</button>
+                  <button id="matrixCancelSave" class="ghost" type="button">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
       </div>
     </div>
   </div>
@@ -382,6 +406,7 @@
 
     <script src="algorithm.js"></script>
     <script src="saved-simulations-store.js"></script>
+    <script src="descriptor-matrix.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

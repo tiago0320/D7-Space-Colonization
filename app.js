@@ -131,27 +131,35 @@
     batchCountVal: document.getElementById("batchCountVal"),
     variantStatus: document.getElementById("variantStatus"),
     variantList: document.getElementById("variantList"),
-    openAnalyze: document.getElementById("openAnalyze"),
     tabStudio: document.getElementById("tabStudio"),
-    tabAnalyze: document.getElementById("tabAnalyze"),
+    tabMatrix: document.getElementById("tabMatrix"),
     studioView: document.getElementById("studioView"),
-    analyzeView: document.getElementById("analyzeView"),
     studioHud: document.getElementById("studioHud"),
-    analyzeScope: document.getElementById("analyzeScope"),
-    analyzeOverlay: document.getElementById("analyzeOverlay"),
-    analyzePreviewSize: document.getElementById("analyzePreviewSize"),
-    analyzePreviewSizeVal: document.getElementById("analyzePreviewSizeVal"),
-    analyzeSelectAll: document.getElementById("analyzeSelectAll"),
-    analyzeClearSel: document.getElementById("analyzeClearSel"),
-    analyzeSummary: document.getElementById("analyzeSummary"),
-    analyzeComposite: document.getElementById("analyzeComposite"),
-    analyzeMatrix: document.getElementById("analyzeMatrix"),
-    analyzeTableBody: document.getElementById("analyzeTableBody"),
+    matrixView: document.getElementById("matrixView"),
+    matrixTypeRow: document.getElementById("matrixTypeRow"),
+    matrixDescriptorRow: document.getElementById("matrixDescriptorRow"),
+    matrixIntensity: document.getElementById("matrixIntensity"),
+    matrixIntensityVal: document.getElementById("matrixIntensityVal"),
+    matrixVariation: document.getElementById("matrixVariation"),
+    matrixVariationVal: document.getElementById("matrixVariationVal"),
+    generateMatrix: document.getElementById("generateMatrix"),
+    matrixStatus: document.getElementById("matrixStatus"),
+    matrixGrid: document.getElementById("matrixGrid"),
+    matrixDetail: document.getElementById("matrixDetail"),
+    matrixDetailBody: document.getElementById("matrixDetailBody"),
+    matrixDetailTitle: document.getElementById("matrixDetailTitle"),
+    matrixDetailDescriptor: document.getElementById("matrixDetailDescriptor"),
+    matrixDetailThumb: document.getElementById("matrixDetailThumb"),
+    matrixDetailMeta: document.getElementById("matrixDetailMeta"),
+    matrixOpenStudio: document.getElementById("matrixOpenStudio"),
+    matrixSaveSim: document.getElementById("matrixSaveSim"),
+    matrixExportPng: document.getElementById("matrixExportPng"),
+    matrixSavePanel: document.getElementById("matrixSavePanel"),
+    matrixSaveName: document.getElementById("matrixSaveName"),
+    matrixSaveCats: document.getElementById("matrixSaveCats"),
+    matrixConfirmSave: document.getElementById("matrixConfirmSave"),
+    matrixCancelSave: document.getElementById("matrixCancelSave"),
   };
-
-  const analyzeCompositeCtx = ui.analyzeComposite.getContext("2d");
-  const analyzeSelected = new Set();
-  let appPage = "studio";
 
   const MAX_VARIANTS = 24;
   const variants = [];
@@ -162,6 +170,14 @@
   let nextSavedIterationId = 1;
   let activeSavedIterationId = null;
   let batchRunning = false;
+  let matrixGenerating = false;
+  let appPage = "studio";
+  const MatrixLib = window.D7DescriptorMatrix;
+  let matrixType = "lobby";
+  let matrixDescriptor = "interlocking";
+  const matrixCells = new Array(9).fill(null);
+  let selectedMatrixIndex = -1;
+  let pendingSavePayload = null;
   const SavedSimStore = window.D7SavedSimulations;
   const savedSimulations = [];
   const savedSimThumbUrls = new Map();
@@ -191,6 +207,7 @@
   let tracedGridPathPoints = null;
   let growthPathPoints = null;
   let growthAttractors = null;
+  let customGrowthField = false;
   let gridShapes = null;
   let gridSvgText = null;
   let gridKey = "";
@@ -637,8 +654,10 @@
 
   function resolveGrowthField() {
     syncCircles();
-    growthPathPoints = tracedGridPathPoints;
-    growthAttractors = tracedGridPoints;
+    if (!customGrowthField) {
+      growthPathPoints = tracedGridPathPoints;
+      growthAttractors = tracedGridPoints;
+    }
     return true;
   }
 
@@ -730,8 +749,14 @@
     "tertiaryColor",
   ];
 
+  const DEFAULT_DISPLAY_SETTINGS = {
+    gridOpacity: 10,
+    attractorSize: 2,
+    branchThickness: 0.5,
+  };
+
   const DEFAULT_DISPLAY_COLORS = {
-    attractorColor: "#9fd6e8",
+    attractorColor: "#FF0000",
     branchColor: "#FFFFFF",
     primaryColor: "#C80000",
     secondaryColor: "#00fffe",
@@ -739,6 +764,7 @@
   };
 
   const LEGACY_DISPLAY_COLORS = {
+    attractorColor: ["#9fd6e8"],
     branchColor: ["#9fd6e8", "#ff0000"],
     primaryColor: ["#e8d5a3"],
     secondaryColor: ["#9fd6e8", "#007ac7"],
@@ -810,9 +836,14 @@
       }
       if (ui[id] && /^#[0-9a-fA-F]{6}$/.test(stored[id] || "")) ui[id].value = stored[id];
     }
-    const thickness = Number(stored.branchThickness);
-    if (ui.branchThickness && Number.isFinite(thickness) && thickness > 0) {
-      ui.branchThickness.value = String(thickness);
+    if (ui.branchThickness) {
+      ui.branchThickness.value = String(DEFAULT_DISPLAY_SETTINGS.branchThickness);
+    }
+    if (ui.gridOpacity) {
+      ui.gridOpacity.value = String(DEFAULT_DISPLAY_SETTINGS.gridOpacity);
+    }
+    if (ui.attractorSize) {
+      ui.attractorSize.value = String(DEFAULT_DISPLAY_SETTINGS.attractorSize);
     }
   }
 
@@ -1802,7 +1833,16 @@
     selectedSeedId = seeds.length ? seeds[seeds.length - 1].id : null;
 
     sim.clearAll();
-    const path = currentPathPoints();
+    if (snap.pathPoints && snap.pathPoints.length) {
+      growthPathPoints = snap.pathPoints.map((p) => ({ x: p.x, y: p.y }));
+      customGrowthField = true;
+    }
+    if (snap.originalAttractors && snap.originalAttractors.length) {
+      growthAttractors = snap.originalAttractors.map((p) => ({ x: p.x, y: p.y }));
+      customGrowthField = true;
+    }
+    const path =
+      snap.pathPoints && snap.pathPoints.length ? growthPathPoints : currentPathPoints();
     if (path && path.length) {
       sim.pathIndex = buildPathIndex(path, sim.stepSize);
     }
@@ -1890,7 +1930,6 @@
     persistSavedIterations();
     updateIterationUI();
     updateVariantUI();
-    if (appPage === "analyze") renderAnalyzeView();
     return record;
   }
 
@@ -1953,7 +1992,6 @@
     );
     updateIterationUI();
     updatePlayState();
-    if (appPage === "analyze") renderAnalyzeView();
   }
 
   function clearSavedIterationsForGrid() {
@@ -1965,7 +2003,6 @@
     setIterationStatus("Cleared saved iterations for this grid");
     updateIterationUI();
     updatePlayState();
-    if (appPage === "analyze") renderAnalyzeView();
   }
 
   function updateIterationUI() {
@@ -2035,6 +2072,7 @@
         x: attractor.x,
         y: attractor.y,
       })),
+      pathPoints: (currentPathPoints() || []).map((p) => ({ x: p.x, y: p.y })),
       obstacles: serializeObstacles(),
     };
   }
@@ -2049,9 +2087,9 @@
   function readDisplayFromUI() {
     const colors = displayColors();
     return {
-      gridOpacity: Number(ui.gridOpacity?.value ?? 90),
-      attractorSize: Number(ui.attractorSize?.value ?? 2),
-      branchThickness: Number(ui.branchThickness?.value ?? 1),
+      gridOpacity: Number(ui.gridOpacity?.value ?? DEFAULT_DISPLAY_SETTINGS.gridOpacity),
+      attractorSize: Number(ui.attractorSize?.value ?? DEFAULT_DISPLAY_SETTINGS.attractorSize),
+      branchThickness: Number(ui.branchThickness?.value ?? DEFAULT_DISPLAY_SETTINGS.branchThickness),
       identifyBranches: !!ui.identifyBranches?.checked,
       showPrimary: !!ui.showPrimary?.checked,
       showSecondary: !!ui.showSecondary?.checked,
@@ -2204,7 +2242,9 @@
   }
 
   function hideSaveSimPanel() {
+    pendingSavePayload = null;
     if (ui.saveSimPanel) ui.saveSimPanel.classList.add("hidden");
+    if (ui.matrixSavePanel) ui.matrixSavePanel.classList.add("hidden");
   }
 
   async function openSaveSimPanel() {
@@ -2258,11 +2298,13 @@
       const params = record.params || {};
       const meta = document.createElement("div");
       meta.className = "saved-sim-card-meta";
-      meta.innerHTML = `${formatSavedSimDate(record.createdAt)}<br>Attractors: ${
-        params.count ?? "—"
-      }<br>Influence: ${params.influence ?? "—"}<br>Kill: ${params.kill ?? "—"}<br>Step: ${
-        params.stepSize ?? "—"
-      }`;
+      meta.innerHTML = `${formatSavedSimDate(record.createdAt)}<br>${
+        record.descriptorLabel && record.descriptorScore != null
+          ? `${record.descriptorLabel} — ${Math.round(record.descriptorScore)}%<br>`
+          : ""
+      }Attractors: ${params.count ?? "—"}<br>Influence: ${params.influence ?? "—"}<br>Kill: ${
+        params.kill ?? "—"
+      }<br>Step: ${params.stepSize ?? "—"}`;
       const actions = document.createElement("div");
       actions.className = "saved-sim-card-actions";
       const loadBtn = document.createElement("button");
@@ -2320,7 +2362,7 @@
   }
 
   async function confirmSaveSimulation() {
-    if (!gridSource) {
+    if (!gridSource && !(pendingSavePayload && pendingSavePayload.grid)) {
       setSavedSimStatus("Import a grid before saving a simulation.", "error");
       return;
     }
@@ -2329,20 +2371,25 @@
       return;
     }
     if (ui.confirmSaveSim) ui.confirmSaveSim.disabled = true;
+    if (ui.matrixConfirmSave) ui.matrixConfirmSave.disabled = true;
     try {
       const existing = await SavedSimStore.list();
-      const typed = ui.saveSimName ? ui.saveSimName.value.trim() : "";
+      const nameInput = pendingSavePayload && ui.matrixSaveName ? ui.matrixSaveName : ui.saveSimName;
+      const typed = nameInput ? nameInput.value.trim() : "";
       const name = typed || SavedSimStore.nextIterationName(existing);
-      const grid = await captureCurrentGridPayload();
+      const source = pendingSavePayload;
+      const grid = source?.grid || (await captureCurrentGridPayload());
       if (!grid) {
         setSavedSimStatus("Could not capture the current grid for this save.", "error");
         return;
       }
-      let thumbnail = null;
-      try {
-        thumbnail = await makeSavedSimulationThumb();
-      } catch (_) {
-        thumbnail = null;
+      let thumbnail = source?.thumbnailBlob || source?.thumbnail || null;
+      if (!thumbnail) {
+        try {
+          thumbnail = await makeSavedSimulationThumb();
+        } catch (_) {
+          thumbnail = null;
+        }
       }
       const record = {
         id: SavedSimStore.createId(),
@@ -2351,25 +2398,35 @@
         createdAt: Date.now(),
         gridSlotIndex: grid.slotIndex,
         grid,
-        params: readParamsFromUI(),
-        display: readDisplayFromUI(),
-        jitter: sim.jitter,
-        seeds: seeds.map((seed) => ({ x: seed.x, y: seed.y })),
-        sim: serializeSimSnapshot(),
+        params: source?.params || readParamsFromUI(),
+        display: source?.display || readDisplayFromUI(),
+        jitter: source?.jitter ?? sim.jitter,
+        seeds: source?.seeds || seeds.map((seed) => ({ x: seed.x, y: seed.y })),
+        sim: source?.sim || serializeSimSnapshot(),
         thumbnail,
+        spatialType: source?.spatialType || null,
+        descriptor: source?.descriptor || null,
+        descriptorLabel: source?.descriptorLabel || null,
+        descriptorScore: source?.descriptorScore ?? null,
+        scoreBreakdown: source?.scoreBreakdown || null,
+        seed: source?.seed ?? null,
       };
       await SavedSimStore.put(record);
       hideSaveSimPanel();
       if (ui.saveSimName) ui.saveSimName.value = "";
+      if (ui.matrixSaveName) ui.matrixSaveName.value = "";
       activeSavedLibraryId = record.id;
       activeSavedIterationId = null;
       activeVariantId = null;
       await refreshSavedSimulationLibrary();
       setSavedSimStatus(`Saved ${name} · ${SavedSimStore.categoryLabel(record.category)}`, "active");
+      setMatrixStatus(`Saved ${name} · ${SavedSimStore.categoryLabel(record.category)}`, "active");
     } catch (err) {
       setSavedSimStatus(err.message || "Could not save this simulation.", "error");
+      setMatrixStatus(err.message || "Could not save this simulation.", "error");
     } finally {
       if (ui.confirmSaveSim) ui.confirmSaveSim.disabled = false;
+      if (ui.matrixConfirmSave) ui.matrixConfirmSave.disabled = false;
     }
   }
 
@@ -2534,7 +2591,6 @@
     setVariantStatus("Capture layouts to compare");
     updateVariantUI();
     updatePlayState();
-    if (appPage === "analyze") renderAnalyzeView();
   }
 
   function clearVariants() {
@@ -2543,242 +2599,11 @@
     setVariantStatus("Capture layouts to compare");
     updateVariantUI();
     updatePlayState();
-    if (appPage === "analyze") renderAnalyzeView();
   }
 
   function gridNameForToken(token) {
     const entry = gridLibrary.find((item) => item.id === token);
     return entry ? entry.name : "Unknown grid";
-  }
-
-  function variantMetrics(variant) {
-    const branches = variant.nodes.filter((node) => node.parentIndex >= 0).length;
-    return {
-      branches,
-      nodes: variant.nodes.length,
-      attractors: variant.attractorsLeft.length,
-    };
-  }
-
-  function getAnalyzeIterationList() {
-    const scope = ui.analyzeScope.value;
-    return savedIterations
-      .filter((item) => {
-        if (!gridEntryExists(item.gridToken)) return false;
-        if (scope === "current") return item.gridToken === gridToken;
-        return true;
-      })
-      .sort((a, b) => b.createdAt - a.createdAt);
-  }
-
-  function analyzeIterKey(record) {
-    return `iter-${record.id}`;
-  }
-
-  function getAnalyzePreviewSize() {
-    return Math.max(220, Math.min(720, Number(ui.analyzePreviewSize?.value ?? 420)));
-  }
-
-  function applyAnalyzePreviewLayout() {
-    const size = getAnalyzePreviewSize();
-    if (ui.analyzeView) ui.analyzeView.style.setProperty("--analyze-card-size", `${size}px`);
-    if (ui.analyzePreviewSizeVal) ui.analyzePreviewSizeVal.textContent = `${size}px`;
-    return size;
-  }
-
-  function openIterationInStudio(record) {
-    setAppPage("studio");
-    const entry = gridLibrary.find((item) => item.id === record.gridToken);
-    if (entry && entry.id !== activeGridId) activateGrid(entry);
-    restoreSavedIteration(record);
-  }
-
-  function setAppPage(page) {
-    appPage = page;
-    const analyze = page === "analyze";
-    ui.tabStudio.classList.toggle("active", !analyze);
-    ui.tabAnalyze.classList.toggle("active", analyze);
-    ui.tabStudio.setAttribute("aria-selected", analyze ? "false" : "true");
-    ui.tabAnalyze.setAttribute("aria-selected", analyze ? "true" : "false");
-    ui.studioView.classList.toggle("hidden", analyze);
-    ui.analyzeView.classList.toggle("hidden", !analyze);
-    document.querySelector(".app").classList.toggle("analyze-mode", analyze);
-    if (analyze) {
-      playing = false;
-      ui.play.textContent = "Grow";
-      renderAnalyzeView();
-    }
-  }
-
-  function toggleAnalyzeSelection(id) {
-    if (analyzeSelected.has(id)) analyzeSelected.delete(id);
-    else analyzeSelected.add(id);
-    renderAnalyzeView();
-  }
-
-  function drawAnalyzeComposite(list) {
-    const show = ui.analyzeOverlay.checked;
-    const selected = list.filter((item) => analyzeSelected.has(analyzeIterKey(item)));
-    ui.analyzeComposite.classList.toggle("hidden-canvas", !show || !selected.length);
-    if (!show || !selected.length) return;
-
-    const canvas = ui.analyzeComposite;
-    const rect = canvas.getBoundingClientRect();
-    const cssW = Math.max(1, Math.floor(rect.width));
-    const cssH = Math.max(1, Math.floor(rect.height || 480));
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-    const w = Math.floor(cssW * pixelRatio);
-    const h = Math.floor(cssH * pixelRatio);
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
-    }
-    const g = analyzeCompositeCtx;
-    g.setTransform(1, 0, 0, 1, 0, 0);
-    g.fillStyle = "#000";
-    g.fillRect(0, 0, w, h);
-
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (const item of selected) {
-      for (const node of item.nodes) {
-        if (node.x < minX) minX = node.x;
-        if (node.x > maxX) maxX = node.x;
-        if (node.y < minY) minY = node.y;
-        if (node.y > maxY) maxY = node.y;
-      }
-    }
-    if (!Number.isFinite(minX)) return;
-
-    const pad = 36 * pixelRatio;
-    const bw = Math.max(1, maxX - minX);
-    const bh = Math.max(1, maxY - minY);
-    const scale = Math.min((w - pad * 2) / bw, (h - pad * 2) / bh);
-    const ox = (w - bw * scale) / 2 - minX * scale;
-    const oy = (h - bh * scale) / 2 - minY * scale;
-    const colors = ["#ff0000", "#00fffe", "#ffd900", "#C80000", "#a8e6cf", "#c9a0dc"];
-
-    selected.forEach((item, index) => {
-      g.strokeStyle = colors[index % colors.length];
-      g.globalAlpha = 0.82;
-      g.lineWidth = Math.max(1.2, 1.8 * pixelRatio);
-      g.lineCap = "round";
-      for (const node of item.nodes) {
-        if (node.parentIndex < 0) continue;
-        const parent = item.nodes[node.parentIndex];
-        if (!parent) continue;
-        g.beginPath();
-        g.moveTo(parent.x * scale + ox, parent.y * scale + oy);
-        g.lineTo(node.x * scale + ox, node.y * scale + oy);
-        g.stroke();
-      }
-      for (const link of item.mergeLinks || []) {
-        const a = item.nodes[link.a];
-        const b = item.nodes[link.b];
-        if (!a || !b) continue;
-        g.beginPath();
-        g.moveTo(a.x * scale + ox, a.y * scale + oy);
-        g.lineTo(b.x * scale + ox, b.y * scale + oy);
-        g.stroke();
-      }
-    });
-    g.globalAlpha = 1;
-  }
-
-  function renderAnalyzeView() {
-    const list = getAnalyzeIterationList();
-    const validKeys = new Set(list.map(analyzeIterKey));
-    for (const id of [...analyzeSelected]) {
-      if (!validKeys.has(id)) analyzeSelected.delete(id);
-    }
-
-    const previewSize = applyAnalyzePreviewLayout();
-
-    if (!list.length) {
-      ui.analyzeSummary.textContent =
-        "No saved iterations yet. Grow in Studio, Save PNG snapshot, then return here.";
-      ui.analyzeMatrix.innerHTML = "";
-      ui.analyzeTableBody.innerHTML = "";
-      ui.analyzeComposite.classList.add("hidden-canvas");
-      return;
-    }
-
-    let totalBranches = 0;
-    let totalGen = 0;
-    const gridSet = new Set();
-    for (const record of list) {
-      const stats = variantMetrics(record);
-      totalBranches += stats.branches;
-      totalGen += record.generation;
-      gridSet.add(record.gridName || gridNameForToken(record.gridToken));
-    }
-    const avgGen = (totalGen / list.length).toFixed(1);
-    const avgBranches = (totalBranches / list.length).toFixed(0);
-    ui.analyzeSummary.textContent = `${list.length} iteration${list.length === 1 ? "" : "s"} · ${gridSet.size} grid${gridSet.size === 1 ? "" : "s"} · avg gen ${avgGen} · avg branches ${avgBranches}`;
-
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-    const drawSize = Math.round(previewSize * pixelRatio);
-
-    ui.analyzeMatrix.innerHTML = "";
-    for (const record of list) {
-      const stats = variantMetrics(record);
-      const key = analyzeIterKey(record);
-      const card = document.createElement("article");
-      card.className = `analyze-card${analyzeSelected.has(key) ? " selected" : ""}`;
-      const gname = record.gridName || gridNameForToken(record.gridToken);
-      const preview = document.createElement("canvas");
-      preview.width = drawSize;
-      preview.height = drawSize;
-      preview.className = "analyze-card-preview";
-      drawNodesPreview(preview.getContext("2d"), record.nodes, drawSize, {
-        pad: 18 * pixelRatio,
-        widthScale: 0.7,
-        mergeLinks: record.mergeLinks || [],
-      });
-      const meta = document.createElement("div");
-      meta.className = "analyze-card-meta";
-      meta.innerHTML = `<strong>${record.label}</strong>${gname}<br />gen ${record.generation} · ${stats.branches} branches`;
-      card.appendChild(preview);
-      card.appendChild(meta);
-      card.addEventListener("click", () => toggleAnalyzeSelection(key));
-      card.addEventListener("dblclick", () => openIterationInStudio(record));
-      ui.analyzeMatrix.appendChild(card);
-    }
-
-    ui.analyzeTableBody.innerHTML = "";
-    for (const record of list) {
-      const stats = variantMetrics(record);
-      const gname = record.gridName || gridNameForToken(record.gridToken);
-      const key = analyzeIterKey(record);
-      const row = document.createElement("tr");
-      const checked = analyzeSelected.has(key);
-      row.innerHTML = `
-        <td><input type="checkbox" data-iter-key="${key}" ${checked ? "checked" : ""} /></td>
-        <td>${record.label}</td>
-        <td>${gname}</td>
-        <td>${record.generation}</td>
-        <td>${stats.branches}</td>
-        <td>${stats.nodes}</td>
-        <td>${stats.attractors}</td>`;
-      const box = row.querySelector("input");
-      box.addEventListener("change", () => {
-        if (box.checked) analyzeSelected.add(key);
-        else analyzeSelected.delete(key);
-        renderAnalyzeView();
-      });
-      const loadBtn = document.createElement("button");
-      loadBtn.type = "button";
-      loadBtn.textContent = "Studio";
-      loadBtn.addEventListener("click", () => openIterationInStudio(record));
-      const cell = document.createElement("td");
-      cell.appendChild(loadBtn);
-      row.appendChild(cell);
-      ui.analyzeTableBody.appendChild(row);
-    }
-
-    drawAnalyzeComposite(list);
   }
 
   function captureVariant(options = {}) {
@@ -2814,7 +2639,6 @@
     updateVariantUI();
     updateIterationUI();
     updatePlayState();
-    if (appPage === "analyze") renderAnalyzeView();
   }
 
   function deleteVariant(id) {
@@ -2825,7 +2649,6 @@
     setVariantStatus(variants.length ? `${variants.length} saved` : "Capture layouts to compare");
     updateVariantUI();
     updatePlayState();
-    if (appPage === "analyze") renderAnalyzeView();
   }
 
   function restoreVariant(variant) {
@@ -2935,7 +2758,6 @@
     updatePlayState();
     updateGridCycleUI();
     updateSeedUI();
-    if (appPage === "analyze") renderAnalyzeView();
   }
 
   function newAttempt() {
@@ -2948,11 +2770,433 @@
     updateIterationUI();
   }
 
+  function setAppPage(page) {
+    appPage = page === "matrix" ? "matrix" : "studio";
+    const matrix = appPage === "matrix";
+    if (ui.tabStudio) {
+      ui.tabStudio.classList.toggle("active", !matrix);
+      ui.tabStudio.setAttribute("aria-selected", matrix ? "false" : "true");
+    }
+    if (ui.tabMatrix) {
+      ui.tabMatrix.classList.toggle("active", matrix);
+      ui.tabMatrix.setAttribute("aria-selected", matrix ? "true" : "false");
+    }
+    if (ui.studioView) ui.studioView.classList.toggle("hidden", matrix);
+    if (ui.matrixView) ui.matrixView.classList.toggle("hidden", !matrix);
+    const appEl = document.querySelector(".app");
+    if (appEl) appEl.classList.toggle("matrix-mode", matrix);
+    if (matrix) {
+      playing = false;
+      ui.play.textContent = "Grow";
+      renderDescriptorButtons();
+      renderMatrixGrid();
+      updateMatrixGenerateState();
+    }
+  }
+
+  function setMatrixStatus(message, kind) {
+    if (!ui.matrixStatus) return;
+    ui.matrixStatus.textContent = message;
+    ui.matrixStatus.classList.toggle("active", kind === "active");
+    ui.matrixStatus.classList.toggle("error", kind === "error");
+  }
+
+  function matrixIterationLabel(index) {
+    return `Iteration ${String(index + 1).padStart(2, "0")}`;
+  }
+
+  function matrixDescriptorLabel(type, id) {
+    const found = (MatrixLib?.descriptorsFor(type) || []).find((item) => item.id === id);
+    return found ? found.label : id;
+  }
+
+  function renderDescriptorButtons() {
+    if (!ui.matrixDescriptorRow || !MatrixLib) return;
+    const list = MatrixLib.descriptorsFor(matrixType);
+    if (!list.some((item) => item.id === matrixDescriptor)) {
+      matrixDescriptor = list[0].id;
+    }
+    ui.matrixDescriptorRow.innerHTML = "";
+    for (const item of list) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = item.id === matrixDescriptor ? "ghost active" : "ghost";
+      btn.dataset.matrixDescriptor = item.id;
+      btn.textContent = item.label;
+      btn.addEventListener("click", () => {
+        matrixDescriptor = item.id;
+        renderDescriptorButtons();
+      });
+      ui.matrixDescriptorRow.appendChild(btn);
+    }
+    if (ui.matrixTypeRow) {
+      ui.matrixTypeRow.querySelectorAll("[data-matrix-type]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.matrixType === matrixType);
+      });
+    }
+  }
+
+  function updateMatrixGenerateState() {
+    if (ui.generateMatrix) {
+      ui.generateMatrix.disabled = !gridSource || matrixGenerating || batchRunning;
+    }
+    if (ui.tabStudio) ui.tabStudio.disabled = matrixGenerating;
+    if (ui.tabMatrix) ui.tabMatrix.disabled = matrixGenerating;
+  }
+
+  function captureStudioSession() {
+    return {
+      params: readParamsFromUI(),
+      display: readDisplayFromUI(),
+      jitter: sim.jitter,
+      seeds: seeds.map((seed) => ({ x: seed.x, y: seed.y })),
+      sim: serializeSimSnapshot(),
+    };
+  }
+
+  function restoreStudioSession(session) {
+    if (!session) return;
+    applyDisplayFromExportMeta(session.display);
+    if (session.display && session.display.exportTransparent != null && ui.exportTransparent) {
+      ui.exportTransparent.checked = !!session.display.exportTransparent;
+    }
+    applyParamsFromSnapshot(session.params);
+    gridKey = "";
+    customGrowthField = false;
+    if (gridSource && width && height) rebuildGrid();
+    sim.jitter = session.jitter;
+    applySimSnapshot(session.params, session.seeds || [], session.sim);
+  }
+
+  function matrixSiteBox() {
+    if (gridLayout && gridLayout.w > 0) return gridLayout;
+    return { x: 0, y: 0, w: width || 1, h: height || 1 };
+  }
+
+  function applyCandidateRun(plan) {
+    sim.attractionRadius = Number(plan.params.influence);
+    sim.killDistance = Number(plan.params.kill);
+    sim.stepSize = Number(plan.params.stepSize);
+    sim.growthDirection = Number(plan.params.growthDirection) || 0;
+    sim.mergeBranches = !!plan.params.mergeBranches;
+    sim.mergeDistance = Math.max(0, Number(plan.params.mergeDistance) || 0);
+    sim.jitter = plan.jitter;
+    restoreObstacles([]);
+    sim.circles = [];
+    customGrowthField = true;
+    growthAttractors = plan.attractors || [];
+    growthPathPoints = tracedGridPathPoints || currentPathPoints();
+    sim.clearAll();
+    sim.pathIndex = growthPathPoints && growthPathPoints.length
+      ? buildPathIndex(growthPathPoints, sim.stepSize)
+      : null;
+    if (growthAttractors.length) sim.seedAttractorField(growthAttractors);
+    seeds.length = 0;
+    nextSeedId = 1;
+    selectedSeedId = null;
+    for (const pt of plan.roots || []) {
+      const seed = { id: nextSeedId++, x: pt.x, y: pt.y };
+      seeds.push(seed);
+      if (sim.pathIndex) sim.addSeed(seed.x, seed.y);
+    }
+    flashes.length = 0;
+    playing = false;
+    const cap = Number(plan.params.iterationsCap) || 250;
+    while (sim.generation < cap && sim.step()) {
+      /* run */
+    }
+  }
+
+  function applyMatrixIterationToSim(cell) {
+    applyDisplayFromExportMeta(cell.display);
+    if (cell.display && cell.display.exportTransparent != null && ui.exportTransparent) {
+      ui.exportTransparent.checked = !!cell.display.exportTransparent;
+    }
+    sim.jitter = cell.jitter ?? 0;
+    applySimSnapshot(cell.params, cell.seeds || [], cell.sim);
+  }
+
+  function matrixScoreLabel(cell) {
+    const n = Number(cell.descriptorScore);
+    const value = Number.isFinite(n) ? `${Math.round(n)}%` : "—";
+    return `${cell.descriptorLabel} — ${value}`;
+  }
+
+  function matrixScoreBreakdownHtml(cell) {
+    const parts = cell.scoreBreakdown || {};
+    const keys = Object.keys(parts);
+    if (!keys.length) return "";
+    return keys
+      .map((key) => `${key}: ${Math.round(Number(parts[key]) || 0)}%`)
+      .join("<br>");
+  }
+
+  function matrixCellMetaHtml(cell) {
+    return matrixScoreLabel(cell);
+  }
+
+  function renderMatrixGrid() {
+    if (!ui.matrixGrid) return;
+    ui.matrixGrid.innerHTML = "";
+    for (let i = 0; i < 9; i++) {
+      const cell = matrixCells[i];
+      const item = document.createElement("article");
+      item.className = `matrix-cell${cell ? "" : " empty"}${i === selectedMatrixIndex ? " active" : ""}`;
+      const title = document.createElement("strong");
+      title.className = "matrix-cell-title";
+      title.textContent = matrixIterationLabel(i);
+      item.appendChild(title);
+      if (cell && cell.previewUrl) {
+        const img = document.createElement("img");
+        img.className = "matrix-cell-preview";
+        img.alt = "";
+        img.src = cell.previewUrl;
+        item.appendChild(img);
+        const meta = document.createElement("div");
+        meta.className = "matrix-cell-meta";
+        meta.innerHTML = matrixCellMetaHtml(cell);
+        item.appendChild(meta);
+        item.addEventListener("click", () => selectMatrixCell(i));
+      } else {
+        const ph = document.createElement("div");
+        ph.className = "matrix-cell-preview placeholder";
+        item.appendChild(ph);
+        const meta = document.createElement("div");
+        meta.className = "matrix-cell-meta";
+        meta.textContent = "Not generated";
+        item.appendChild(meta);
+      }
+      ui.matrixGrid.appendChild(item);
+    }
+    renderMatrixDetail();
+  }
+
+  function renderMatrixDetail() {
+    const cell = selectedMatrixIndex >= 0 ? matrixCells[selectedMatrixIndex] : null;
+    const empty = ui.matrixDetail?.querySelector(".matrix-detail-empty");
+    if (!cell) {
+      if (empty) empty.classList.remove("hidden");
+      if (ui.matrixDetailBody) ui.matrixDetailBody.classList.add("hidden");
+      return;
+    }
+    if (empty) empty.classList.add("hidden");
+    if (ui.matrixDetailBody) ui.matrixDetailBody.classList.remove("hidden");
+    if (ui.matrixDetailTitle) ui.matrixDetailTitle.textContent = cell.label;
+    if (ui.matrixDetailDescriptor) ui.matrixDetailDescriptor.textContent = matrixScoreLabel(cell);
+    if (ui.matrixDetailThumb && cell.previewUrl) ui.matrixDetailThumb.src = cell.previewUrl;
+    if (ui.matrixDetailMeta) {
+      const breakdown = matrixScoreBreakdownHtml(cell);
+      ui.matrixDetailMeta.innerHTML = `${breakdown}${breakdown ? "<br>" : ""}Seed: ${cell.seed}`;
+    }
+  }
+
+  function selectMatrixCell(index) {
+    selectedMatrixIndex = index;
+    if (ui.matrixSavePanel) ui.matrixSavePanel.classList.add("hidden");
+    renderMatrixGrid();
+  }
+
+  async function generateDescriptorMatrix() {
+    if (!MatrixLib) {
+      setMatrixStatus("Descriptor Matrix is unavailable.", "error");
+      return;
+    }
+    if (!gridSource || !gridLayout) {
+      setMatrixStatus("Import a grid in Studio before generating.", "error");
+      return;
+    }
+    if (matrixGenerating || batchRunning) return;
+    matrixGenerating = true;
+    playing = false;
+    ui.play.textContent = "Grow";
+    updateMatrixGenerateState();
+    updatePlayState();
+
+    const intensity = Number(ui.matrixIntensity?.value ?? 50);
+    const variation = Number(ui.matrixVariation?.value ?? 40);
+    const masterSeed = (Date.now() ^ ((Math.random() * 0xffffffff) | 0)) >>> 0;
+    const session = captureStudioSession();
+    const grid = await captureCurrentGridPayload();
+    const descriptorLabel = matrixDescriptorLabel(matrixType, matrixDescriptor);
+    const site = matrixSiteBox();
+    const path = tracedGridPathPoints || currentPathPoints();
+    const attractorPool = tracedGridPoints || currentAttractors();
+    const poolSize = MatrixLib.CANDIDATE_COUNT || 40;
+    const keep = MatrixLib.MATRIX_COUNT || 9;
+
+    try {
+      if (!path || !path.length || !attractorPool || !attractorPool.length) {
+        throw new Error("Import a grid in Studio before generating.");
+      }
+      const pool = [];
+      for (let i = 0; i < poolSize; i++) {
+        if (i % 2 === 0) {
+          setMatrixStatus(`Evaluating candidate ${i + 1} / ${poolSize}…`, "active");
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+        }
+        const seed = MatrixLib.hashSeed(masterSeed, i);
+        const rng = MatrixLib.createRng(seed);
+        const plan = MatrixLib.planCandidate({
+          seed,
+          index: i,
+          variation,
+          baseParams: session.params,
+          site,
+          path,
+          attractorPool,
+          rng,
+        });
+        if (!plan.attractors.length) continue;
+        applyCandidateRun(plan);
+        const segments = MatrixLib.collectSegments(sim.nodes, sim.mergeLinks);
+        if (segments.length < 8) continue;
+        const analysis = MatrixLib.analyzeSection(segments, site, { roots: plan.roots });
+        const scored = MatrixLib.scoreDescriptor(
+          matrixType,
+          matrixDescriptor,
+          analysis,
+          intensity
+        );
+        pool.push({
+          plan,
+          seed,
+          score: scored.score,
+          breakdown: scored.breakdown,
+          fingerprint: analysis.fingerprint,
+          jitter: sim.jitter,
+          seeds: seeds.map((item) => ({ x: item.x, y: item.y })),
+          sim: serializeSimSnapshot(),
+        });
+      }
+      pool.sort((a, b) => b.score - a.score || a.seed - b.seed);
+      const picked = MatrixLib.selectDiverse(pool, keep);
+      if (!picked.length) throw new Error("No scored candidates were produced.");
+      setMatrixStatus(`Selecting ${picked.length} diverse results…`, "active");
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      for (let i = 0; i < keep; i++) {
+        if (matrixCells[i] && matrixCells[i].previewUrl) {
+          URL.revokeObjectURL(matrixCells[i].previewUrl);
+        }
+        matrixCells[i] = null;
+      }
+      for (let i = 0; i < picked.length; i++) {
+        const item = picked[i];
+        applySimSnapshot(item.plan.params, item.seeds, item.sim);
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        let previewUrl = "";
+        let thumbnailBlob = null;
+        try {
+          thumbnailBlob = await makeSavedSimulationThumb();
+          previewUrl = URL.createObjectURL(thumbnailBlob);
+        } catch (_) {
+          previewUrl = "";
+        }
+        matrixCells[i] = {
+          index: i,
+          label: matrixIterationLabel(i),
+          spatialType: matrixType,
+          descriptor: matrixDescriptor,
+          descriptorLabel,
+          descriptorScore: item.score,
+          scoreBreakdown: item.breakdown,
+          seed: item.seed,
+          params: { ...item.plan.params },
+          display: session.display || readDisplayFromUI(),
+          jitter: item.jitter,
+          seeds: item.seeds,
+          sim: item.sim,
+          grid,
+          gridToken,
+          previewUrl,
+          thumbnailBlob,
+        };
+      }
+      selectedMatrixIndex = 0;
+      renderMatrixGrid();
+      const top = picked[0] ? Math.round(picked[0].score) : 0;
+      setMatrixStatus(
+        `${descriptorLabel} · ${picked.length} of ${pool.length} candidates · top ${top}%`,
+        "active"
+      );
+    } catch (err) {
+      setMatrixStatus(err.message || "Could not generate the matrix.", "error");
+    } finally {
+      restoreStudioSession(session);
+      matrixGenerating = false;
+      updateMatrixGenerateState();
+      updatePlayState();
+    }
+  }
+
+  function openMatrixCellInStudio() {
+    const cell = matrixCells[selectedMatrixIndex];
+    if (!cell) return;
+    applyMatrixIterationToSim(cell);
+    setAppPage("studio");
+    setSavedSimStatus(`Loaded ${cell.label} from Descriptor Matrix`, "active");
+  }
+
+  async function exportMatrixCellPng() {
+    const cell = matrixCells[selectedMatrixIndex];
+    if (!cell) return;
+    const session = captureStudioSession();
+    try {
+      applyMatrixIterationToSim(cell);
+      const ok = await downloadPngSnapshot();
+      if (ok) setMatrixStatus(`Exported PNG for ${cell.label}`, "active");
+      else setMatrixStatus("Could not export PNG.", "error");
+    } finally {
+      restoreStudioSession(session);
+    }
+  }
+
+  async function openMatrixSavePanel() {
+    const cell = matrixCells[selectedMatrixIndex];
+    if (!cell) return;
+    if (!SavedSimStore) {
+      setMatrixStatus("Saved Simulations are unavailable in this browser.", "error");
+      return;
+    }
+    pendingSavePayload = {
+      grid: cell.grid,
+      params: cell.params,
+      display: cell.display,
+      jitter: cell.jitter,
+      seeds: cell.seeds,
+      sim: cell.sim,
+      thumbnailBlob: cell.thumbnailBlob,
+      thumbnail: cell.thumbnailBlob,
+      spatialType: cell.spatialType,
+      descriptor: cell.descriptor,
+      descriptorLabel: cell.descriptorLabel,
+      descriptorScore: cell.descriptorScore,
+      scoreBreakdown: cell.scoreBreakdown,
+      seed: cell.seed,
+    };
+    setSavedSimCategory(cell.spatialType);
+    if (ui.matrixSaveCats) {
+      ui.matrixSaveCats.querySelectorAll("[data-sim-cat]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.simCat === savedSimCategory);
+      });
+    }
+    try {
+      const names = await SavedSimStore.list();
+      if (ui.matrixSaveName) {
+        ui.matrixSaveName.value = cell.label;
+        ui.matrixSaveName.placeholder = SavedSimStore.nextIterationName(names);
+      }
+    } catch (_) {
+      if (ui.matrixSaveName) ui.matrixSaveName.value = cell.label;
+    }
+    if (ui.matrixSavePanel) ui.matrixSavePanel.classList.remove("hidden");
+    if (ui.matrixSaveName) ui.matrixSaveName.focus();
+  }
+
   function updatePlayState() {
     const path = currentPathPoints();
     const attractors = currentAttractors();
     const ready = !!(attractors && attractors.length && path && path.length);
-    ui.play.disabled = !ready || batchRunning;
+    ui.play.disabled = !ready || batchRunning || matrixGenerating;
     ui.newAttempt.disabled = !ready || batchRunning;
     ui.generateVariants.disabled = !ready || batchRunning;
     ui.captureVariant.disabled = !ready || batchRunning || !canCaptureVariant();
@@ -2961,6 +3205,7 @@
     if (ui.saveSimulation) ui.saveSimulation.disabled = !gridSource || batchRunning;
     ui.clearVariants.disabled = !variants.some((v) => v.gridToken === gridToken) || batchRunning;
     updateIterationUI();
+    updateMatrixGenerateState();
     if (!ready) {
       playing = false;
       ui.play.textContent = "Grow";
@@ -2997,6 +3242,7 @@
     gridPathPoints = result.pathPoints;
     tracedGridPoints = result.points;
     tracedGridPathPoints = result.pathPoints;
+    customGrowthField = false;
     growthPathPoints = result.pathPoints;
     growthAttractors = result.points;
     gridShapes = result.shapes;
@@ -3047,6 +3293,7 @@
     tracedGridPathPoints = null;
     growthPathPoints = null;
     growthAttractors = null;
+    customGrowthField = false;
     gridShapes = null;
     gridSvgText = null;
     gridKey = "";
@@ -3355,7 +3602,7 @@
       targetCtx.globalAlpha = 1;
     }
 
-    const gridAlpha = Number(ui.gridOpacity?.value ?? 90) / 100;
+    const gridAlpha = Number(ui.gridOpacity?.value ?? DEFAULT_DISPLAY_SETTINGS.gridOpacity) / 100;
 
     if (gridSource && imageLayout) {
       targetCtx.save();
@@ -3423,7 +3670,7 @@
       { hideEditingChrome: hideChrome }
     );
 
-    const attractorR = Math.max(0.2, Number(ui.attractorSize?.value ?? 2.5));
+    const attractorR = Math.max(0.2, Number(ui.attractorSize?.value ?? DEFAULT_DISPLAY_SETTINGS.attractorSize));
     const palette = displayColors();
     if (
       !options.hideInfluencePreview &&
@@ -3620,9 +3867,9 @@
       seeds: seeds.map((seed) => ({ x: seed.x, y: seed.y })),
       obstacles: serializeObstacles(),
       display: {
-        gridOpacity: Number(ui.gridOpacity?.value ?? 90),
-        attractorSize: Number(ui.attractorSize?.value ?? 2),
-        branchThickness: Number(ui.branchThickness?.value ?? 1),
+        gridOpacity: Number(ui.gridOpacity?.value ?? DEFAULT_DISPLAY_SETTINGS.gridOpacity),
+        attractorSize: Number(ui.attractorSize?.value ?? DEFAULT_DISPLAY_SETTINGS.attractorSize),
+        branchThickness: Number(ui.branchThickness?.value ?? DEFAULT_DISPLAY_SETTINGS.branchThickness),
         identifyBranches: !!ui.identifyBranches?.checked,
         showPrimary: !!ui.showPrimary?.checked,
         showSecondary: !!ui.showSecondary?.checked,
@@ -3942,8 +4189,11 @@
     const svgH = height + EXPORT_CAPTION_HEIGHT;
     const meta = buildExportMetadata(transparentBackground);
     const palette = displayColors();
-    const gridAlpha = Math.max(0, Math.min(1, Number(ui.gridOpacity?.value ?? 90) / 100));
-    const attractorR = Math.max(0.2, Number(ui.attractorSize?.value ?? 2.5));
+    const gridAlpha = Math.max(
+      0,
+      Math.min(1, Number(ui.gridOpacity?.value ?? DEFAULT_DISPLAY_SETTINGS.gridOpacity) / 100)
+    );
+    const attractorR = Math.max(0.2, Number(ui.attractorSize?.value ?? DEFAULT_DISPLAY_SETTINGS.attractorSize));
     const identify = ui.identifyBranches.checked;
     const visible = {
       1: ui.showPrimary.checked,
@@ -4464,22 +4714,51 @@
   ui.batchCount.addEventListener("change", () => {
     ui.batchCountVal.textContent = ui.batchCount.value;
   });
-  ui.tabStudio.addEventListener("click", () => setAppPage("studio"));
-  ui.tabAnalyze.addEventListener("click", () => setAppPage("analyze"));
-  ui.openAnalyze.addEventListener("click", () => setAppPage("analyze"));
-  ui.analyzeScope.addEventListener("change", renderAnalyzeView);
-  ui.analyzeOverlay.addEventListener("change", renderAnalyzeView);
-  if (ui.analyzePreviewSize) {
-    ui.analyzePreviewSize.addEventListener("input", renderAnalyzeView);
+  if (ui.tabStudio) ui.tabStudio.addEventListener("click", () => setAppPage("studio"));
+  if (ui.tabMatrix) ui.tabMatrix.addEventListener("click", () => setAppPage("matrix"));
+  if (ui.matrixTypeRow) {
+    ui.matrixTypeRow.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-matrix-type]");
+      if (!btn) return;
+      matrixType = btn.dataset.matrixType;
+      renderDescriptorButtons();
+    });
   }
-  ui.analyzeSelectAll.addEventListener("click", () => {
-    for (const record of getAnalyzeIterationList()) analyzeSelected.add(analyzeIterKey(record));
-    renderAnalyzeView();
-  });
-  ui.analyzeClearSel.addEventListener("click", () => {
-    analyzeSelected.clear();
-    renderAnalyzeView();
-  });
+  if (ui.matrixIntensity) {
+    ui.matrixIntensity.addEventListener("input", () => {
+      if (ui.matrixIntensityVal) ui.matrixIntensityVal.textContent = ui.matrixIntensity.value;
+    });
+  }
+  if (ui.matrixVariation) {
+    ui.matrixVariation.addEventListener("input", () => {
+      if (ui.matrixVariationVal) ui.matrixVariationVal.textContent = ui.matrixVariation.value;
+    });
+  }
+  if (ui.generateMatrix) ui.generateMatrix.addEventListener("click", generateDescriptorMatrix);
+  if (ui.matrixOpenStudio) ui.matrixOpenStudio.addEventListener("click", openMatrixCellInStudio);
+  if (ui.matrixSaveSim) ui.matrixSaveSim.addEventListener("click", openMatrixSavePanel);
+  if (ui.matrixExportPng) ui.matrixExportPng.addEventListener("click", exportMatrixCellPng);
+  if (ui.matrixConfirmSave) ui.matrixConfirmSave.addEventListener("click", confirmSaveSimulation);
+  if (ui.matrixCancelSave) ui.matrixCancelSave.addEventListener("click", hideSaveSimPanel);
+  if (ui.matrixSaveCats) {
+    ui.matrixSaveCats.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-sim-cat]");
+      if (!btn) return;
+      setSavedSimCategory(btn.dataset.simCat);
+      ui.matrixSaveCats.querySelectorAll("[data-sim-cat]").forEach((el) => {
+        el.classList.toggle("active", el.dataset.simCat === savedSimCategory);
+      });
+    });
+  }
+  if (ui.matrixSaveName) {
+    ui.matrixSaveName.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        confirmSaveSimulation();
+      }
+      if (event.key === "Escape") hideSaveSimPanel();
+    });
+  }
 
   function canvasPoint(event) {
     return screenToWorld(event.clientX, event.clientY);
@@ -4829,9 +5108,6 @@
     }
   });
 
-  window.addEventListener("resize", () => {
-    if (appPage === "analyze") renderAnalyzeView();
-  });
   window.addEventListener("resize", resize);
   if (window.ResizeObserver) {
     new ResizeObserver(resize).observe(viewport);
@@ -4847,6 +5123,9 @@
   updateGridCycleUI();
   updateVariantUI();
   updateIterationUI();
+  renderDescriptorButtons();
+  renderMatrixGrid();
+  updateMatrixGenerateState();
   resize();
   restoreGridSlots();
   refreshSavedSimulationLibrary();

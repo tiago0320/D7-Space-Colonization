@@ -1,6 +1,17 @@
-# Space Colonization
+# D7-Space-Colonization
 
-Interactive 2D visualization of the space colonization algorithm used to grow branching structures (trees, veins, lightning, networks).
+Studio web app for growing path-constrained space-colonization branches on imported PNG, JPG, or SVG grids. Work stays in the browser: grids, variants, and saved simulations persist locally, and PNG snapshots can restore a layout later.
+
+## Features
+
+- Import grids into three slots and grow branching on the 20' × 20' site
+- Place roots, merge nearby branches, and draw repulsion geometry by hand in Studio
+- Display controls for grid opacity, attractor size/color, branch thickness, and branch hierarchy colors
+- Save simulations locally (Lobby, Workspace, Gathering) with IndexedDB
+- Export camera-independent PNG (with optional restore metadata) and SVG
+- **Descriptor Matrix**: generate a pool of emergent branching candidates, analyze them as abstract sections, score them against a spatial descriptor, then show the best 9 diverse results
+
+## Getting started
 
 Open `index.html` in a browser, or from this folder:
 
@@ -10,19 +21,11 @@ python -m http.server 8000
 
 Then visit http://localhost:8000
 
-## How the algorithm works
-
-1. Scatter **attractors** (resource points) in a region.
-2. Plant one or more **seed nodes**.
-3. Each step, every attractor picks the closest node inside the attraction radius.
-4. Each chosen node grows one step toward the average direction of the attractors that picked it.
-5. Attractors within the **kill distance** of a new node are removed.
-
-Branching happens because neighboring nodes are pulled toward different local clusters of attractors.
-
 ## Controls
 
-- Left drag paints attractors
-- Right click plants a seed
-- Space plays or pauses
-- Presets load different attractor fields and growth settings
+- **Studio**: Upload a grid, add roots, press Grow, then save or export
+- Scroll to zoom, middle-drag to pan
+- **Repulsion Geometry**: draw rectangles, circles, or polygons; switch Hard Boundary vs Repulsion
+- **Saved Simulations**: name a layout and store it in this browser only
+- **Descriptor Matrix**: pick Spatial Type and Descriptor, set Intensity (scoring strictness) and Variation (candidate range), then Generate Matrix
+- Open a matrix cell in the Simulator to inspect the exact selected growth; add repulsion afterward if you want
