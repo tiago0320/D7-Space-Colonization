@@ -10,6 +10,7 @@ Studio web app for growing path-constrained space-colonization branches on impor
 - Save simulations locally (Lobby, Workspace, Gathering) with IndexedDB
 - Export camera-independent PNG (with optional restore metadata) and SVG
 - **Descriptor Matrix**: generate a pool of emergent branching candidates, analyze them as abstract sections, score them against a spatial descriptor, then show the best 9 diverse results
+- Export all 9 matrix simulations at once as a ZIP of individual PNGs or SVGs (fixed 20' × 20' site, no matrix UI)
 
 ## Getting started
 
@@ -28,4 +29,5 @@ Then visit http://localhost:8000
 - **Repulsion Geometry**: draw rectangles, circles, or polygons; switch Hard Boundary vs Repulsion
 - **Saved Simulations**: name a layout and store it in this browser only
 - **Descriptor Matrix**: pick Spatial Type and Descriptor, set Intensity (scoring strictness) and Variation (candidate range), then Generate Matrix
+- **Save All PNGs / Save All SVGs**: download one ZIP with the nine current matrix cells as separate files
 - Open a matrix cell in the Simulator to inspect the exact selected growth; add repulsion afterward if you want

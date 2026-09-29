@@ -361,6 +361,8 @@
           </div>
           <div class="row matrix-generate-row">
             <button id="generateMatrix" class="primary" type="button">Generate Matrix</button>
+            <button id="matrixSaveAllPng" class="ghost" type="button" disabled>Save All PNGs</button>
+            <button id="matrixSaveAllSvg" class="ghost" type="button" disabled>Save All SVGs</button>
           </div>
           <p id="matrixStatus" class="grid-status">Import a grid in Studio, then generate candidates and keep the best 9 for this descriptor.</p>
         </div>
@@ -404,6 +406,7 @@
   </div>
   </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="algorithm.js"></script>
     <script src="saved-simulations-store.js"></script>
     <script src="descriptor-matrix.js"></script>

@@ -572,7 +572,9 @@ label.ctrl.compact select {
 
 .matrix-generate-row {
   margin-top: 4px;
-  max-width: 280px;
+  max-width: none;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .matrix-body {

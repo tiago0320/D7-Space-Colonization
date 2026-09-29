@@ -143,6 +143,8 @@
     matrixVariation: document.getElementById("matrixVariation"),
     matrixVariationVal: document.getElementById("matrixVariationVal"),
     generateMatrix: document.getElementById("generateMatrix"),
+    matrixSaveAllPng: document.getElementById("matrixSaveAllPng"),
+    matrixSaveAllSvg: document.getElementById("matrixSaveAllSvg"),
     matrixStatus: document.getElementById("matrixStatus"),
     matrixGrid: document.getElementById("matrixGrid"),
     matrixDetail: document.getElementById("matrixDetail"),
@@ -171,6 +173,7 @@
   let activeSavedIterationId = null;
   let batchRunning = false;
   let matrixGenerating = false;
+  let matrixExporting = false;
   let appPage = "studio";
   const MatrixLib = window.D7DescriptorMatrix;
   let matrixType = "lobby";
@@ -2836,12 +2839,20 @@
     }
   }
 
+  function matrixHasCompleteSet() {
+    return matrixCells.every((cell) => cell && cell.sim);
+  }
+
   function updateMatrixGenerateState() {
+    const busy = matrixGenerating || matrixExporting || batchRunning;
     if (ui.generateMatrix) {
-      ui.generateMatrix.disabled = !gridSource || matrixGenerating || batchRunning;
+      ui.generateMatrix.disabled = !gridSource || busy;
     }
-    if (ui.tabStudio) ui.tabStudio.disabled = matrixGenerating;
-    if (ui.tabMatrix) ui.tabMatrix.disabled = matrixGenerating;
+    const canExport = matrixHasCompleteSet() && !busy;
+    if (ui.matrixSaveAllPng) ui.matrixSaveAllPng.disabled = !canExport;
+    if (ui.matrixSaveAllSvg) ui.matrixSaveAllSvg.disabled = !canExport;
+    if (ui.tabStudio) ui.tabStudio.disabled = matrixGenerating || matrixExporting;
+    if (ui.tabMatrix) ui.tabMatrix.disabled = matrixGenerating || matrixExporting;
   }
 
   function captureStudioSession() {
@@ -3005,7 +3016,7 @@
       setMatrixStatus("Import a grid in Studio before generating.", "error");
       return;
     }
-    if (matrixGenerating || batchRunning) return;
+    if (matrixGenerating || matrixExporting || batchRunning) return;
     matrixGenerating = true;
     playing = false;
     ui.play.textContent = "Grow";
@@ -3140,13 +3151,85 @@
     const cell = matrixCells[selectedMatrixIndex];
     if (!cell) return;
     const session = captureStudioSession();
+    const previousSelected = selectedSeedId;
     try {
       applyMatrixIterationToSim(cell);
-      const ok = await downloadPngSnapshot();
-      if (ok) setMatrixStatus(`Exported PNG for ${cell.label}`, "active");
-      else setMatrixStatus("Could not export PNG.", "error");
+      selectedSeedId = null;
+      const blob = await capturePngSnapshotBlob(matrixCaptionMeta(cell));
+      if (!blob) {
+        setMatrixStatus("Could not export PNG.", "error");
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      triggerDownload(`${matrixExportStem(cell)}.png`, url);
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      setMatrixStatus(`Exported PNG for ${cell.label}`, "active");
     } finally {
+      selectedSeedId = previousSelected;
       restoreStudioSession(session);
+    }
+  }
+
+  async function downloadZipArchive(filename, files) {
+    if (!window.JSZip) {
+      setMatrixStatus("ZIP export needs JSZip, which did not load.", "error");
+      return false;
+    }
+    const zip = new window.JSZip();
+    for (const file of files) zip.file(file.name, file.data);
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    triggerDownload(filename, url);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    return true;
+  }
+
+  async function exportMatrixBatch(kind) {
+    if (!matrixHasCompleteSet()) {
+      setMatrixStatus("Generate a complete 3 × 3 matrix first.", "error");
+      return;
+    }
+    if (matrixGenerating || matrixExporting || batchRunning) return;
+    const ext = kind === "svg" ? "svg" : "png";
+    const cells = matrixCells.slice();
+    const prefix = matrixExportPrefix(cells[0]);
+    const zipName = `${prefix}_${ext.toUpperCase()}.zip`;
+    matrixExporting = true;
+    updateMatrixGenerateState();
+    const session = captureStudioSession();
+    const previousSelected = selectedSeedId;
+    const files = [];
+    try {
+      for (let i = 0; i < cells.length; i++) {
+        const cell = cells[i];
+        setMatrixStatus(`Exporting ${cell.label} (${i + 1}/9)…`, "active");
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        applyMatrixIterationToSim(cell);
+        selectedSeedId = null;
+        const extra = matrixCaptionMeta(cell);
+        const name = `${matrixExportStem(cell)}.${ext}`;
+        if (ext === "png") {
+          const blob = await capturePngSnapshotBlob(extra);
+          if (!blob) throw new Error(`Could not encode PNG for ${cell.label}.`);
+          files.push({ name, data: blob });
+        } else {
+          const transparentBackground = !!(ui.exportTransparent && ui.exportTransparent.checked);
+          const { svg } = buildStudioSvg(transparentBackground, {
+            fitSite: true,
+            extraMeta: extra,
+          });
+          files.push({ name, data: svg });
+        }
+      }
+      const ok = await downloadZipArchive(zipName, files);
+      if (ok) setMatrixStatus(`Saved ${zipName}`, "active");
+    } catch (err) {
+      setMatrixStatus(err.message || "Could not export the matrix.", "error");
+    } finally {
+      selectedSeedId = previousSelected;
+      restoreStudioSession(session);
+      matrixExporting = false;
+      updateMatrixGenerateState();
     }
   }
 
@@ -3196,7 +3279,7 @@
     const path = currentPathPoints();
     const attractors = currentAttractors();
     const ready = !!(attractors && attractors.length && path && path.length);
-    ui.play.disabled = !ready || batchRunning || matrixGenerating;
+    ui.play.disabled = !ready || batchRunning || matrixGenerating || matrixExporting;
     ui.newAttempt.disabled = !ready || batchRunning;
     ui.generateVariants.disabled = !ready || batchRunning;
     ui.captureVariant.disabled = !ready || batchRunning || !canCaptureVariant();
@@ -3804,6 +3887,65 @@
     return safe || "studio";
   }
 
+  function sanitizeExportToken(value) {
+    return (
+      String(value || "")
+        .trim()
+        .replace(/\s+/g, "-")
+        .replace(/[^A-Za-z0-9._-]+/g, "")
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "") || "item"
+    );
+  }
+
+  function matrixTypeLabel(type) {
+    const found = (MatrixLib?.TYPES || []).find((item) => item.id === type);
+    return found ? found.label : type || "Lobby";
+  }
+
+  function matrixExportStem(cell) {
+    const type = sanitizeExportToken(matrixTypeLabel(cell.spatialType));
+    const descriptor = sanitizeExportToken(cell.descriptorLabel || cell.descriptor);
+    const n = String((cell.index ?? 0) + 1).padStart(2, "0");
+    return `${type}_${descriptor}_${n}`;
+  }
+
+  function matrixExportPrefix(cell) {
+    const type = sanitizeExportToken(matrixTypeLabel(cell.spatialType));
+    const descriptor = sanitizeExportToken(cell.descriptorLabel || cell.descriptor);
+    return `${type}_${descriptor}`;
+  }
+
+  function matrixCaptionMeta(cell) {
+    if (!cell) return null;
+    return {
+      matrix: {
+        typeLabel: matrixTypeLabel(cell.spatialType),
+        descriptorLabel: cell.descriptorLabel || cell.descriptor || "",
+        score: cell.descriptorScore,
+        iteration: String((cell.index ?? 0) + 1).padStart(2, "0"),
+      },
+    };
+  }
+
+  function exportCaptionText(meta) {
+    const params = meta.params || {};
+    const simSnap = meta.sim || {};
+    const gridLabel = meta.gridName || "untitled grid";
+    const line1 = `${gridLabel}  ·  ${formatExportTimestamp(meta.exportedAt)}`;
+    let line2 = `gen ${simSnap.generation ?? 0}  ·  attractors ${
+      simSnap.attractorsLeft ? simSnap.attractorsLeft.length : 0
+    }  ·  seeds ${(meta.seeds || []).length}`;
+    if (meta.matrix) {
+      const score = Number.isFinite(Number(meta.matrix.score))
+        ? `${Math.round(Number(meta.matrix.score))}%`
+        : "—";
+      line2 += `  ·  Type: ${meta.matrix.typeLabel}  ·  Descriptor: ${meta.matrix.descriptorLabel}  ·  Descriptor Score: ${score}  ·  Iteration: ${meta.matrix.iteration}`;
+    }
+    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  dir ${Number(params.growthDirection ?? 0).toFixed(2)}  ·  merge ${params.mergeBranches ? "on" : "off"}/${Number(params.mergeDistance ?? 20).toFixed(0)}  ·  obs ${params.obstacleMode === "repel" ? "repel" : "hard"}/${Number(params.repulsionDistance ?? 40).toFixed(0)}/${Number(params.repulsionStrength ?? 1.2).toFixed(1)}  ·  cap ${params.iterationsCap}  ·  thick ${Number(ui.branchThickness?.value ?? 1).toFixed(1)}`;
+    return { line1, line2, line3 };
+  }
+
   function formatExportTimestamp(iso) {
     return String(iso || "").replace("T", " ").slice(0, 19);
   }
@@ -3823,14 +3965,7 @@
     const band = frame.band ?? EXPORT_CAPTION_HEIGHT;
     const outW = frame.width ?? width;
     const pixelRatio = frame.dpr ?? dpr;
-    const params = meta.params || {};
-    const simSnap = meta.sim || {};
-    const gridLabel = meta.gridName || "untitled grid";
-    const line1 = `${gridLabel}  ·  ${formatExportTimestamp(meta.exportedAt)}`;
-    const line2 = `gen ${simSnap.generation ?? 0}  ·  attractors ${
-      simSnap.attractorsLeft ? simSnap.attractorsLeft.length : 0
-    }  ·  seeds ${(meta.seeds || []).length}`;
-    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  dir ${Number(params.growthDirection ?? 0).toFixed(2)}  ·  merge ${params.mergeBranches ? "on" : "off"}/${Number(params.mergeDistance ?? 20).toFixed(0)}  ·  obs ${params.obstacleMode === "repel" ? "repel" : "hard"}/${Number(params.repulsionDistance ?? 40).toFixed(0)}/${Number(params.repulsionStrength ?? 1.2).toFixed(1)}  ·  cap ${params.iterationsCap}  ·  thick ${Number(ui.branchThickness?.value ?? 1).toFixed(1)}`;
+    const { line1, line2, line3 } = exportCaptionText(meta);
 
     targetCtx.save();
     targetCtx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
@@ -3853,9 +3988,9 @@
     targetCtx.restore();
   }
 
-  function buildExportMetadata(transparentBackground) {
+  function buildExportMetadata(transparentBackground, extra) {
     const colors = displayColors();
-    return {
+    const meta = {
       app: "D7-Space-Colonization",
       format: 1,
       exportedAt: new Date().toISOString(),
@@ -3886,6 +4021,8 @@
       },
       sim: serializeSimSnapshot(),
     };
+    if (extra && extra.matrix) meta.matrix = extra.matrix;
+    return meta;
   }
 
   let pngCrcTable = null;
@@ -4184,10 +4321,15 @@
     }
   }
 
-  function buildStudioSvg(transparentBackground) {
-    const svgW = width;
-    const svgH = height + EXPORT_CAPTION_HEIGHT;
-    const meta = buildExportMetadata(transparentBackground);
+  function buildStudioSvg(transparentBackground, options = {}) {
+    const fitSite = !!options.fitSite;
+    const extraMeta = options.extraMeta || null;
+    const site = currentSiteRect();
+    const cam = fitSite ? cameraForSiteRect(site, EXPORT_SITE_PX) : view;
+    const svgW = fitSite ? EXPORT_SITE_PX : width;
+    const sceneH = fitSite ? EXPORT_SITE_PX : height;
+    const svgH = sceneH + EXPORT_CAPTION_HEIGHT;
+    const meta = buildExportMetadata(transparentBackground, extraMeta);
     const palette = displayColors();
     const gridAlpha = Math.max(
       0,
@@ -4211,11 +4353,17 @@
       `<metadata><d7-snapshot>${xmlEscape(JSON.stringify(meta))}</d7-snapshot></metadata>`
     );
     if (!transparentBackground) {
-      parts.push(`<rect width="${svgNum(svgW)}" height="${svgNum(height)}" fill="#000"/>`);
+      parts.push(`<rect width="${svgNum(svgW)}" height="${svgNum(sceneH)}" fill="#000"/>`);
     }
 
+    if (fitSite) {
+      parts.push(
+        `<clipPath id="d7-site-clip"><rect width="${svgNum(svgW)}" height="${svgNum(sceneH)}"/></clipPath>`
+      );
+      parts.push(`<g clip-path="url(#d7-site-clip)">`);
+    }
     parts.push(
-      `<g transform="translate(${svgNum(view.x)} ${svgNum(view.y)}) scale(${svgNum(view.scale)})">`
+      `<g transform="translate(${svgNum(cam.x)} ${svgNum(cam.y)}) scale(${svgNum(cam.scale)})">`
     );
 
     if (gridSource && imageLayout) {
@@ -4378,16 +4526,10 @@
       );
     }
     parts.push(`</g>`);
+    if (fitSite) parts.push(`</g>`);
 
-    const params = meta.params || {};
-    const simSnap = meta.sim || {};
-    const gridLabel = meta.gridName || "untitled grid";
-    const line1 = `${gridLabel}  ·  ${formatExportTimestamp(meta.exportedAt)}`;
-    const line2 = `gen ${simSnap.generation ?? 0}  ·  attractors ${
-      simSnap.attractorsLeft ? simSnap.attractorsLeft.length : 0
-    }  ·  seeds ${(meta.seeds || []).length}`;
-    const line3 = `count ${params.count}  ·  influence ${params.influence}  ·  kill ${params.kill}  ·  step ${params.stepSize}  ·  dir ${Number(params.growthDirection ?? 0).toFixed(2)}  ·  merge ${params.mergeBranches ? "on" : "off"}/${Number(params.mergeDistance ?? 20).toFixed(0)}  ·  obs ${params.obstacleMode === "repel" ? "repel" : "hard"}/${Number(params.repulsionDistance ?? 40).toFixed(0)}/${Number(params.repulsionStrength ?? 1.2).toFixed(1)}  ·  cap ${params.iterationsCap}  ·  thick ${Number(ui.branchThickness?.value ?? 1).toFixed(1)}`;
-    const y0 = height;
+    const { line1, line2, line3 } = exportCaptionText(meta);
+    const y0 = sceneH;
     parts.push(`<g>`);
     parts.push(`<rect x="0" y="${svgNum(y0)}" width="${svgNum(svgW)}" height="${svgNum(EXPORT_CAPTION_HEIGHT)}" fill="#111"/>`);
     parts.push(`<rect x="0" y="${svgNum(y0)}" width="${svgNum(svgW)}" height="1" fill="#2a2a2a"/>`);
@@ -4461,62 +4603,64 @@
     return { canvas: off, ctx: ectx, scene, band };
   }
 
-  function downloadPngSnapshot() {
-    if (!gridLayout && !gridSource) {
-      setExportStatus("Import a grid before exporting a PNG.", "error");
-      return Promise.resolve(false);
-    }
+  function capturePngSnapshotBlob(extraMeta) {
     return ensureExportCaptionFont().then(
       () =>
         new Promise((resolve) => {
           const transparentBackground = !!(ui.exportTransparent && ui.exportTransparent.checked);
           const { canvas: off, ctx: ectx, scene, band } = buildPngExportCanvas(transparentBackground);
-          const meta = buildExportMetadata(transparentBackground);
+          const meta = buildExportMetadata(transparentBackground, extraMeta);
           drawExportCaption(ectx, meta, {
             width: scene,
             y0: scene,
             band,
             dpr: 1,
           });
-          const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-          const suffix = transparentBackground ? "transparent" : "opaque";
-          const filename = `${exportFileBaseName()}-d7-${suffix}-${stamp}.png`;
-          const json = JSON.stringify(meta);
           off.toBlob(
             (blob) => {
               if (!blob) {
-                setExportStatus("Could not encode PNG.", "error");
-                resolve(false);
+                resolve(null);
                 return;
               }
               blob
                 .arrayBuffer()
                 .then((buf) => {
-                  const png = embedPngSnapshotMetadata(new Uint8Array(buf), json);
+                  const png = embedPngSnapshotMetadata(new Uint8Array(buf), JSON.stringify(meta));
                   if (!readPngD7Snapshot(png)) {
-                    setExportStatus("Could not embed snapshot metadata in PNG.", "error");
-                    resolve(false);
+                    resolve(null);
                     return;
                   }
-                  const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
-                  triggerDownload(filename, url);
-                  URL.revokeObjectURL(url);
-                  setExportStatus(
-                    `Saved ${filename} · caption + restorable snapshot`,
-                    "active"
-                  );
-                  resolve(true);
+                  resolve(new Blob([png], { type: "image/png" }));
                 })
-                .catch(() => {
-                  setExportStatus("Could not write snapshot metadata into PNG.", "error");
-                  resolve(false);
-                });
+                .catch(() => resolve(null));
             },
             "image/png",
             1
           );
         })
     );
+  }
+
+  function downloadPngSnapshot() {
+    if (!gridLayout && !gridSource) {
+      setExportStatus("Import a grid before exporting a PNG.", "error");
+      return Promise.resolve(false);
+    }
+    return capturePngSnapshotBlob().then((blob) => {
+      if (!blob) {
+        setExportStatus("Could not encode PNG.", "error");
+        return false;
+      }
+      const transparentBackground = !!(ui.exportTransparent && ui.exportTransparent.checked);
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const suffix = transparentBackground ? "transparent" : "opaque";
+      const filename = `${exportFileBaseName()}-d7-${suffix}-${stamp}.png`;
+      const url = URL.createObjectURL(blob);
+      triggerDownload(filename, url);
+      URL.revokeObjectURL(url);
+      setExportStatus(`Saved ${filename} · caption + restorable snapshot`, "active");
+      return true;
+    });
   }
 
   function screenToWorld(sx, sy) {
@@ -4735,6 +4879,12 @@
     });
   }
   if (ui.generateMatrix) ui.generateMatrix.addEventListener("click", generateDescriptorMatrix);
+  if (ui.matrixSaveAllPng) {
+    ui.matrixSaveAllPng.addEventListener("click", () => exportMatrixBatch("png"));
+  }
+  if (ui.matrixSaveAllSvg) {
+    ui.matrixSaveAllSvg.addEventListener("click", () => exportMatrixBatch("svg"));
+  }
   if (ui.matrixOpenStudio) ui.matrixOpenStudio.addEventListener("click", openMatrixCellInStudio);
   if (ui.matrixSaveSim) ui.matrixSaveSim.addEventListener("click", openMatrixSavePanel);
   if (ui.matrixExportPng) ui.matrixExportPng.addEventListener("click", exportMatrixCellPng);
