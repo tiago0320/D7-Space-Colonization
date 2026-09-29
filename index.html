@@ -113,12 +113,12 @@
           <span>max</span>
         </span>
       </label>
-      <label class="ctrl" title="Visual size of remaining attractors on the canvas. Does not change the simulation.">
+      <label class="ctrl" title="Visual size of attractors on the canvas. The full original field stays visible; killed attractors no longer affect growth.">
         Attractor size
         <span class="value" id="attractorSizeVal"></span>
         <input id="attractorSize" type="range" min="0.5" max="10" step="0.1" value="2.5" />
       </label>
-      <label class="ctrl color-ctrl" title="Fill color for remaining attractors.">
+      <label class="ctrl color-ctrl" title="Fill color for the original attractor field.">
         Attractor color
         <input id="attractorColor" type="color" value="#9fd6e8" aria-label="Attractor color" />
       </label>
@@ -133,7 +133,7 @@
           <span>max</span>
         </span>
       </label>
-      <label class="check" title="Dashed circle around each remaining attractor, sized to the current Influence value.">
+      <label class="check" title="Dashed circle around each active attractor, sized to the current Influence value.">
         <input id="showInfluenceRadius" type="checkbox" />
         Show influence radius
       </label>
@@ -244,6 +244,37 @@
       </div>
 
       <div class="section">
+        <div class="section-head">Saved Simulations</div>
+        <p id="savedSimStatus" class="grid-status">Save the current layout in this browser. It stays on this computer only.</p>
+        <div class="row">
+          <button id="saveSimulation" class="ghost" type="button" disabled>Save Simulation</button>
+        </div>
+        <div id="saveSimPanel" class="save-sim-panel hidden">
+          <label class="ctrl save-sim-name">
+            Simulation Name
+            <input id="saveSimName" type="text" maxlength="80" autocomplete="off" placeholder="Iteration 01" />
+          </label>
+          <p class="save-sim-cat-label">Category</p>
+          <div class="row save-sim-cats" role="group" aria-label="Category">
+            <button id="saveSimCatLobby" class="ghost active" type="button" data-sim-cat="lobby">Lobby</button>
+            <button id="saveSimCatWorkspace" class="ghost" type="button" data-sim-cat="workspace">Workspace</button>
+            <button id="saveSimCatGathering" class="ghost" type="button" data-sim-cat="gathering">Gathering</button>
+          </div>
+          <div class="row">
+            <button id="confirmSaveSim" class="primary" type="button">Save Simulation</button>
+            <button id="cancelSaveSim" class="ghost" type="button">Cancel</button>
+          </div>
+        </div>
+        <div class="row saved-sim-filters" role="tablist" aria-label="Saved simulation categories">
+          <button id="savedSimFilterAll" class="ghost active" type="button" data-sim-filter="all">All</button>
+          <button id="savedSimFilterLobby" class="ghost" type="button" data-sim-filter="lobby">Lobby</button>
+          <button id="savedSimFilterWorkspace" class="ghost" type="button" data-sim-filter="workspace">Workspace</button>
+          <button id="savedSimFilterGathering" class="ghost" type="button" data-sim-filter="gathering">Gathering</button>
+        </div>
+        <ul id="savedSimList" class="saved-sim-list"></ul>
+      </div>
+
+      <div class="section">
         <div class="section-head">Saved iterations</div>
         <p id="iterationStatus" class="grid-status">Grow, then save a PNG snapshot to restore later, or Save SVG for a vector drawing.</p>
         <label class="check" title="PNG alpha outside the scene; omits black fill and void dimming. Caption bar stays opaque.">
@@ -350,6 +381,7 @@
   </div>
 
     <script src="algorithm.js"></script>
+    <script src="saved-simulations-store.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

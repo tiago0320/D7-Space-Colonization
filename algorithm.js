@@ -546,6 +546,7 @@
       constructor() {
         this.nodes = [];
         this.attractors = [];
+        this.originalAttractors = [];
         this.attractionRadius = 90;
         this.killDistance = 12;
         this.stepSize = 6;
@@ -581,6 +582,27 @@
     clearAll() {
       this.clearStructure();
       this.attractors = [];
+      this.originalAttractors = [];
+    }
+
+    cloneAttractorPoints(points) {
+      const out = [];
+      if (!points) return out;
+      for (const p of points) out.push(new Vec2(p.x, p.y));
+      return out;
+    }
+
+    seedAttractorField(points) {
+      this.originalAttractors = this.cloneAttractorPoints(points);
+      this.attractors = this.cloneAttractorPoints(points);
+    }
+
+    setOriginalAttractors(points) {
+      this.originalAttractors = this.cloneAttractorPoints(points);
+    }
+
+    setActiveAttractors(points) {
+      this.attractors = this.cloneAttractorPoints(points);
     }
 
     addAttractor(x, y) {

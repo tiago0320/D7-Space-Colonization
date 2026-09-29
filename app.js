@@ -114,6 +114,15 @@
     clearIterations: document.getElementById("clearIterations"),
     iterationStatus: document.getElementById("iterationStatus"),
     iterationList: document.getElementById("iterationList"),
+    saveSimulation: document.getElementById("saveSimulation"),
+    savedSimStatus: document.getElementById("savedSimStatus"),
+    saveSimPanel: document.getElementById("saveSimPanel"),
+    saveSimName: document.getElementById("saveSimName"),
+    confirmSaveSim: document.getElementById("confirmSaveSim"),
+    cancelSaveSim: document.getElementById("cancelSaveSim"),
+    savedSimList: document.getElementById("savedSimList"),
+    savedSimFilters: document.querySelector(".saved-sim-filters"),
+    saveSimCats: document.querySelector(".save-sim-cats"),
     captureVariant: document.getElementById("captureVariant"),
     newAttempt: document.getElementById("newAttempt"),
     generateVariants: document.getElementById("generateVariants"),
@@ -153,6 +162,13 @@
   let nextSavedIterationId = 1;
   let activeSavedIterationId = null;
   let batchRunning = false;
+  const SavedSimStore = window.D7SavedSimulations;
+  const savedSimulations = [];
+  const savedSimThumbUrls = new Map();
+  let savedSimFilter = "all";
+  let savedSimCategory = "lobby";
+  let activeSavedLibraryId = null;
+  const SAVED_SIM_THUMB_PX = 256;
 
   const stars = [];
   const flashes = [];
@@ -900,9 +916,12 @@
   }
 
   function restoreAttractorsFromField() {
-    sim.attractors = [];
     const points = currentAttractors();
-    if (points && points.length) sim.addAttractors(points);
+    if (points && points.length) sim.seedAttractorField(points);
+    else {
+      sim.attractors = [];
+      sim.originalAttractors = [];
+    }
   }
 
   function replayGrowthFromSeeds() {
@@ -1019,6 +1038,15 @@
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
       tx.objectStore(GRID_IDB_STORE).clear();
+    });
+  }
+
+  function idbGetGridSlot(db, slotIndex) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(GRID_IDB_STORE, "readonly");
+      const request = tx.objectStore(GRID_IDB_STORE).get(slotIndex);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
     });
   }
 
@@ -1809,7 +1837,15 @@
       if (a && b) sim._connectNetworks(a, b, { ignoreDistance: true });
     }
     sim.generation = snap.generation;
-    sim.addAttractors(snap.attractorsLeft);
+    const originalField =
+      (snap.originalAttractors && snap.originalAttractors.length
+        ? snap.originalAttractors
+        : null) ||
+      currentAttractors() ||
+      snap.attractorsLeft ||
+      [];
+    sim.setOriginalAttractors(originalField);
+    sim.setActiveAttractors(snap.attractorsLeft || []);
 
     restoreObstacles(snap.obstacles || []);
 
@@ -1844,6 +1880,7 @@
       nodes: snap.nodes,
       mergeLinks: snap.mergeLinks || [],
       attractorsLeft: snap.attractorsLeft,
+      originalAttractors: snap.originalAttractors || [],
       obstacles: serializeObstacles(),
       thumbDataUrl: makeVariantThumb(snap.nodes, snap.mergeLinks),
     };
@@ -1891,6 +1928,7 @@
       generation: record.generation,
       nodes: record.nodes,
       attractorsLeft: record.attractorsLeft,
+      originalAttractors: record.originalAttractors || [],
       mergeLinks: record.mergeLinks || [],
       obstacles: record.obstacles || [],
     });
@@ -1993,8 +2031,418 @@
         x: attractor.x,
         y: attractor.y,
       })),
+      originalAttractors: (sim.originalAttractors || []).map((attractor) => ({
+        x: attractor.x,
+        y: attractor.y,
+      })),
       obstacles: serializeObstacles(),
     };
+  }
+
+  function setSavedSimStatus(message, kind) {
+    if (!ui.savedSimStatus) return;
+    ui.savedSimStatus.textContent = message;
+    ui.savedSimStatus.classList.toggle("active", kind === "active");
+    ui.savedSimStatus.classList.toggle("error", kind === "error");
+  }
+
+  function readDisplayFromUI() {
+    const colors = displayColors();
+    return {
+      gridOpacity: Number(ui.gridOpacity?.value ?? 90),
+      attractorSize: Number(ui.attractorSize?.value ?? 2),
+      branchThickness: Number(ui.branchThickness?.value ?? 1),
+      identifyBranches: !!ui.identifyBranches?.checked,
+      showPrimary: !!ui.showPrimary?.checked,
+      showSecondary: !!ui.showSecondary?.checked,
+      showTertiary: !!ui.showTertiary?.checked,
+      showVoidMask: !!ui.showVoidMask?.checked,
+      showInfluenceRadius: !!ui.showInfluenceRadius?.checked,
+      exportTransparent: !!(ui.exportTransparent && ui.exportTransparent.checked),
+      colors: {
+        attractor: colors.attractor,
+        branch: colors.branch,
+        primary: colors[1],
+        secondary: colors[2],
+        tertiary: colors[3],
+      },
+    };
+  }
+
+  function canvasToBlob(target, type, quality) {
+    return new Promise((resolve, reject) => {
+      target.toBlob(
+        (blob) => {
+          if (!blob) reject(new Error("Could not encode image."));
+          else resolve(blob);
+        },
+        type,
+        quality
+      );
+    });
+  }
+
+  async function captureCurrentGridPayload() {
+    const slotIndex = activeSlotIndex;
+    try {
+      const db = await openGridSlotDb();
+      const rec = await idbGetGridSlot(db, slotIndex);
+      db.close();
+      if (rec && rec.buffer) {
+        return {
+          slotIndex,
+          name: rec.name || gridName || `grid-${slotIndex + 1}`,
+          type: rec.type || "",
+          svgText: rec.svgText || gridSvgText || null,
+          buffer: rec.buffer,
+        };
+      }
+    } catch (_) {
+      /* fall through to raster fallback */
+    }
+    if (!gridSource) return null;
+    const w = gridSource.naturalWidth || 1;
+    const h = gridSource.naturalHeight || 1;
+    const off = document.createElement("canvas");
+    off.width = w;
+    off.height = h;
+    off.getContext("2d").drawImage(gridSource, 0, 0);
+    const blob = await canvasToBlob(off, "image/png", 1);
+    return {
+      slotIndex,
+      name: gridName || `grid-${slotIndex + 1}.png`,
+      type: "image/png",
+      svgText: gridSvgText || null,
+      buffer: await blob.arrayBuffer(),
+    };
+  }
+
+  async function makeSavedSimulationThumb() {
+    const site = currentSiteRect();
+    const size = SAVED_SIM_THUMB_PX;
+    const off = document.createElement("canvas");
+    off.width = size;
+    off.height = size;
+    const ectx = off.getContext("2d");
+    ectx.setTransform(1, 0, 0, 1, 0, 0);
+    renderStudioFrame(ectx, {
+      transparentBackground: false,
+      outputWidth: size,
+      outputHeight: size,
+      camera: cameraForSiteRect(site, size),
+      pixelRatio: 1,
+      clipToOutput: true,
+      hideSiteBoundary: true,
+      hideInfluencePreview: true,
+      hideEditingChrome: true,
+      hideDraft: true,
+    });
+    return canvasToBlob(off, "image/jpeg", 0.72);
+  }
+
+  function formatSavedSimDate(value) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    return date.toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  function revokeSavedSimThumbUrls() {
+    for (const url of savedSimThumbUrls.values()) URL.revokeObjectURL(url);
+    savedSimThumbUrls.clear();
+  }
+
+  function savedSimThumbSrc(record) {
+    if (!record) return "";
+    if (record.thumbnail instanceof Blob) {
+      let url = savedSimThumbUrls.get(record.id);
+      if (!url) {
+        url = URL.createObjectURL(record.thumbnail);
+        savedSimThumbUrls.set(record.id, url);
+      }
+      return url;
+    }
+    if (typeof record.thumbnail === "string") return record.thumbnail;
+    return "";
+  }
+
+  function setSavedSimCategory(category) {
+    savedSimCategory = SavedSimStore
+      ? SavedSimStore.normalizeCategory(category)
+      : "lobby";
+    if (!ui.saveSimCats) return;
+    ui.saveSimCats.querySelectorAll("[data-sim-cat]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.simCat === savedSimCategory);
+    });
+  }
+
+  function setSavedSimFilter(filter) {
+    savedSimFilter = filter === "all" ? "all" : (SavedSimStore ? SavedSimStore.normalizeCategory(filter) : "lobby");
+    if (!ui.savedSimFilters) return;
+    ui.savedSimFilters.querySelectorAll("[data-sim-filter]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.simFilter === savedSimFilter);
+    });
+    renderSavedSimulationList();
+    if (!savedSimulations.length) return;
+    if (savedSimFilter === "all") {
+      setSavedSimStatus(`${savedSimulations.length} saved in this browser`, "active");
+    } else {
+      const n = visibleSavedSimulations().length;
+      const label = SavedSimStore ? SavedSimStore.categoryLabel(savedSimFilter) : savedSimFilter;
+      setSavedSimStatus(`${n} in ${label}`, "active");
+    }
+  }
+
+  function visibleSavedSimulations() {
+    if (savedSimFilter === "all") return savedSimulations;
+    return savedSimulations.filter((item) => item.category === savedSimFilter);
+  }
+
+  function hideSaveSimPanel() {
+    if (ui.saveSimPanel) ui.saveSimPanel.classList.add("hidden");
+  }
+
+  async function openSaveSimPanel() {
+    if (!gridSource) {
+      setSavedSimStatus("Import a grid before saving a simulation.", "error");
+      return;
+    }
+    if (!SavedSimStore) {
+      setSavedSimStatus("Saved Simulations are unavailable in this browser.", "error");
+      return;
+    }
+    try {
+      const names = await SavedSimStore.list();
+      if (ui.saveSimName) {
+        ui.saveSimName.value = "";
+        ui.saveSimName.placeholder = SavedSimStore.nextIterationName(names);
+      }
+    } catch (_) {
+      if (ui.saveSimName) {
+        ui.saveSimName.value = "";
+        ui.saveSimName.placeholder = SavedSimStore.nextIterationName(savedSimulations);
+      }
+    }
+    setSavedSimCategory(savedSimCategory || "lobby");
+    if (ui.saveSimPanel) ui.saveSimPanel.classList.remove("hidden");
+    if (ui.saveSimName) ui.saveSimName.focus();
+  }
+
+  function renderSavedSimulationList() {
+    if (!ui.savedSimList) return;
+    revokeSavedSimThumbUrls();
+    ui.savedSimList.innerHTML = "";
+    const items = visibleSavedSimulations();
+    for (const record of items) {
+      const item = document.createElement("li");
+      if (record.id === activeSavedLibraryId) item.className = "active";
+      const thumbSrc = savedSimThumbSrc(record);
+      const img = document.createElement("img");
+      img.alt = "";
+      img.width = 72;
+      img.height = 72;
+      if (thumbSrc) img.src = thumbSrc;
+      const body = document.createElement("div");
+      body.className = "saved-sim-card-body";
+      const title = document.createElement("strong");
+      title.className = "saved-sim-card-title";
+      title.textContent = record.name || "Untitled";
+      const cat = document.createElement("span");
+      cat.className = "saved-sim-card-cat";
+      cat.textContent = SavedSimStore ? SavedSimStore.categoryLabel(record.category) : record.category;
+      const params = record.params || {};
+      const meta = document.createElement("div");
+      meta.className = "saved-sim-card-meta";
+      meta.innerHTML = `${formatSavedSimDate(record.createdAt)}<br>Attractors: ${
+        params.count ?? "—"
+      }<br>Influence: ${params.influence ?? "—"}<br>Kill: ${params.kill ?? "—"}<br>Step: ${
+        params.stepSize ?? "—"
+      }`;
+      const actions = document.createElement("div");
+      actions.className = "saved-sim-card-actions";
+      const loadBtn = document.createElement("button");
+      loadBtn.type = "button";
+      loadBtn.textContent = "Load";
+      loadBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        loadSavedLibrarySimulation(record.id);
+      });
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "ghost";
+      delBtn.textContent = "Delete";
+      delBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteSavedLibrarySimulation(record.id);
+      });
+      actions.appendChild(loadBtn);
+      actions.appendChild(delBtn);
+      body.appendChild(title);
+      body.appendChild(cat);
+      body.appendChild(meta);
+      body.appendChild(actions);
+      item.appendChild(img);
+      item.appendChild(body);
+      ui.savedSimList.appendChild(item);
+    }
+  }
+
+  async function refreshSavedSimulationLibrary() {
+    if (!SavedSimStore) {
+      setSavedSimStatus("Saved Simulations need IndexedDB in this browser.", "error");
+      return;
+    }
+    try {
+      const records = await SavedSimStore.list();
+      savedSimulations.length = 0;
+      savedSimulations.push(...records);
+      renderSavedSimulationList();
+      if (!savedSimulations.length) {
+        setSavedSimStatus("Save the current layout in this browser. It stays on this computer only.");
+      } else if (savedSimFilter === "all") {
+        setSavedSimStatus(
+          `${savedSimulations.length} saved in this browser`,
+          "active"
+        );
+      } else {
+        const n = visibleSavedSimulations().length;
+        const label = SavedSimStore.categoryLabel(savedSimFilter);
+        setSavedSimStatus(`${n} in ${label}`, "active");
+      }
+    } catch (err) {
+      setSavedSimStatus(err.message || "Could not read saved simulations.", "error");
+    }
+  }
+
+  async function confirmSaveSimulation() {
+    if (!gridSource) {
+      setSavedSimStatus("Import a grid before saving a simulation.", "error");
+      return;
+    }
+    if (!SavedSimStore) {
+      setSavedSimStatus("Saved Simulations are unavailable in this browser.", "error");
+      return;
+    }
+    if (ui.confirmSaveSim) ui.confirmSaveSim.disabled = true;
+    try {
+      const existing = await SavedSimStore.list();
+      const typed = ui.saveSimName ? ui.saveSimName.value.trim() : "";
+      const name = typed || SavedSimStore.nextIterationName(existing);
+      const grid = await captureCurrentGridPayload();
+      if (!grid) {
+        setSavedSimStatus("Could not capture the current grid for this save.", "error");
+        return;
+      }
+      let thumbnail = null;
+      try {
+        thumbnail = await makeSavedSimulationThumb();
+      } catch (_) {
+        thumbnail = null;
+      }
+      const record = {
+        id: SavedSimStore.createId(),
+        name,
+        category: savedSimCategory,
+        createdAt: Date.now(),
+        gridSlotIndex: grid.slotIndex,
+        grid,
+        params: readParamsFromUI(),
+        display: readDisplayFromUI(),
+        jitter: sim.jitter,
+        seeds: seeds.map((seed) => ({ x: seed.x, y: seed.y })),
+        sim: serializeSimSnapshot(),
+        thumbnail,
+      };
+      await SavedSimStore.put(record);
+      hideSaveSimPanel();
+      if (ui.saveSimName) ui.saveSimName.value = "";
+      activeSavedLibraryId = record.id;
+      activeSavedIterationId = null;
+      activeVariantId = null;
+      await refreshSavedSimulationLibrary();
+      setSavedSimStatus(`Saved ${name} · ${SavedSimStore.categoryLabel(record.category)}`, "active");
+    } catch (err) {
+      setSavedSimStatus(err.message || "Could not save this simulation.", "error");
+    } finally {
+      if (ui.confirmSaveSim) ui.confirmSaveSim.disabled = false;
+    }
+  }
+
+  async function restoreSavedGrid(record) {
+    const slotIndex =
+      Number.isInteger(record.gridSlotIndex) &&
+      record.gridSlotIndex >= 0 &&
+      record.gridSlotIndex < GRID_SLOT_COUNT
+        ? record.gridSlotIndex
+        : activeSlotIndex;
+    if (record.grid && record.grid.buffer) {
+      const file = new File([record.grid.buffer], record.grid.name || `grid-${slotIndex + 1}`, {
+        type: record.grid.type || (record.grid.svgText ? "image/svg+xml" : "image/png"),
+      });
+      const ok = await importGridFile(file, slotIndex);
+      if (!ok) throw new Error("Could not restore the saved grid.");
+      return;
+    }
+    const entry = gridSlots[slotIndex]?.entry;
+    if (entry) {
+      if (!activateGrid(entry)) throw new Error("Could not open the saved grid slot.");
+      return;
+    }
+    if (!gridSource) throw new Error("This save has no grid to restore.");
+  }
+
+  async function loadSavedLibrarySimulation(id) {
+    if (!SavedSimStore) return;
+    try {
+      const record = await SavedSimStore.get(id);
+      if (!record || !record.sim) {
+        setSavedSimStatus("That saved simulation is missing.", "error");
+        return;
+      }
+      applyParamsFromSnapshot(record.params || {});
+      await restoreSavedGrid(record);
+      applyDisplayFromExportMeta(record.display);
+      if (record.display && record.display.exportTransparent != null && ui.exportTransparent) {
+        ui.exportTransparent.checked = !!record.display.exportTransparent;
+      }
+      if (record.jitter != null) sim.jitter = record.jitter;
+      applySimSnapshot(record.params, record.seeds || [], record.sim);
+      playing = false;
+      ui.play.textContent = "Grow";
+      activeSavedLibraryId = record.id;
+      activeSavedIterationId = null;
+      activeVariantId = null;
+      updatePlayState();
+      updateIterationUI();
+      updateVariantUI();
+      renderSavedSimulationList();
+      setSavedSimStatus(`Loaded ${record.name} · ${SavedSimStore.categoryLabel(record.category)}`, "active");
+    } catch (err) {
+      setSavedSimStatus(err.message || "Could not load that simulation.", "error");
+    }
+  }
+
+  async function deleteSavedLibrarySimulation(id) {
+    if (!SavedSimStore) return;
+    if (!window.confirm("Delete this saved simulation?")) return;
+    try {
+      await SavedSimStore.remove(id);
+      if (activeSavedLibraryId === id) activeSavedLibraryId = null;
+      const url = savedSimThumbUrls.get(id);
+      if (url) {
+        URL.revokeObjectURL(url);
+        savedSimThumbUrls.delete(id);
+      }
+      await refreshSavedSimulationLibrary();
+      setSavedSimStatus("Deleted saved simulation", "active");
+    } catch (err) {
+      setSavedSimStatus(err.message || "Could not delete that simulation.", "error");
+    }
   }
 
   function fitNodesToBox(flatNodes, size, pad) {
@@ -2355,6 +2803,7 @@
       nodes: snap.nodes,
       mergeLinks: snap.mergeLinks || [],
       attractorsLeft: snap.attractorsLeft,
+      originalAttractors: snap.originalAttractors || [],
       obstacles: serializeObstacles(),
       thumbDataUrl: makeVariantThumb(snap.nodes, snap.mergeLinks),
     };
@@ -2388,6 +2837,7 @@
       generation: variant.generation,
       nodes: variant.nodes,
       attractorsLeft: variant.attractorsLeft,
+      originalAttractors: variant.originalAttractors || [],
       mergeLinks: variant.mergeLinks || [],
       obstacles: variant.obstacles || [],
     });
@@ -2508,6 +2958,7 @@
     ui.captureVariant.disabled = !ready || batchRunning || !canCaptureVariant();
     if (ui.saveIteration) ui.saveIteration.disabled = !ready || batchRunning || !canSaveIteration();
     if (ui.saveSvg) ui.saveSvg.disabled = !ready || batchRunning || !canSaveIteration();
+    if (ui.saveSimulation) ui.saveSimulation.disabled = !gridSource || batchRunning;
     ui.clearVariants.disabled = !variants.some((v) => v.gridToken === gridToken) || batchRunning;
     updateIterationUI();
     if (!ready) {
@@ -2682,7 +3133,7 @@
 
     const attractors = currentAttractors();
     if (attractors && attractors.length && sim.pathIndex) {
-      sim.addAttractors(attractors);
+      sim.seedAttractorField(attractors);
       if (randomSeed) {
         const pt = randomPathSeedPoint();
         if (pt) addSeedRecord(pt);
@@ -2868,6 +3319,11 @@
     }
   }
 
+  function displayAttractors() {
+    if (sim.originalAttractors && sim.originalAttractors.length) return sim.originalAttractors;
+    return sim.attractors || [];
+  }
+
   function renderStudioFrame(targetCtx, options = {}) {
     const transparent = !!options.transparentBackground;
     const outW = options.outputWidth ?? width;
@@ -2988,10 +3444,11 @@
       }
       targetCtx.restore();
     }
+    const field = displayAttractors();
     targetCtx.fillStyle = rgbaFromHex(palette.attractor, 0.82);
     targetCtx.strokeStyle = rgbaFromHex(palette.attractor, 1);
     targetCtx.lineWidth = attractorR >= 2 ? 1.1 : 0.7;
-    for (const p of sim.attractors) {
+    for (const p of field) {
       targetCtx.beginPath();
       targetCtx.arc(p.x, p.y, attractorR, 0, Math.PI * 2);
       targetCtx.fill();
@@ -3594,12 +4051,13 @@
       parts.push(`</g>`);
     }
 
-    if (sim.attractors.length) {
+    const attractorField = displayAttractors();
+    if (attractorField.length) {
       const fill = rgbaFromHex(palette.attractor, 0.82);
       const stroke = rgbaFromHex(palette.attractor, 1);
       const sw = attractorR >= 2 ? 1.1 : 0.7;
       parts.push(`<g fill="${xmlEscape(fill)}" stroke="${xmlEscape(stroke)}" stroke-width="${svgNum(sw)}">`);
-      for (const p of sim.attractors) {
+      for (const p of attractorField) {
         parts.push(`<circle cx="${svgNum(p.x)}" cy="${svgNum(p.y)}" r="${svgNum(attractorR)}"/>`);
       }
       parts.push(`</g>`);
@@ -3965,6 +4423,32 @@
   ui.captureVariant.addEventListener("click", captureVariant);
   if (ui.saveIteration) ui.saveIteration.addEventListener("click", saveCurrentIteration);
   if (ui.saveSvg) ui.saveSvg.addEventListener("click", downloadSvgSnapshot);
+  if (ui.saveSimulation) ui.saveSimulation.addEventListener("click", openSaveSimPanel);
+  if (ui.confirmSaveSim) ui.confirmSaveSim.addEventListener("click", confirmSaveSimulation);
+  if (ui.cancelSaveSim) ui.cancelSaveSim.addEventListener("click", hideSaveSimPanel);
+  if (ui.saveSimName) {
+    ui.saveSimName.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        confirmSaveSimulation();
+      }
+      if (event.key === "Escape") hideSaveSimPanel();
+    });
+  }
+  if (ui.saveSimCats) {
+    ui.saveSimCats.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-sim-cat]");
+      if (!btn) return;
+      setSavedSimCategory(btn.dataset.simCat);
+    });
+  }
+  if (ui.savedSimFilters) {
+    ui.savedSimFilters.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-sim-filter]");
+      if (!btn) return;
+      setSavedSimFilter(btn.dataset.simFilter);
+    });
+  }
   if (ui.clearIterations) ui.clearIterations.addEventListener("click", clearSavedIterationsForGrid);
   if (ui.importSnapshot && ui.importSnapshotFile) {
     ui.importSnapshot.addEventListener("click", () => ui.importSnapshotFile.click());
@@ -4365,5 +4849,6 @@
   updateIterationUI();
   resize();
   restoreGridSlots();
+  refreshSavedSimulationLibrary();
   loop();
 })();
