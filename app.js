@@ -170,10 +170,6 @@
     matrixSaveCats: document.getElementById("matrixSaveCats"),
     matrixConfirmSave: document.getElementById("matrixConfirmSave"),
     matrixCancelSave: document.getElementById("matrixCancelSave"),
-    chunkSelect: document.getElementById("chunkSelect"),
-    clearChunk: document.getElementById("clearChunk"),
-    generate3d: document.getElementById("generate3d"),
-    chunkStatus: document.getElementById("chunkStatus"),
     space3dView: document.getElementById("space3dView"),
     space3dStage: document.getElementById("space3dStage"),
     space3dStatus: document.getElementById("space3dStatus"),
@@ -191,6 +187,7 @@
   let matrixGenerating = false;
   let matrixExporting = false;
   let appPage = "studio";
+  let space3dStudio = null;
   const MatrixLib = window.D7DescriptorMatrix;
   let matrixType = "lobby";
   let matrixDescriptor = "interlocking";
@@ -258,10 +255,6 @@
   let nextSeedId = 1;
   let selectedSeedId = null;
   let interactionMode = "select";
-  let chunkRect = null;
-  let chunkDraft = null;
-  let space3dViewer = null;
-  const Spatial3D = window.D7Spatial3D;
   const obstacles = [];
   let nextObstacleId = 1;
   let selectedObstacleId = null;
@@ -448,28 +441,19 @@
   }
 
   function setInteractionMode(mode) {
-    interactionMode =
-      mode === "add" || mode === "draw" || mode === "chunk" ? mode : "select";
+    interactionMode = mode === "add" || mode === "draw" ? mode : "select";
     if (interactionMode !== "draw") obstacleDraft = null;
-    if (interactionMode !== "chunk") chunkDraft = null;
     if (interactionMode === "draw") selectedSeedId = null;
     if (interactionMode === "add") selectedObstacleId = null;
-    if (interactionMode === "chunk") {
-      selectedSeedId = null;
-      selectedObstacleId = null;
-    }
     ui.seedMode.classList.toggle("active", interactionMode === "add");
     if (ui.selectRoot) ui.selectRoot.classList.toggle("active", interactionMode === "select");
     if (ui.drawObstacle) ui.drawObstacle.classList.toggle("active", interactionMode === "draw");
-    if (ui.chunkSelect) ui.chunkSelect.classList.toggle("active", interactionMode === "chunk");
     canvas.classList.toggle("seed-mode", interactionMode === "add");
     canvas.classList.toggle("select-mode", interactionMode === "select");
     canvas.classList.toggle("draw-mode", interactionMode === "draw");
-    canvas.classList.toggle("chunk-mode", interactionMode === "chunk");
-    if (interactionMode !== "chunk") canvas.style.cursor = "";
+    canvas.style.cursor = "";
     updateSeedUI();
     updateObstacleUI();
-    updateChunkUI();
   }
 
   function setSeedInteractionMode(mode) {
@@ -478,192 +462,6 @@
 
   function setSeedPlacementMode(on) {
     setInteractionMode(on ? "add" : "select");
-  }
-
-  function normalizeChunkRect(x0, y0, x1, y1) {
-    const x = Math.min(x0, x1);
-    const y = Math.min(y0, y1);
-    return { x, y, w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
-  }
-
-  function activeChunkRect() {
-    return chunkDraft || chunkRect;
-  }
-
-  function setChunkStatus(message, kind) {
-    if (!ui.chunkStatus) return;
-    ui.chunkStatus.textContent = message;
-    ui.chunkStatus.classList.toggle("active", kind === "active");
-    ui.chunkStatus.classList.toggle("error", kind === "error");
-  }
-
-  function chunkHasGeometry(rect) {
-    if (!rect || !Spatial3D) return false;
-    const segs = Spatial3D.collectSegments(sim.nodes, sim.mergeLinks);
-    const clipped = Spatial3D.clipSegmentsToRect(segs, rect);
-    return clipped.length >= 8;
-  }
-
-  function updateChunkUI() {
-    const rect = activeChunkRect();
-    const readyChunk = !!(chunkRect && chunkRect.w >= 8 && chunkRect.h >= 8);
-    if (ui.clearChunk) ui.clearChunk.disabled = !readyChunk;
-    if (ui.generate3d) ui.generate3d.disabled = !readyChunk || batchRunning || matrixGenerating;
-    if (chunkDraft) {
-      setChunkStatus("Drag to size the chunk · release to keep it");
-      return;
-    }
-    if (interactionMode === "chunk" && chunkRect) {
-      setChunkStatus("Drag inside to move · drag a handle to scale · Generate 3D Space when ready", "active");
-      return;
-    }
-    if (interactionMode === "chunk") {
-      setChunkStatus("Click and drag on the simulation to select a chunk");
-      return;
-    }
-    if (chunkRect) {
-      setChunkStatus(
-        chunkHasGeometry(chunkRect)
-          ? "Chunk selected · Generate 3D Space, or Select Chunk to edit"
-          : "Selection has too little branching · resize it to include more geometry",
-        chunkHasGeometry(chunkRect) ? "active" : "error"
-      );
-      return;
-    }
-    setChunkStatus("Drag a rectangle over grown branches, then generate a 20′ cube study.");
-  }
-
-  function clearChunkSelection() {
-    chunkRect = null;
-    chunkDraft = null;
-    updateChunkUI();
-  }
-
-  function chunkHandleSize() {
-    return Math.max(10, 8 / Math.max(0.25, view.scale));
-  }
-
-  function hitChunkHandle(rect, point) {
-    if (!rect) return null;
-    const x0 = rect.x;
-    const y0 = rect.y;
-    const x1 = rect.x + rect.w;
-    const y1 = rect.y + rect.h;
-    const xm = (x0 + x1) / 2;
-    const ym = (y0 + y1) / 2;
-    const handles = [
-      { id: "nw", x: x0, y: y0 },
-      { id: "n", x: xm, y: y0 },
-      { id: "ne", x: x1, y: y0 },
-      { id: "e", x: x1, y: ym },
-      { id: "se", x: x1, y: y1 },
-      { id: "s", x: xm, y: y1 },
-      { id: "sw", x: x0, y: y1 },
-      { id: "w", x: x0, y: ym },
-    ];
-    const r = chunkHandleSize();
-    for (const h of handles) {
-      if (Math.abs(point.x - h.x) <= r && Math.abs(point.y - h.y) <= r) return h.id;
-    }
-    if (point.x >= x0 && point.x <= x1 && point.y >= y0 && point.y <= y1) return "body";
-    return null;
-  }
-
-  function resizeChunkRect(start, handle, point) {
-    let x0 = start.x;
-    let y0 = start.y;
-    let x1 = start.x + start.w;
-    let y1 = start.y + start.h;
-    if (handle.indexOf("n") >= 0) y0 = point.y;
-    if (handle.indexOf("s") >= 0) y1 = point.y;
-    if (handle.indexOf("w") >= 0) x0 = point.x;
-    if (handle.indexOf("e") >= 0) x1 = point.x;
-    const next = normalizeChunkRect(x0, y0, x1, y1);
-    if (next.w < 12) {
-      if (handle.indexOf("w") >= 0) next.x = x1 - 12;
-      next.w = 12;
-    }
-    if (next.h < 12) {
-      if (handle.indexOf("n") >= 0) next.y = y1 - 12;
-      next.h = 12;
-    }
-    return next;
-  }
-
-  function drawChunkOverlay(targetCtx) {
-    const rect = activeChunkRect();
-    if (!rect || rect.w < 2 || rect.h < 2) return;
-    const site = currentSiteRect();
-    targetCtx.save();
-    targetCtx.fillStyle = "rgba(0, 0, 0, 0.45)";
-    targetCtx.beginPath();
-    targetCtx.rect(site.x - 4000, site.y - 4000, site.w + 8000, site.h + 8000);
-    targetCtx.rect(rect.x, rect.y, rect.w, rect.h);
-    targetCtx.fill("evenodd");
-    targetCtx.strokeStyle = "rgba(232, 213, 163, 0.95)";
-    targetCtx.lineWidth = 1.6 / Math.max(0.25, view.scale);
-    targetCtx.setLineDash([8 / view.scale, 5 / view.scale]);
-    targetCtx.strokeRect(rect.x, rect.y, rect.w, rect.h);
-    targetCtx.setLineDash([]);
-    const hs = 5 / Math.max(0.25, view.scale);
-    const x0 = rect.x;
-    const y0 = rect.y;
-    const x1 = rect.x + rect.w;
-    const y1 = rect.y + rect.h;
-    const pts = [
-      [x0, y0],
-      [(x0 + x1) / 2, y0],
-      [x1, y0],
-      [x1, (y0 + y1) / 2],
-      [x1, y1],
-      [(x0 + x1) / 2, y1],
-      [x0, y1],
-      [x0, (y0 + y1) / 2],
-    ];
-    targetCtx.fillStyle = "#f2efe6";
-    for (const [hx, hy] of pts) {
-      targetCtx.fillRect(hx - hs, hy - hs, hs * 2, hs * 2);
-    }
-    targetCtx.restore();
-  }
-
-  function ensureSpace3dViewer() {
-    if (space3dViewer) return space3dViewer;
-    if (!Spatial3D || !ui.space3dStage) return null;
-    space3dViewer = Spatial3D.createViewer(ui.space3dStage);
-    return space3dViewer;
-  }
-
-  function generateChunkSpace() {
-    if (!chunkRect || !Spatial3D) {
-      setChunkStatus("Select a chunk of the simulation first.", "error");
-      return;
-    }
-    if (!sim.nodes.length) {
-      setChunkStatus("Grow a simulation before generating 3D space.", "error");
-      return;
-    }
-    const segs = Spatial3D.collectSegments(sim.nodes, sim.mergeLinks);
-    const result = Spatial3D.generateSpace(segs, chunkRect);
-    if (!result.ok) {
-      setChunkStatus(result.reason || "Could not generate 3D space.", "error");
-      if (ui.space3dStatus) ui.space3dStatus.textContent = result.reason || "Could not generate 3D space.";
-      return;
-    }
-    setAppPage("space3d");
-    const viewer = ensureSpace3dViewer();
-    if (!viewer) {
-      setChunkStatus("3D viewer could not start. Check that Three.js loaded.", "error");
-      return;
-    }
-    viewer.show(result);
-    viewer.start();
-    viewer.resize();
-    setChunkStatus("Generated a 20′ × 20′ × 20′ spatial study from the selected chunk.", "active");
-    if (ui.space3dStatus) {
-      ui.space3dStatus.textContent = "20′ × 20′ × 20′ cube · selected 2D chunk as a sectional seed (not extruded)";
-      ui.space3dStatus.classList.add("active");
-    }
   }
 
   function setObstacleTool(tool) {
@@ -3367,13 +3165,9 @@
       appEl.classList.toggle("matrix-mode", matrix);
       appEl.classList.toggle("space3d-mode", space3d);
     }
-    if (space3dViewer) {
-      if (space3d) {
-        space3dViewer.start();
-        space3dViewer.resize();
-      } else {
-        space3dViewer.stop();
-      }
+    if (space3dStudio) {
+      if (space3d) space3dStudio.show();
+      else space3dStudio.hide();
     }
     if (matrix) {
       playing = false;
@@ -4186,10 +3980,8 @@
     }
     playing = false;
     flashes.length = 0;
-    chunkDraft = null;
     ui.play.textContent = "Grow";
     updatePlayState();
-    updateChunkUI();
   }
 
   let lastResizeW = 0;
@@ -4579,10 +4371,6 @@
         targetCtx.arc(f.x, f.y, 4 + (1 - f.life) * 8, 0, Math.PI * 2);
         targetCtx.fill();
       }
-    }
-
-    if (!hideChrome) {
-      drawChunkOverlay(targetCtx);
     }
 
     targetCtx.restore();
@@ -5581,13 +5369,6 @@
   if (ui.tabStudio) ui.tabStudio.addEventListener("click", () => setAppPage("studio"));
   if (ui.tabMatrix) ui.tabMatrix.addEventListener("click", () => setAppPage("matrix"));
   if (ui.tabSpace3d) ui.tabSpace3d.addEventListener("click", () => setAppPage("space3d"));
-  if (ui.chunkSelect) {
-    ui.chunkSelect.addEventListener("click", () => {
-      setInteractionMode(interactionMode === "chunk" ? "select" : "chunk");
-    });
-  }
-  if (ui.clearChunk) ui.clearChunk.addEventListener("click", clearChunkSelection);
-  if (ui.generate3d) ui.generate3d.addEventListener("click", generateChunkSpace);
   if (ui.matrixTypeRow) {
     ui.matrixTypeRow.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-matrix-type]");
@@ -5740,22 +5521,6 @@
     if (event.button !== 0) return;
     const point = canvasPoint(event);
 
-    if (interactionMode === "chunk") {
-      captureCanvasPointer(event);
-      const hit = chunkRect ? hitChunkHandle(chunkRect, point) : null;
-      if (hit && hit !== "body") {
-        canvas._drag = { kind: "chunk-resize", handle: hit, origin: point, start: { ...chunkRect } };
-        return;
-      }
-      if (hit === "body") {
-        canvas._drag = { kind: "chunk-move", origin: point, start: { ...chunkRect } };
-        return;
-      }
-      canvas._drag = { kind: "chunk-draw", origin: point };
-      chunkDraft = null;
-      return;
-    }
-
     if (interactionMode === "draw") {
       captureCanvasPointer(event);
       if (obstacleTool === "polygon") {
@@ -5845,16 +5610,6 @@
       obstacleDraft.hover = point;
       return;
     }
-    if (!drag && interactionMode === "chunk") {
-      const hit = chunkRect ? hitChunkHandle(chunkRect, point) : null;
-      if (hit === "nw" || hit === "se") canvas.style.cursor = "nwse-resize";
-      else if (hit === "ne" || hit === "sw") canvas.style.cursor = "nesw-resize";
-      else if (hit === "n" || hit === "s") canvas.style.cursor = "ns-resize";
-      else if (hit === "e" || hit === "w") canvas.style.cursor = "ew-resize";
-      else if (hit === "body") canvas.style.cursor = "move";
-      else canvas.style.cursor = "crosshair";
-      return;
-    }
     if (!drag) return;
     if (drag.kind === "seed") {
       const nx = drag.x + (point.x - drag.origin.x);
@@ -5867,23 +5622,6 @@
       return;
     }
     if (drag.kind === "place-seed" || drag.kind === "empty-select" || drag.kind === "poly-click") {
-      return;
-    }
-    if (drag.kind === "chunk-draw") {
-      chunkDraft = normalizeChunkRect(drag.origin.x, drag.origin.y, point.x, point.y);
-      return;
-    }
-    if (drag.kind === "chunk-move") {
-      chunkRect = {
-        x: drag.start.x + (point.x - drag.origin.x),
-        y: drag.start.y + (point.y - drag.origin.y),
-        w: drag.start.w,
-        h: drag.start.h,
-      };
-      return;
-    }
-    if (drag.kind === "chunk-resize") {
-      chunkRect = resizeChunkRect(drag.start, drag.handle, point);
       return;
     }
     if (drag.kind === "draw-shape") {
@@ -5953,17 +5691,6 @@
         deselectSeed();
         deselectObstacle();
       }
-      return;
-    }
-    if (drag.kind === "chunk-draw") {
-      const next = normalizeChunkRect(drag.origin.x, drag.origin.y, point.x, point.y);
-      chunkDraft = null;
-      if (next.w >= 12 && next.h >= 12) chunkRect = next;
-      updateChunkUI();
-      return;
-    }
-    if (drag.kind === "chunk-move" || drag.kind === "chunk-resize") {
-      updateChunkUI();
       return;
     }
     if (drag.kind === "poly-click") {
@@ -6068,15 +5795,6 @@
         updateObstacleUI();
         return;
       }
-      if (chunkDraft) {
-        chunkDraft = null;
-        updateChunkUI();
-        return;
-      }
-      if (interactionMode === "chunk") {
-        setInteractionMode("select");
-        return;
-      }
       deselectSeed();
       deselectObstacle();
       return;
@@ -6087,11 +5805,6 @@
       return;
     }
     if (event.key === "Delete" || event.key === "Backspace") {
-      if (interactionMode === "chunk" && chunkRect) {
-        event.preventDefault();
-        clearChunkSelection();
-        return;
-      }
       if (selectedObstacleId != null) {
         event.preventDefault();
         deleteSelectedObstacle();
@@ -6109,7 +5822,7 @@
     new ResizeObserver(resize).observe(viewport);
     if (ui.space3dStage) {
       new ResizeObserver(() => {
-        if (appPage === "space3d" && space3dViewer) space3dViewer.resize();
+        if (appPage === "space3d" && space3dStudio) space3dStudio.resize();
       }).observe(ui.space3dStage);
     }
   }
@@ -6127,7 +5840,57 @@
   renderDescriptorButtons();
   renderMatrixGrid();
   updateMatrixGenerateState();
-  updateChunkUI();
+  if (window.D7Spatial3D && typeof window.D7Spatial3D.mount === "function") {
+    space3dStudio = window.D7Spatial3D.mount({
+      draw2dPreview(target) {
+        if (!target) return;
+        const ctx = target.getContext("2d");
+        if (!ctx) return;
+        const size = target.width || 240;
+        const site = currentSiteRect();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        renderStudioFrame(ctx, {
+          transparentBackground: false,
+          outputWidth: size,
+          outputHeight: size,
+          camera: cameraForSiteRect(site, size),
+          pixelRatio: 1,
+          clipToOutput: true,
+          hideInfluencePreview: true,
+          hideEditingChrome: true,
+          hideDraft: true,
+        });
+      },
+      capture2d() {
+        const site = currentSiteRect();
+        const indexOf = new Map();
+        sim.nodes.forEach((node, index) => indexOf.set(node, index));
+        return {
+          site: { x: site.x, y: site.y, w: site.w, h: site.h },
+          nodes: sim.nodes.map((node) => ({
+            x: node.pos.x,
+            y: node.pos.y,
+            parentIndex: node.parent ? indexOf.get(node.parent) : -1,
+            thickness: node.thickness,
+            order: node.order || 1,
+            rootId: node.rootId,
+            fused: !!node.fused,
+          })),
+          mergeLinks: (sim.mergeLinks || [])
+            .map((link) => ({
+              a: indexOf.get(link.a),
+              b: indexOf.get(link.b),
+            }))
+            .filter((link) => link.a != null && link.b != null),
+          roots: seeds.map((seed) => ({ id: seed.id, x: seed.x, y: seed.y })),
+          attractors: (sim.originalAttractors || currentAttractors() || []).map((p) => ({
+            x: p.x,
+            y: p.y,
+          })),
+        };
+      },
+    });
+  }
   resize();
   restoreGridSlots();
   refreshSavedSimulationLibrary();

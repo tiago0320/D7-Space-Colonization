@@ -68,18 +68,6 @@
       </div>
 
       <div class="section">
-        <div class="section-head">3D Spatial Study</div>
-        <div class="row">
-          <button id="chunkSelect" class="ghost" type="button">Select Chunk</button>
-          <button id="clearChunk" class="ghost" type="button" disabled>Clear Selection</button>
-        </div>
-        <div class="row">
-          <button id="generate3d" class="primary" type="button" disabled>Generate 3D Space</button>
-        </div>
-        <p id="chunkStatus" class="grid-status">Drag a rectangle over grown branches, then generate a 20′ cube study.</p>
-      </div>
-
-      <div class="section">
         <div class="section-head">Repulsion Geometry</div>
         <div class="row">
           <button id="obstacleRect" class="ghost" type="button">Rectangle</button>
@@ -440,12 +428,279 @@
         </div>
       </div>
 
-      <div id="space3dView" class="space3d-view hidden" aria-label="3D Spatial Study">
-        <div class="space3d-toolbar">
-          <p id="space3dStatus" class="grid-status">Select a 2D chunk in Studio, then Generate 3D Space.</p>
+      <div id="space3dView" class="space3d-view hidden" aria-label="3D Studio">
+        <aside class="space3d-hud" aria-label="3D Studio controls">
+          <div class="section-head">3D Studio</div>
+          <p id="space3dStatus" class="grid-status">Select a region of the full 20 × 20 2D simulation and place that exact geometry in the cube.</p>
+          <div class="row">
+            <button id="space3dSelectChunk" class="ghost" type="button">Select 2D Chunk</button>
+            <button id="space3dResetView" class="ghost" type="button">Reset View</button>
+          </div>
+          <div class="row">
+            <button id="space3dConfirmChunk" class="ghost" type="button" disabled>Confirm Selection</button>
+            <button id="space3dCancelChunk" class="ghost" type="button" disabled>Cancel</button>
+          </div>
+          <p id="space3dChunkSize" class="grid-status">Selected Area: —</p>
+          <ul id="space3dChunkList" class="seed-list"></ul>
+          <div class="row">
+            <button id="space3dDeleteChunk" class="ghost" type="button" disabled>Delete Selected Chunk</button>
+            <button id="space3dDuplicateChunk" class="ghost" type="button" disabled>Duplicate Chunk</button>
+          </div>
+          <div class="section-head">Section Loft Set</div>
+          <p class="grid-status">Same branch topology, independent section layers. Loft corresponding branches. Voids stay open.</p>
+          <div class="row">
+            <button id="space3dCreateLoft" class="ghost" type="button" disabled>Create Loft Set</button>
+          </div>
+          <ul id="space3dSectionList" class="seed-list"></ul>
+          <div class="row">
+            <button id="space3dDupSection" class="ghost" type="button" disabled>Duplicate Section</button>
+            <button id="space3dDeleteSection" class="ghost" type="button" disabled>Delete Section</button>
+          </div>
+          <div class="row">
+            <button id="space3dSectionUp" class="ghost" type="button" disabled>Move Section Up</button>
+            <button id="space3dSectionDown" class="ghost" type="button" disabled>Move Section Down</button>
+          </div>
+          <label class="ctrl" title="Move this section along its local normal. Rotating the section changes that direction.">
+            Section Offset
+            <span class="value" id="space3dOffsetVal">0.0</span>
+            <input id="space3dOffset" type="range" min="0" max="20" step="0.1" value="0" disabled />
+          </label>
+          <div class="space3d-xyz">
+            <label class="ctrl">
+              Scale X
+              <input id="space3dScaleX" type="number" min="0.05" max="4" step="0.05" value="1" disabled />
+            </label>
+            <label class="ctrl">
+              Scale Y
+              <input id="space3dScaleY" type="number" min="0.05" max="4" step="0.05" value="1" disabled />
+            </label>
+          </div>
+          <div class="section-head">Section Deform</div>
+          <p class="grid-status">In-plane edits. Topology stays the same.</p>
+          <label class="ctrl">
+            Section Scale
+            <span class="value" id="space3dSecScaleVal">100%</span>
+            <input id="space3dSecScale" type="range" min="20" max="180" step="1" value="100" disabled />
+          </label>
+          <label class="ctrl">
+            Horizontal Scale
+            <span class="value" id="space3dSecScaleXVal">100%</span>
+            <input id="space3dSecScaleX" type="range" min="20" max="180" step="1" value="100" disabled />
+          </label>
+          <label class="ctrl">
+            Vertical Scale
+            <span class="value" id="space3dSecScaleYVal">100%</span>
+            <input id="space3dSecScaleY" type="range" min="20" max="180" step="1" value="100" disabled />
+          </label>
+          <label class="ctrl">
+            Section Rotation
+            <span class="value" id="space3dSecRotVal">0°</span>
+            <input id="space3dSecRot" type="range" min="-180" max="180" step="1" value="0" disabled />
+          </label>
+          <label class="ctrl">
+            Shift X
+            <span class="value" id="space3dShiftXVal">0.0</span>
+            <input id="space3dShiftX" type="range" min="-8" max="8" step="0.1" value="0" disabled />
+          </label>
+          <label class="ctrl">
+            Shift Y
+            <span class="value" id="space3dShiftYVal">0.0</span>
+            <input id="space3dShiftY" type="range" min="-8" max="8" step="0.1" value="0" disabled />
+          </label>
+          <label class="ctrl" title="Scale this section relative to the previous one. 100% leaves it unchanged.">
+            Taper
+            <span class="value" id="space3dTaperVal">100%</span>
+            <input id="space3dTaper" type="range" min="20" max="160" step="1" value="100" disabled />
+          </label>
+          <div class="section-head">Edit Branches</div>
+          <p class="grid-status">Drag nodes in the section plane. Shift-click adds to the selection. Connectivity is preserved.</p>
+          <div class="row">
+            <button id="space3dEditBranches" class="ghost" type="button" disabled>Edit Branches</button>
+          </div>
+          <div class="space3d-xyz">
+            <label class="ctrl">
+              Move X
+              <input id="space3dNodeX" type="number" step="0.05" value="0" disabled />
+            </label>
+            <label class="ctrl">
+              Move Y
+              <input id="space3dNodeY" type="number" step="0.05" value="0" disabled />
+            </label>
+          </div>
+          <label class="ctrl">
+            Rotate Nodes
+            <span class="value" id="space3dNodeRotVal">0°</span>
+            <input id="space3dNodeRot" type="range" min="-45" max="45" step="1" value="0" disabled />
+          </label>
+          <label class="ctrl">
+            Scale Nodes
+            <span class="value" id="space3dNodeScaleVal">100%</span>
+            <input id="space3dNodeScale" type="range" min="50" max="150" step="1" value="100" disabled />
+          </label>
+          <div class="section-head">Loft Solids</div>
+          <p class="grid-status">Loft corresponding branches only. Do not enclose the whole chunk.</p>
+          <div class="row">
+            <button id="space3dGenerateLoft" class="primary" type="button" disabled>Generate Loft</button>
+          </div>
+          <div class="row">
+            <button id="space3dRegenLoft" class="ghost" type="button" disabled>Regenerate Loft</button>
+            <button id="space3dClearLoft" class="ghost" type="button" disabled>Clear Loft</button>
+          </div>
+          <label class="ctrl compact">
+            Loft Style
+            <select id="space3dLoftStyle">
+              <option value="smooth" selected>Smooth</option>
+              <option value="linear">Linear</option>
+            </select>
+          </label>
+          <label class="ctrl" title="Width of each lofted branch solid in the section plane.">
+            Solid Width
+            <span class="value" id="space3dLoftWidthVal">28%</span>
+            <input id="space3dLoftWidth" type="range" min="0" max="100" step="1" value="28" />
+          </label>
+          <label class="ctrl" title="Secondary thickness of each lofted member, independent of the 2D stroke.">
+            Solid Thickness
+            <span class="value" id="space3dLoftThickVal">32%</span>
+            <input id="space3dLoftThick" type="range" min="0" max="100" step="1" value="32" />
+          </label>
+          <label class="check">
+            <input id="space3dLoftHierarchy" type="checkbox" />
+            Use Branch Hierarchy
+          </label>
+          <div class="row">
+            <button id="space3dSaveVar" class="ghost" type="button" disabled>Save Loft Variation</button>
+            <button id="space3dDupVar" class="ghost" type="button" disabled>Duplicate Variation</button>
+          </div>
+          <ul id="space3dVarList" class="seed-list"></ul>
+          <div class="section-head">Display</div>
+          <label class="check">
+            <input id="space3dShowSourceChunk" type="checkbox" checked />
+            Show Source Chunk
+          </label>
+          <label class="check">
+            <input id="space3dShowSections" type="checkbox" checked />
+            Show Section Layers
+          </label>
+          <label class="check">
+            <input id="space3dShowLoftLines" type="checkbox" checked />
+            Show Branch Lines
+          </label>
+          <label class="check">
+            <input id="space3dShowLoftSolids" type="checkbox" checked />
+            Show Loft Solids
+          </label>
+          <div class="section-head">Transform</div>
+          <p class="grid-status">Position in feet · scale 1.0 keeps original 2D size</p>
+          <div class="space3d-xyz">
+            <label class="ctrl">
+              X
+              <input id="space3dPosX" type="number" min="-5" max="25" step="0.1" value="0" disabled />
+            </label>
+            <label class="ctrl">
+              Y
+              <input id="space3dPosY" type="number" min="-5" max="25" step="0.1" value="0" disabled />
+            </label>
+            <label class="ctrl">
+              Z
+              <input id="space3dPosZ" type="number" min="-5" max="25" step="0.1" value="0" disabled />
+            </label>
+          </div>
+          <p class="grid-status">Rotation in degrees</p>
+          <div class="space3d-xyz">
+            <label class="ctrl">
+              Rotate X
+              <input id="space3dRotX" type="number" min="-180" max="180" step="1" value="0" disabled />
+            </label>
+            <label class="ctrl">
+              Rotate Y
+              <input id="space3dRotY" type="number" min="-180" max="180" step="1" value="0" disabled />
+            </label>
+            <label class="ctrl">
+              Rotate Z
+              <input id="space3dRotZ" type="number" min="-180" max="180" step="1" value="0" disabled />
+            </label>
+          </div>
+          <label class="ctrl">
+            Scale
+            <span class="value" id="space3dScaleVal">1.00</span>
+            <input id="space3dScale" type="range" min="0.05" max="4" step="0.01" value="1" disabled />
+          </label>
+          <div class="row">
+            <button id="space3dMoveMode" class="primary" type="button">Move</button>
+            <button id="space3dRotateMode" class="ghost" type="button">Rotate</button>
+            <button id="space3dScaleMode" class="ghost" type="button">Scale</button>
+          </div>
+          <div class="section-head">Branch Solids</div>
+          <p class="grid-status">Branch lines become solid. Spaces between branches stay void. The source section stays recognizable.</p>
+          <div class="row">
+            <button id="space3dGenerateMass" class="primary" type="button" disabled>Generate Branch Solids</button>
+          </div>
+          <div class="row">
+            <button id="space3dRegenMass" class="ghost" type="button" disabled>Regenerate Branch Solids</button>
+            <button id="space3dRegenVar" class="ghost" type="button" disabled>New Variation</button>
+          </div>
+          <div class="row">
+            <button id="space3dClearMass" class="ghost" type="button" disabled>Clear Solids</button>
+          </div>
+          <label class="ctrl" title="How wide each branch solid is around the original line. Independent of the 2D 0.5 px stroke.">
+            Solid Width
+            <span class="value" id="space3dSolidWidthVal">28%</span>
+            <input id="space3dSolidWidth" type="range" min="0" max="100" step="1" value="28" />
+          </label>
+          <label class="ctrl" title="Local thickness of each solid perpendicular to the branch plane. Not a uniform extrusion across the cube.">
+            Solid Depth
+            <span class="value" id="space3dSolidDepthVal">40%</span>
+            <input id="space3dSolidDepth" type="range" min="0" max="100" step="1" value="40" />
+          </label>
+          <label class="ctrl" title="How far the solids develop through the 20 × 20 × 20 field away from the source section.">
+            Spatial Reach
+            <span class="value" id="space3dSpatialReachVal">45%</span>
+            <input id="space3dSpatialReach" type="range" min="0" max="100" step="1" value="45" />
+          </label>
+          <label class="ctrl" title="How closely later sections stay related to the original chunk. The source plane itself always matches the selected branches.">
+            Section Fidelity
+            <span class="value" id="space3dFidelityVal">80%</span>
+            <input id="space3dFidelity" type="range" min="0" max="100" step="1" value="80" />
+          </label>
+          <label class="ctrl" title="How much the branch solids shift, taper, and bend as they develop. Smooth change only — no noisy surface deformation.">
+            3D Variation
+            <span class="value" id="space3dMassVariationVal">22%</span>
+            <input id="space3dMassVariation" type="range" min="0" max="100" step="1" value="22" />
+          </label>
+          <label class="ctrl" title="Temporarily fade the solids to inspect voids and source branches.">
+            Solid Opacity
+            <span class="value" id="space3dSolidOpacityVal">100%</span>
+            <input id="space3dSolidOpacity" type="range" min="10" max="100" step="1" value="100" />
+          </label>
+          <label class="check">
+            <input id="space3dUseHierarchy" type="checkbox" />
+            Use Branch Hierarchy
+          </label>
+          <label class="check">
+            <input id="space3dShowBranches" type="checkbox" checked />
+            Show Source Branches
+          </label>
+          <label class="check">
+            <input id="space3dShowPlane" type="checkbox" />
+            Show Source Plane
+          </label>
+          <label class="check">
+            <input id="space3dShowWireframe" type="checkbox" />
+            Show Solid Wireframe
+          </label>
+        </aside>
+        <div class="space3d-main">
+          <div id="space3dStage" class="space3d-stage"></div>
+          <div class="space3d-preview" id="space3dPreviewWrap" aria-label="2D Reference">
+            <span class="space3d-preview-label">2D Reference · 20 × 20</span>
+            <div class="space3d-preview-stack">
+              <canvas id="space3dPreviewCanvas" width="240" height="240"></canvas>
+              <canvas id="space3dPreviewOverlay" width="240" height="240" aria-label="2D chunk selection"></canvas>
+            </div>
+            <p id="space3dPreviewSize" class="space3d-chunk-size">Selected Area: —</p>
+          </div>
+          <p class="view-hint">Left-drag orbit · Right-drag pan · Scroll zoom</p>
         </div>
-        <div id="space3dStage" class="space3d-stage"></div>
-        <p class="view-hint">Drag to orbit · Scroll to zoom · Right-drag to pan</p>
       </div>
     </div>
   </div>
@@ -454,10 +709,13 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
     <script src="algorithm.js"></script>
     <script src="saved-simulations-store.js"></script>
     <script src="saved-matrices-store.js"></script>
     <script src="descriptor-matrix.js"></script>
+    <script src="spatial-mass.js"></script>
+    <script src="spatial-loft.js"></script>
     <script src="spatial-3d.js"></script>
     <script src="app.js"></script>
   </body>
