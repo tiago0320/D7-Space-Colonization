@@ -33,8 +33,8 @@
     ],
   };
 
-  const CANDIDATE_COUNT = 40;
-  const MATRIX_COUNT = 9;
+  const CANDIDATE_COUNT = 100;
+  const MATRIX_COUNT = 25;
   const ANALYSIS_N = 200;
   const MIN_REGION_CELLS = 80;
 
@@ -956,7 +956,7 @@
   function selectDiverse(ranked, count) {
     const want = count || MATRIX_COUNT;
     const picked = [];
-    let threshold = 0.16;
+    const thresholds = [0.14, 0.1, 0.075, 0.05, 0.03, 0.015];
     const pass = (minDist) => {
       for (const item of ranked) {
         if (picked.length >= want) break;
@@ -966,9 +966,10 @@
         picked.push(item);
       }
     };
-    pass(threshold);
-    if (picked.length < want) pass(0.1);
-    if (picked.length < want) pass(0.04);
+    for (const threshold of thresholds) {
+      pass(threshold);
+      if (picked.length >= want) break;
+    }
     if (picked.length < want) {
       for (const item of ranked) {
         if (picked.length >= want) break;

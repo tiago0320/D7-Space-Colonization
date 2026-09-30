@@ -133,6 +133,7 @@
     variantList: document.getElementById("variantList"),
     tabStudio: document.getElementById("tabStudio"),
     tabMatrix: document.getElementById("tabMatrix"),
+    tabSpace3d: document.getElementById("tabSpace3d"),
     studioView: document.getElementById("studioView"),
     studioHud: document.getElementById("studioHud"),
     matrixView: document.getElementById("matrixView"),
@@ -145,6 +146,14 @@
     generateMatrix: document.getElementById("generateMatrix"),
     matrixSaveAllPng: document.getElementById("matrixSaveAllPng"),
     matrixSaveAllSvg: document.getElementById("matrixSaveAllSvg"),
+    saveMatrix: document.getElementById("saveMatrix"),
+    matrixSaveWholePanel: document.getElementById("matrixSaveWholePanel"),
+    matrixWholeName: document.getElementById("matrixWholeName"),
+    matrixConfirmSaveWhole: document.getElementById("matrixConfirmSaveWhole"),
+    matrixCancelSaveWhole: document.getElementById("matrixCancelSaveWhole"),
+    savedMatrixList: document.getElementById("savedMatrixList"),
+    savedMatrixFilters: document.getElementById("savedMatrixFilters"),
+    savedMatrixStatus: document.getElementById("savedMatrixStatus"),
     matrixStatus: document.getElementById("matrixStatus"),
     matrixGrid: document.getElementById("matrixGrid"),
     matrixDetail: document.getElementById("matrixDetail"),
@@ -161,6 +170,13 @@
     matrixSaveCats: document.getElementById("matrixSaveCats"),
     matrixConfirmSave: document.getElementById("matrixConfirmSave"),
     matrixCancelSave: document.getElementById("matrixCancelSave"),
+    chunkSelect: document.getElementById("chunkSelect"),
+    clearChunk: document.getElementById("clearChunk"),
+    generate3d: document.getElementById("generate3d"),
+    chunkStatus: document.getElementById("chunkStatus"),
+    space3dView: document.getElementById("space3dView"),
+    space3dStage: document.getElementById("space3dStage"),
+    space3dStatus: document.getElementById("space3dStatus"),
   };
 
   const MAX_VARIANTS = 24;
@@ -178,13 +194,18 @@
   const MatrixLib = window.D7DescriptorMatrix;
   let matrixType = "lobby";
   let matrixDescriptor = "interlocking";
-  const matrixCells = new Array(9).fill(null);
+  const matrixCells = new Array(MatrixLib?.MATRIX_COUNT || 25).fill(null);
   let selectedMatrixIndex = -1;
   let pendingSavePayload = null;
   const SavedSimStore = window.D7SavedSimulations;
+  const SavedMatrixStore = window.D7SavedMatrices;
   const savedSimulations = [];
   const savedSimThumbUrls = new Map();
+  const savedMatrices = [];
+  const savedMatrixThumbUrls = new Map();
   let savedSimFilter = "all";
+  let savedMatrixFilter = "all";
+  let activeSavedMatrixId = null;
   let savedSimCategory = "lobby";
   let activeSavedLibraryId = null;
   const SAVED_SIM_THUMB_PX = 256;
@@ -237,6 +258,10 @@
   let nextSeedId = 1;
   let selectedSeedId = null;
   let interactionMode = "select";
+  let chunkRect = null;
+  let chunkDraft = null;
+  let space3dViewer = null;
+  const Spatial3D = window.D7Spatial3D;
   const obstacles = [];
   let nextObstacleId = 1;
   let selectedObstacleId = null;
@@ -286,13 +311,21 @@
     return { x: point.x, y: point.y };
   }
 
+  function ensurePathIndex() {
+    if (sim.pathIndex) return true;
+    const path = currentPathPoints();
+    if (!path || !path.length) return false;
+    sim.pathIndex = buildPathIndex(path, sim.stepSize);
+    return !!sim.pathIndex;
+  }
+
   function addSeedRecord(point) {
-    if (!sim.pathIndex) return null;
+    if (!ensurePathIndex()) return null;
     const pos = snapSeedPoint(point);
     const seed = { id: nextSeedId++, x: pos.x, y: pos.y };
     seeds.push(seed);
     selectedSeedId = seed.id;
-    if (sim.pathIndex) sim.addSeed(seed.x, seed.y);
+    sim.addSeed(seed.x, seed.y);
     updateSeedUI();
     return seed;
   }
@@ -415,18 +448,28 @@
   }
 
   function setInteractionMode(mode) {
-    interactionMode = mode === "add" || mode === "draw" ? mode : "select";
+    interactionMode =
+      mode === "add" || mode === "draw" || mode === "chunk" ? mode : "select";
     if (interactionMode !== "draw") obstacleDraft = null;
+    if (interactionMode !== "chunk") chunkDraft = null;
     if (interactionMode === "draw") selectedSeedId = null;
     if (interactionMode === "add") selectedObstacleId = null;
+    if (interactionMode === "chunk") {
+      selectedSeedId = null;
+      selectedObstacleId = null;
+    }
     ui.seedMode.classList.toggle("active", interactionMode === "add");
     if (ui.selectRoot) ui.selectRoot.classList.toggle("active", interactionMode === "select");
     if (ui.drawObstacle) ui.drawObstacle.classList.toggle("active", interactionMode === "draw");
+    if (ui.chunkSelect) ui.chunkSelect.classList.toggle("active", interactionMode === "chunk");
     canvas.classList.toggle("seed-mode", interactionMode === "add");
     canvas.classList.toggle("select-mode", interactionMode === "select");
     canvas.classList.toggle("draw-mode", interactionMode === "draw");
+    canvas.classList.toggle("chunk-mode", interactionMode === "chunk");
+    if (interactionMode !== "chunk") canvas.style.cursor = "";
     updateSeedUI();
     updateObstacleUI();
+    updateChunkUI();
   }
 
   function setSeedInteractionMode(mode) {
@@ -435,6 +478,192 @@
 
   function setSeedPlacementMode(on) {
     setInteractionMode(on ? "add" : "select");
+  }
+
+  function normalizeChunkRect(x0, y0, x1, y1) {
+    const x = Math.min(x0, x1);
+    const y = Math.min(y0, y1);
+    return { x, y, w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+  }
+
+  function activeChunkRect() {
+    return chunkDraft || chunkRect;
+  }
+
+  function setChunkStatus(message, kind) {
+    if (!ui.chunkStatus) return;
+    ui.chunkStatus.textContent = message;
+    ui.chunkStatus.classList.toggle("active", kind === "active");
+    ui.chunkStatus.classList.toggle("error", kind === "error");
+  }
+
+  function chunkHasGeometry(rect) {
+    if (!rect || !Spatial3D) return false;
+    const segs = Spatial3D.collectSegments(sim.nodes, sim.mergeLinks);
+    const clipped = Spatial3D.clipSegmentsToRect(segs, rect);
+    return clipped.length >= 8;
+  }
+
+  function updateChunkUI() {
+    const rect = activeChunkRect();
+    const readyChunk = !!(chunkRect && chunkRect.w >= 8 && chunkRect.h >= 8);
+    if (ui.clearChunk) ui.clearChunk.disabled = !readyChunk;
+    if (ui.generate3d) ui.generate3d.disabled = !readyChunk || batchRunning || matrixGenerating;
+    if (chunkDraft) {
+      setChunkStatus("Drag to size the chunk · release to keep it");
+      return;
+    }
+    if (interactionMode === "chunk" && chunkRect) {
+      setChunkStatus("Drag inside to move · drag a handle to scale · Generate 3D Space when ready", "active");
+      return;
+    }
+    if (interactionMode === "chunk") {
+      setChunkStatus("Click and drag on the simulation to select a chunk");
+      return;
+    }
+    if (chunkRect) {
+      setChunkStatus(
+        chunkHasGeometry(chunkRect)
+          ? "Chunk selected · Generate 3D Space, or Select Chunk to edit"
+          : "Selection has too little branching · resize it to include more geometry",
+        chunkHasGeometry(chunkRect) ? "active" : "error"
+      );
+      return;
+    }
+    setChunkStatus("Drag a rectangle over grown branches, then generate a 20′ cube study.");
+  }
+
+  function clearChunkSelection() {
+    chunkRect = null;
+    chunkDraft = null;
+    updateChunkUI();
+  }
+
+  function chunkHandleSize() {
+    return Math.max(10, 8 / Math.max(0.25, view.scale));
+  }
+
+  function hitChunkHandle(rect, point) {
+    if (!rect) return null;
+    const x0 = rect.x;
+    const y0 = rect.y;
+    const x1 = rect.x + rect.w;
+    const y1 = rect.y + rect.h;
+    const xm = (x0 + x1) / 2;
+    const ym = (y0 + y1) / 2;
+    const handles = [
+      { id: "nw", x: x0, y: y0 },
+      { id: "n", x: xm, y: y0 },
+      { id: "ne", x: x1, y: y0 },
+      { id: "e", x: x1, y: ym },
+      { id: "se", x: x1, y: y1 },
+      { id: "s", x: xm, y: y1 },
+      { id: "sw", x: x0, y: y1 },
+      { id: "w", x: x0, y: ym },
+    ];
+    const r = chunkHandleSize();
+    for (const h of handles) {
+      if (Math.abs(point.x - h.x) <= r && Math.abs(point.y - h.y) <= r) return h.id;
+    }
+    if (point.x >= x0 && point.x <= x1 && point.y >= y0 && point.y <= y1) return "body";
+    return null;
+  }
+
+  function resizeChunkRect(start, handle, point) {
+    let x0 = start.x;
+    let y0 = start.y;
+    let x1 = start.x + start.w;
+    let y1 = start.y + start.h;
+    if (handle.indexOf("n") >= 0) y0 = point.y;
+    if (handle.indexOf("s") >= 0) y1 = point.y;
+    if (handle.indexOf("w") >= 0) x0 = point.x;
+    if (handle.indexOf("e") >= 0) x1 = point.x;
+    const next = normalizeChunkRect(x0, y0, x1, y1);
+    if (next.w < 12) {
+      if (handle.indexOf("w") >= 0) next.x = x1 - 12;
+      next.w = 12;
+    }
+    if (next.h < 12) {
+      if (handle.indexOf("n") >= 0) next.y = y1 - 12;
+      next.h = 12;
+    }
+    return next;
+  }
+
+  function drawChunkOverlay(targetCtx) {
+    const rect = activeChunkRect();
+    if (!rect || rect.w < 2 || rect.h < 2) return;
+    const site = currentSiteRect();
+    targetCtx.save();
+    targetCtx.fillStyle = "rgba(0, 0, 0, 0.45)";
+    targetCtx.beginPath();
+    targetCtx.rect(site.x - 4000, site.y - 4000, site.w + 8000, site.h + 8000);
+    targetCtx.rect(rect.x, rect.y, rect.w, rect.h);
+    targetCtx.fill("evenodd");
+    targetCtx.strokeStyle = "rgba(232, 213, 163, 0.95)";
+    targetCtx.lineWidth = 1.6 / Math.max(0.25, view.scale);
+    targetCtx.setLineDash([8 / view.scale, 5 / view.scale]);
+    targetCtx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+    targetCtx.setLineDash([]);
+    const hs = 5 / Math.max(0.25, view.scale);
+    const x0 = rect.x;
+    const y0 = rect.y;
+    const x1 = rect.x + rect.w;
+    const y1 = rect.y + rect.h;
+    const pts = [
+      [x0, y0],
+      [(x0 + x1) / 2, y0],
+      [x1, y0],
+      [x1, (y0 + y1) / 2],
+      [x1, y1],
+      [(x0 + x1) / 2, y1],
+      [x0, y1],
+      [x0, (y0 + y1) / 2],
+    ];
+    targetCtx.fillStyle = "#f2efe6";
+    for (const [hx, hy] of pts) {
+      targetCtx.fillRect(hx - hs, hy - hs, hs * 2, hs * 2);
+    }
+    targetCtx.restore();
+  }
+
+  function ensureSpace3dViewer() {
+    if (space3dViewer) return space3dViewer;
+    if (!Spatial3D || !ui.space3dStage) return null;
+    space3dViewer = Spatial3D.createViewer(ui.space3dStage);
+    return space3dViewer;
+  }
+
+  function generateChunkSpace() {
+    if (!chunkRect || !Spatial3D) {
+      setChunkStatus("Select a chunk of the simulation first.", "error");
+      return;
+    }
+    if (!sim.nodes.length) {
+      setChunkStatus("Grow a simulation before generating 3D space.", "error");
+      return;
+    }
+    const segs = Spatial3D.collectSegments(sim.nodes, sim.mergeLinks);
+    const result = Spatial3D.generateSpace(segs, chunkRect);
+    if (!result.ok) {
+      setChunkStatus(result.reason || "Could not generate 3D space.", "error");
+      if (ui.space3dStatus) ui.space3dStatus.textContent = result.reason || "Could not generate 3D space.";
+      return;
+    }
+    setAppPage("space3d");
+    const viewer = ensureSpace3dViewer();
+    if (!viewer) {
+      setChunkStatus("3D viewer could not start. Check that Three.js loaded.", "error");
+      return;
+    }
+    viewer.show(result);
+    viewer.start();
+    viewer.resize();
+    setChunkStatus("Generated a 20′ × 20′ × 20′ spatial study from the selected chunk.", "active");
+    if (ui.space3dStatus) {
+      ui.space3dStatus.textContent = "20′ × 20′ × 20′ cube · selected 2D chunk as a sectional seed (not extruded)";
+      ui.space3dStatus.classList.add("active");
+    }
   }
 
   function setObstacleTool(tool) {
@@ -1740,6 +1969,7 @@
       pixelsPerFoot,
       viewportW: width,
       viewportH: height,
+      siteLayout: cloneSiteRect(currentSiteRect()),
     };
   }
 
@@ -1771,14 +2001,111 @@
     }
     ui.iterations.value = String(params.iterationsCap);
     for (const item of SLIDER_BOUNDS) applySliderBound(item, true);
-    if (
-      params.viewportW != null &&
-      params.viewportH != null &&
-      (params.viewportW !== width || params.viewportH !== height)
-    ) {
-      gridKey = "";
-    }
     applyParams();
+  }
+
+  function cloneSiteRect(rect) {
+    if (!rect) return null;
+    const x = Number(rect.x);
+    const y = Number(rect.y);
+    const w = Number(rect.w);
+    const h = Number(rect.h);
+    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
+    return { x, y, w, h };
+  }
+
+  function siteRectFromParams(params) {
+    const saved = cloneSiteRect(params?.siteLayout);
+    if (saved) return saved;
+    const vw = Number(params?.viewportW);
+    const vh = Number(params?.viewportH);
+    if (vw > 8 && vh > 8) return cloneSiteRect(computeSiteLayout(vw, vh).layout);
+    return null;
+  }
+
+  function siteRectsDiffer(a, b, eps = 0.75) {
+    if (!a || !b) return false;
+    return (
+      Math.abs(a.x - b.x) > eps ||
+      Math.abs(a.y - b.y) > eps ||
+      Math.abs(a.w - b.w) > eps ||
+      Math.abs(a.h - b.h) > eps
+    );
+  }
+
+  function mapSitePoint(point, from, to) {
+    if (!point || !from || !to || !(from.w > 0) || !(from.h > 0)) return point;
+    return {
+      ...point,
+      x: to.x + ((point.x - from.x) / from.w) * to.w,
+      y: to.y + ((point.y - from.y) / from.h) * to.h,
+    };
+  }
+
+  function mapSitePoints(list, from, to) {
+    if (!Array.isArray(list) || !list.length) return list || [];
+    return list.map((point) => mapSitePoint(point, from, to));
+  }
+
+  function mapSiteObstacle(obs, from, to) {
+    if (!obs || !from || !to) return obs;
+    const sx = to.w / from.w;
+    const sy = to.h / from.h;
+    if (obs.type === "circle") {
+      return {
+        ...obs,
+        x: to.x + ((obs.x - from.x) / from.w) * to.w,
+        y: to.y + ((obs.y - from.y) / from.h) * to.h,
+        r: obs.r * Math.min(sx, sy),
+      };
+    }
+    if (obs.type === "rect") {
+      return {
+        ...obs,
+        x: to.x + ((obs.x - from.x) / from.w) * to.w,
+        y: to.y + ((obs.y - from.y) / from.h) * to.h,
+        w: obs.w * sx,
+        h: obs.h * sy,
+      };
+    }
+    if (obs.type === "polygon") {
+      return { ...obs, points: mapSitePoints(obs.points, from, to) };
+    }
+    return obs;
+  }
+
+  function remapSnapshotToCurrentSite(params, seedRecords, snap) {
+    const from = siteRectFromParams(params);
+    const to = cloneSiteRect(currentSiteRect());
+    if (!from || !to || !siteRectsDiffer(from, to)) {
+      return { params, seedRecords, snap };
+    }
+    const scale = to.w / from.w;
+    const nextParams = { ...params };
+    for (const key of ["influence", "kill", "stepSize", "mergeDistance", "repulsionDistance"]) {
+      const value = Number(nextParams[key]);
+      if (Number.isFinite(value)) nextParams[key] = value * scale;
+    }
+    nextParams.siteLayout = to;
+    nextParams.viewportW = width;
+    nextParams.viewportH = height;
+    nextParams.pixelsPerFoot = pixelsPerFoot;
+    return {
+      params: nextParams,
+      seedRecords: mapSitePoints(seedRecords || [], from, to),
+      snap: {
+        ...snap,
+        nodes: (snap.nodes || []).map((node) => {
+          const mapped = mapSitePoint(node, from, to);
+          if (node.thickness != null) mapped.thickness = node.thickness * scale;
+          return mapped;
+        }),
+        attractorsLeft: mapSitePoints(snap.attractorsLeft || [], from, to),
+        originalAttractors: mapSitePoints(snap.originalAttractors || [], from, to),
+        pathPoints: mapSitePoints(snap.pathPoints || [], from, to),
+        obstacles: (snap.obstacles || []).map((obs) => mapSiteObstacle(obs, from, to)),
+      },
+    };
   }
 
   function canCaptureVariant() {
@@ -1827,6 +2154,11 @@
   }
 
   function applySimSnapshot(params, seedRecords, snap) {
+    const mapped = remapSnapshotToCurrentSite(params || {}, seedRecords || [], snap || {});
+    params = mapped.params;
+    seedRecords = mapped.seedRecords;
+    snap = mapped.snap;
+    customGrowthField = false;
     applyParamsFromSnapshot(params);
     seeds.length = 0;
     nextSeedId = 1;
@@ -1844,6 +2176,7 @@
       growthAttractors = snap.originalAttractors.map((p) => ({ x: p.x, y: p.y }));
       customGrowthField = true;
     }
+    resolveGrowthField();
     const path =
       snap.pathPoints && snap.pathPoints.length ? growthPathPoints : currentPathPoints();
     if (path && path.length) {
@@ -1853,7 +2186,7 @@
 
     const nodes = [];
     let maxRoot = 0;
-    for (const rec of snap.nodes) {
+    for (const rec of snap.nodes || []) {
       const parent = rec.parentIndex >= 0 ? nodes[rec.parentIndex] : null;
       const node = new Node(new Vec2(rec.x, rec.y), parent);
       node.thickness = rec.thickness;
@@ -1924,6 +2257,7 @@
       mergeLinks: snap.mergeLinks || [],
       attractorsLeft: snap.attractorsLeft,
       originalAttractors: snap.originalAttractors || [],
+      pathPoints: snap.pathPoints || [],
       obstacles: serializeObstacles(),
       thumbDataUrl: makeVariantThumb(snap.nodes, snap.mergeLinks),
     };
@@ -1971,6 +2305,7 @@
       nodes: record.nodes,
       attractorsLeft: record.attractorsLeft,
       originalAttractors: record.originalAttractors || [],
+      pathPoints: record.pathPoints || [],
       mergeLinks: record.mergeLinks || [],
       obstacles: record.obstacles || [],
     });
@@ -2248,6 +2583,7 @@
     pendingSavePayload = null;
     if (ui.saveSimPanel) ui.saveSimPanel.classList.add("hidden");
     if (ui.matrixSavePanel) ui.matrixSavePanel.classList.add("hidden");
+    if (ui.matrixSaveWholePanel) ui.matrixSaveWholePanel.classList.add("hidden");
   }
 
   async function openSaveSimPanel() {
@@ -2361,6 +2697,236 @@
       }
     } catch (err) {
       setSavedSimStatus(err.message || "Could not read saved simulations.", "error");
+    }
+  }
+
+  function formatSavedMatrixShortDate(value) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    return date.toLocaleString(undefined, { month: "short", day: "numeric" });
+  }
+
+  function revokeSavedMatrixThumbUrls() {
+    for (const url of savedMatrixThumbUrls.values()) URL.revokeObjectURL(url);
+    savedMatrixThumbUrls.clear();
+  }
+
+  function savedMatrixThumbSrc(record) {
+    if (!record) return "";
+    if (record.thumbnail instanceof Blob) {
+      let url = savedMatrixThumbUrls.get(record.id);
+      if (!url) {
+        url = URL.createObjectURL(record.thumbnail);
+        savedMatrixThumbUrls.set(record.id, url);
+      }
+      return url;
+    }
+    return "";
+  }
+
+  function setSavedMatrixStatus(message, kind) {
+    if (!ui.savedMatrixStatus) return;
+    ui.savedMatrixStatus.textContent = message;
+    ui.savedMatrixStatus.classList.toggle("active", kind === "active");
+    ui.savedMatrixStatus.classList.toggle("error", kind === "error");
+  }
+
+  function setSavedMatrixFilter(filter) {
+    savedMatrixFilter = filter === "all" ? "all" : (SavedMatrixStore ? SavedMatrixStore.normalizeCategory(filter) : "lobby");
+    if (!ui.savedMatrixFilters) return;
+    ui.savedMatrixFilters.querySelectorAll("[data-matrix-filter]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.matrixFilter === savedMatrixFilter);
+    });
+    renderSavedMatrixList();
+  }
+
+  function visibleSavedMatrices() {
+    if (savedMatrixFilter === "all") return savedMatrices;
+    return savedMatrices.filter((item) => item.spatialType === savedMatrixFilter);
+  }
+
+  function renderSavedMatrixList() {
+    if (!ui.savedMatrixList) return;
+    revokeSavedMatrixThumbUrls();
+    ui.savedMatrixList.innerHTML = "";
+    const items = visibleSavedMatrices();
+    for (const record of items) {
+      const item = document.createElement("li");
+      if (record.id === activeSavedMatrixId) item.className = "active";
+      const thumbSrc = savedMatrixThumbSrc(record);
+      const img = document.createElement("img");
+      img.alt = "";
+      img.width = 72;
+      img.height = 72;
+      if (thumbSrc) img.src = thumbSrc;
+      const body = document.createElement("div");
+      body.className = "saved-sim-card-body";
+      const title = document.createElement("strong");
+      title.className = "saved-sim-card-title";
+      title.textContent = record.name || "Untitled matrix";
+      const cat = document.createElement("span");
+      cat.className = "saved-sim-card-cat";
+      const typeLabel = SavedMatrixStore
+        ? SavedMatrixStore.categoryLabel(record.spatialType)
+        : record.spatialType;
+      cat.textContent = `${typeLabel} · ${record.descriptorLabel || record.descriptor || "—"}`;
+      const meta = document.createElement("div");
+      meta.className = "saved-sim-card-meta";
+      meta.innerHTML = `25 iterations<br>Saved ${formatSavedMatrixShortDate(record.createdAt)}`;
+      const actions = document.createElement("div");
+      actions.className = "saved-sim-card-actions";
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.textContent = "Open Matrix";
+      openBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        loadSavedMatrix(record.id);
+      });
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "ghost";
+      delBtn.textContent = "Delete";
+      delBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteSavedMatrix(record.id);
+      });
+      actions.appendChild(openBtn);
+      actions.appendChild(delBtn);
+      body.appendChild(title);
+      body.appendChild(cat);
+      body.appendChild(meta);
+      body.appendChild(actions);
+      item.appendChild(img);
+      item.appendChild(body);
+      ui.savedMatrixList.appendChild(item);
+    }
+    if (!savedMatrices.length) {
+      setSavedMatrixStatus("Saved matrices stay in this browser only.");
+    } else if (savedMatrixFilter === "all") {
+      setSavedMatrixStatus(`${savedMatrices.length} saved in this browser`, "active");
+    } else {
+      setSavedMatrixStatus(`${items.length} in ${SavedMatrixStore.categoryLabel(savedMatrixFilter)}`, "active");
+    }
+  }
+
+  async function refreshSavedMatrixLibrary() {
+    if (!SavedMatrixStore) {
+      setSavedMatrixStatus("Saved Matrices need IndexedDB in this browser.", "error");
+      return;
+    }
+    try {
+      const records = await SavedMatrixStore.list();
+      savedMatrices.length = 0;
+      savedMatrices.push(...records);
+      renderSavedMatrixList();
+    } catch (err) {
+      setSavedMatrixStatus(err.message || "Could not read saved matrices.", "error");
+    }
+  }
+
+  async function openSaveWholeMatrixPanel() {
+    if (!matrixHasCompleteSet()) {
+      setMatrixStatus("Generate a complete 5 × 5 matrix before saving.", "error");
+      return;
+    }
+    if (!SavedMatrixStore) {
+      setMatrixStatus("Saved Matrices are unavailable in this browser.", "error");
+      return;
+    }
+    const descriptorLabel = matrixDescriptorLabel(matrixType, matrixDescriptor);
+    try {
+      const existing = await SavedMatrixStore.list();
+      if (ui.matrixWholeName) {
+        ui.matrixWholeName.value = "";
+        ui.matrixWholeName.placeholder = SavedMatrixStore.nextDefaultName(
+          matrixType,
+          descriptorLabel,
+          existing
+        );
+      }
+    } catch (_) {
+      if (ui.matrixWholeName) {
+        ui.matrixWholeName.placeholder = SavedMatrixStore.nextDefaultName(
+          matrixType,
+          descriptorLabel,
+          savedMatrices
+        );
+      }
+    }
+    if (ui.matrixSaveWholePanel) ui.matrixSaveWholePanel.classList.remove("hidden");
+    if (ui.matrixWholeName) ui.matrixWholeName.focus();
+  }
+
+  async function confirmSaveWholeMatrix() {
+    if (!matrixHasCompleteSet()) {
+      setMatrixStatus("Generate a complete 5 × 5 matrix before saving.", "error");
+      return;
+    }
+    if (!SavedMatrixStore) {
+      setMatrixStatus("Saved Matrices are unavailable in this browser.", "error");
+      return;
+    }
+    if (ui.matrixConfirmSaveWhole) ui.matrixConfirmSaveWhole.disabled = true;
+    try {
+      const descriptorLabel = matrixDescriptorLabel(matrixType, matrixDescriptor);
+      const existing = await SavedMatrixStore.list();
+      const typed = ui.matrixWholeName ? ui.matrixWholeName.value.trim() : "";
+      const name =
+        typed ||
+        SavedMatrixStore.nextDefaultName(matrixType, descriptorLabel, existing);
+      const grid = matrixCells[0]?.grid || (await captureCurrentGridPayload());
+      if (!grid) {
+        setMatrixStatus("Could not capture the grid for this matrix.", "error");
+        return;
+      }
+      const cells = matrixCells.map((cell) => serializeMatrixCellForStore(cell));
+      const record = {
+        id: SavedMatrixStore.createId(),
+        name,
+        spatialType: matrixType,
+        descriptor: matrixDescriptor,
+        descriptorLabel,
+        intensity: Number(ui.matrixIntensity?.value ?? 50),
+        variation: Number(ui.matrixVariation?.value ?? 40),
+        matrixSize: matrixSlotCount(),
+        candidateSettings: {
+          poolSize: MatrixLib?.CANDIDATE_COUNT || 100,
+          keep: MatrixLib?.MATRIX_COUNT || 25,
+          baseParams: readParamsFromUI(),
+        },
+        createdAt: Date.now(),
+        grid,
+        gridToken,
+        gridName: gridNameForToken(gridToken),
+        gridSlotIndex: activeSlotIndex,
+        cells,
+        thumbnail: cells[0]?.thumbnail || null,
+      };
+      await SavedMatrixStore.put(record);
+      if (ui.matrixWholeName) ui.matrixWholeName.value = "";
+      if (ui.matrixSaveWholePanel) ui.matrixSaveWholePanel.classList.add("hidden");
+      activeSavedMatrixId = record.id;
+      await refreshSavedMatrixLibrary();
+      setMatrixStatus(`Saved ${name} · 25 iterations`, "active");
+    } catch (err) {
+      setMatrixStatus(err.message || "Could not save this matrix.", "error");
+    } finally {
+      if (ui.matrixConfirmSaveWhole) ui.matrixConfirmSaveWhole.disabled = false;
+    }
+  }
+
+  async function deleteSavedMatrix(id) {
+    if (!SavedMatrixStore) return;
+    const record = savedMatrices.find((item) => item.id === id);
+    const label = record?.name || "this saved matrix";
+    if (!global.confirm(`Delete this saved matrix?\n\n${label}`)) return;
+    try {
+      await SavedMatrixStore.remove(id);
+      if (activeSavedMatrixId === id) activeSavedMatrixId = null;
+      await refreshSavedMatrixLibrary();
+      setSavedMatrixStatus("Matrix deleted.", "active");
+    } catch (err) {
+      setSavedMatrixStatus(err.message || "Could not delete that matrix.", "error");
     }
   }
 
@@ -2632,6 +3198,7 @@
       mergeLinks: snap.mergeLinks || [],
       attractorsLeft: snap.attractorsLeft,
       originalAttractors: snap.originalAttractors || [],
+      pathPoints: snap.pathPoints || [],
       obstacles: serializeObstacles(),
       thumbDataUrl: makeVariantThumb(snap.nodes, snap.mergeLinks),
     };
@@ -2664,6 +3231,7 @@
       nodes: variant.nodes,
       attractorsLeft: variant.attractorsLeft,
       originalAttractors: variant.originalAttractors || [],
+      pathPoints: variant.pathPoints || [],
       mergeLinks: variant.mergeLinks || [],
       obstacles: variant.obstacles || [],
     });
@@ -2774,20 +3342,39 @@
   }
 
   function setAppPage(page) {
-    appPage = page === "matrix" ? "matrix" : "studio";
+    if (page === "matrix") appPage = "matrix";
+    else if (page === "space3d") appPage = "space3d";
+    else appPage = "studio";
     const matrix = appPage === "matrix";
+    const space3d = appPage === "space3d";
     if (ui.tabStudio) {
-      ui.tabStudio.classList.toggle("active", !matrix);
-      ui.tabStudio.setAttribute("aria-selected", matrix ? "false" : "true");
+      ui.tabStudio.classList.toggle("active", appPage === "studio");
+      ui.tabStudio.setAttribute("aria-selected", appPage === "studio" ? "true" : "false");
     }
     if (ui.tabMatrix) {
       ui.tabMatrix.classList.toggle("active", matrix);
       ui.tabMatrix.setAttribute("aria-selected", matrix ? "true" : "false");
     }
-    if (ui.studioView) ui.studioView.classList.toggle("hidden", matrix);
+    if (ui.tabSpace3d) {
+      ui.tabSpace3d.classList.toggle("active", space3d);
+      ui.tabSpace3d.setAttribute("aria-selected", space3d ? "true" : "false");
+    }
+    if (ui.studioView) ui.studioView.classList.toggle("hidden", appPage !== "studio");
     if (ui.matrixView) ui.matrixView.classList.toggle("hidden", !matrix);
+    if (ui.space3dView) ui.space3dView.classList.toggle("hidden", !space3d);
     const appEl = document.querySelector(".app");
-    if (appEl) appEl.classList.toggle("matrix-mode", matrix);
+    if (appEl) {
+      appEl.classList.toggle("matrix-mode", matrix);
+      appEl.classList.toggle("space3d-mode", space3d);
+    }
+    if (space3dViewer) {
+      if (space3d) {
+        space3dViewer.start();
+        space3dViewer.resize();
+      } else {
+        space3dViewer.stop();
+      }
+    }
     if (matrix) {
       playing = false;
       ui.play.textContent = "Grow";
@@ -2795,6 +3382,7 @@
       renderMatrixGrid();
       updateMatrixGenerateState();
     }
+    if (appPage === "studio") resize();
   }
 
   function setMatrixStatus(message, kind) {
@@ -2802,6 +3390,16 @@
     ui.matrixStatus.textContent = message;
     ui.matrixStatus.classList.toggle("active", kind === "active");
     ui.matrixStatus.classList.toggle("error", kind === "error");
+  }
+
+  function matrixSlotCount() {
+    return MatrixLib?.MATRIX_COUNT || 25;
+  }
+
+  function ensureMatrixCellSlots() {
+    const n = matrixSlotCount();
+    while (matrixCells.length < n) matrixCells.push(null);
+    if (matrixCells.length > n) matrixCells.length = n;
   }
 
   function matrixIterationLabel(index) {
@@ -2840,7 +3438,114 @@
   }
 
   function matrixHasCompleteSet() {
-    return matrixCells.every((cell) => cell && cell.sim);
+    const n = matrixSlotCount();
+    if (matrixCells.length < n) return false;
+    for (let i = 0; i < n; i++) {
+      if (!matrixCells[i] || !matrixCells[i].sim) return false;
+    }
+    return true;
+  }
+
+  function revokeMatrixCellPreviewUrls() {
+    for (const cell of matrixCells) {
+      if (cell && cell.previewUrl) URL.revokeObjectURL(cell.previewUrl);
+    }
+  }
+
+  function serializeMatrixCellForStore(cell) {
+    if (!cell) return null;
+    return {
+      index: cell.index,
+      label: cell.label,
+      spatialType: cell.spatialType,
+      descriptor: cell.descriptor,
+      descriptorLabel: cell.descriptorLabel,
+      descriptorScore: cell.descriptorScore,
+      scoreBreakdown: cell.scoreBreakdown ? { ...cell.scoreBreakdown } : {},
+      seed: cell.seed,
+      params: cell.params,
+      display: cell.display,
+      jitter: cell.jitter,
+      seeds: (cell.seeds || []).map((seed) => ({ x: seed.x, y: seed.y })),
+      sim: cell.sim,
+      grid: cell.grid,
+      gridToken: cell.gridToken,
+      thumbnail: cell.thumbnailBlob || null,
+    };
+  }
+
+  function hydrateMatrixCellFromStore(stored, index) {
+    let previewUrl = "";
+    let thumbnailBlob = null;
+    const thumb = stored.thumbnail;
+    if (thumb instanceof Blob) {
+      thumbnailBlob = thumb;
+      previewUrl = URL.createObjectURL(thumb);
+    } else if (thumb instanceof ArrayBuffer) {
+      thumbnailBlob = new Blob([thumb], { type: "image/jpeg" });
+      previewUrl = URL.createObjectURL(thumbnailBlob);
+    }
+    return {
+      index: stored.index ?? index,
+      label: stored.label || matrixIterationLabel(index),
+      spatialType: stored.spatialType,
+      descriptor: stored.descriptor,
+      descriptorLabel: stored.descriptorLabel,
+      descriptorScore: stored.descriptorScore,
+      scoreBreakdown: stored.scoreBreakdown || {},
+      seed: stored.seed,
+      params: stored.params,
+      display: stored.display,
+      jitter: stored.jitter,
+      seeds: stored.seeds || [],
+      sim: stored.sim,
+      grid: stored.grid,
+      gridToken: stored.gridToken,
+      previewUrl,
+      thumbnailBlob,
+    };
+  }
+
+  async function loadSavedMatrix(id) {
+    if (!SavedMatrixStore) return;
+    if (matrixGenerating || matrixExporting) return;
+    try {
+      const record = await SavedMatrixStore.get(id);
+      const need = matrixSlotCount();
+      if (!record || !Array.isArray(record.cells) || record.cells.length < need) {
+        setSavedMatrixStatus("That saved matrix is incomplete or missing.", "error");
+        return;
+      }
+      await restoreSavedGrid(record);
+      matrixType = record.spatialType || "lobby";
+      matrixDescriptor = record.descriptor || matrixDescriptor;
+      if (ui.matrixIntensity) {
+        ui.matrixIntensity.value = String(record.intensity ?? 50);
+        if (ui.matrixIntensityVal) ui.matrixIntensityVal.textContent = ui.matrixIntensity.value;
+      }
+      if (ui.matrixVariation) {
+        ui.matrixVariation.value = String(record.variation ?? 40);
+        if (ui.matrixVariationVal) ui.matrixVariationVal.textContent = ui.matrixVariation.value;
+      }
+      renderDescriptorButtons();
+      revokeMatrixCellPreviewUrls();
+      ensureMatrixCellSlots();
+      for (let i = 0; i < need; i++) {
+        matrixCells[i] = hydrateMatrixCellFromStore(record.cells[i], i);
+      }
+      selectedMatrixIndex = 0;
+      activeSavedMatrixId = record.id;
+      if (ui.matrixSaveWholePanel) ui.matrixSaveWholePanel.classList.add("hidden");
+      renderMatrixGrid();
+      updateMatrixGenerateState();
+      setAppPage("matrix");
+      setMatrixStatus(`Opened ${record.name} · 25 iterations restored`, "active");
+      setSavedMatrixStatus(`Opened ${record.name}`, "active");
+      renderSavedMatrixList();
+    } catch (err) {
+      setSavedMatrixStatus(err.message || "Could not open that matrix.", "error");
+      setMatrixStatus(err.message || "Could not open that matrix.", "error");
+    }
   }
 
   function updateMatrixGenerateState() {
@@ -2851,8 +3556,10 @@
     const canExport = matrixHasCompleteSet() && !busy;
     if (ui.matrixSaveAllPng) ui.matrixSaveAllPng.disabled = !canExport;
     if (ui.matrixSaveAllSvg) ui.matrixSaveAllSvg.disabled = !canExport;
+    if (ui.saveMatrix) ui.saveMatrix.disabled = !canExport;
     if (ui.tabStudio) ui.tabStudio.disabled = matrixGenerating || matrixExporting;
     if (ui.tabMatrix) ui.tabMatrix.disabled = matrixGenerating || matrixExporting;
+    if (ui.tabSpace3d) ui.tabSpace3d.disabled = matrixGenerating || matrixExporting;
   }
 
   function captureStudioSession() {
@@ -2948,8 +3655,9 @@
 
   function renderMatrixGrid() {
     if (!ui.matrixGrid) return;
+    ensureMatrixCellSlots();
     ui.matrixGrid.innerHTML = "";
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < matrixSlotCount(); i++) {
       const cell = matrixCells[i];
       const item = document.createElement("article");
       item.className = `matrix-cell${cell ? "" : " empty"}${i === selectedMatrixIndex ? " active" : ""}`;
@@ -3018,6 +3726,7 @@
     }
     if (matrixGenerating || matrixExporting || batchRunning) return;
     matrixGenerating = true;
+    activeSavedMatrixId = null;
     playing = false;
     ui.play.textContent = "Grow";
     updateMatrixGenerateState();
@@ -3032,8 +3741,9 @@
     const site = matrixSiteBox();
     const path = tracedGridPathPoints || currentPathPoints();
     const attractorPool = tracedGridPoints || currentAttractors();
-    const poolSize = MatrixLib.CANDIDATE_COUNT || 40;
-    const keep = MatrixLib.MATRIX_COUNT || 9;
+    const poolSize = MatrixLib.CANDIDATE_COUNT || 100;
+    const keep = MatrixLib.MATRIX_COUNT || 25;
+    ensureMatrixCellSlots();
 
     try {
       if (!path || !path.length || !attractorPool || !attractorPool.length) {
@@ -3041,7 +3751,7 @@
       }
       const pool = [];
       for (let i = 0; i < poolSize; i++) {
-        if (i % 2 === 0) {
+        if (i % 5 === 0 || i === poolSize - 1) {
           setMatrixStatus(`Evaluating candidate ${i + 1} / ${poolSize}…`, "active");
           await new Promise((resolve) => requestAnimationFrame(resolve));
         }
@@ -3186,7 +3896,7 @@
 
   async function exportMatrixBatch(kind) {
     if (!matrixHasCompleteSet()) {
-      setMatrixStatus("Generate a complete 3 × 3 matrix first.", "error");
+      setMatrixStatus("Generate a complete 5 × 5 matrix first.", "error");
       return;
     }
     if (matrixGenerating || matrixExporting || batchRunning) return;
@@ -3202,7 +3912,7 @@
     try {
       for (let i = 0; i < cells.length; i++) {
         const cell = cells[i];
-        setMatrixStatus(`Exporting ${cell.label} (${i + 1}/9)…`, "active");
+        setMatrixStatus(`Exporting ${cell.label} (${i + 1}/${cells.length})…`, "active");
         await new Promise((resolve) => requestAnimationFrame(resolve));
         applyMatrixIterationToSim(cell);
         selectedSeedId = null;
@@ -3476,8 +4186,10 @@
     }
     playing = false;
     flashes.length = 0;
+    chunkDraft = null;
     ui.play.textContent = "Grow";
     updatePlayState();
+    updateChunkUI();
   }
 
   let lastResizeW = 0;
@@ -3867,6 +4579,10 @@
         targetCtx.arc(f.x, f.y, 4 + (1 - f.life) * 8, 0, Math.PI * 2);
         targetCtx.fill();
       }
+    }
+
+    if (!hideChrome) {
+      drawChunkOverlay(targetCtx);
     }
 
     targetCtx.restore();
@@ -4673,6 +5389,10 @@
     };
   }
 
+  function canvasPoint(event) {
+    return screenToWorld(event.clientX, event.clientY);
+  }
+
   function zoomAt(clientX, clientY, factor) {
     const rect = canvas.getBoundingClientRect();
     const mx = clientX - rect.left;
@@ -4860,6 +5580,14 @@
   });
   if (ui.tabStudio) ui.tabStudio.addEventListener("click", () => setAppPage("studio"));
   if (ui.tabMatrix) ui.tabMatrix.addEventListener("click", () => setAppPage("matrix"));
+  if (ui.tabSpace3d) ui.tabSpace3d.addEventListener("click", () => setAppPage("space3d"));
+  if (ui.chunkSelect) {
+    ui.chunkSelect.addEventListener("click", () => {
+      setInteractionMode(interactionMode === "chunk" ? "select" : "chunk");
+    });
+  }
+  if (ui.clearChunk) ui.clearChunk.addEventListener("click", clearChunkSelection);
+  if (ui.generate3d) ui.generate3d.addEventListener("click", generateChunkSpace);
   if (ui.matrixTypeRow) {
     ui.matrixTypeRow.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-matrix-type]");
@@ -4879,6 +5607,33 @@
     });
   }
   if (ui.generateMatrix) ui.generateMatrix.addEventListener("click", generateDescriptorMatrix);
+  if (ui.saveMatrix) ui.saveMatrix.addEventListener("click", openSaveWholeMatrixPanel);
+  if (ui.matrixConfirmSaveWhole) {
+    ui.matrixConfirmSaveWhole.addEventListener("click", confirmSaveWholeMatrix);
+  }
+  if (ui.matrixCancelSaveWhole) {
+    ui.matrixCancelSaveWhole.addEventListener("click", () => {
+      if (ui.matrixSaveWholePanel) ui.matrixSaveWholePanel.classList.add("hidden");
+    });
+  }
+  if (ui.matrixWholeName) {
+    ui.matrixWholeName.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        confirmSaveWholeMatrix();
+      }
+      if (event.key === "Escape" && ui.matrixSaveWholePanel) {
+        ui.matrixSaveWholePanel.classList.add("hidden");
+      }
+    });
+  }
+  if (ui.savedMatrixFilters) {
+    ui.savedMatrixFilters.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-matrix-filter]");
+      if (!btn) return;
+      setSavedMatrixFilter(btn.dataset.matrixFilter);
+    });
+  }
   if (ui.matrixSaveAllPng) {
     ui.matrixSaveAllPng.addEventListener("click", () => exportMatrixBatch("png"));
   }
@@ -4910,8 +5665,13 @@
     });
   }
 
-  function canvasPoint(event) {
-    return screenToWorld(event.clientX, event.clientY);
+  function captureCanvasPointer(event) {
+    if (!event || event.pointerId == null) return;
+    try {
+      canvas.setPointerCapture(event.pointerId);
+    } catch (_) {
+      /* synthetic or inactive pointer */
+    }
   }
 
   function closePolygonDraft() {
@@ -4968,7 +5728,7 @@
     if (event.button === 1) {
       event.preventDefault();
       canvas.classList.add("pan-mode");
-      canvas.setPointerCapture(event.pointerId);
+      captureCanvasPointer(event);
       canvas._pan = {
         ox: event.clientX,
         oy: event.clientY,
@@ -4980,8 +5740,24 @@
     if (event.button !== 0) return;
     const point = canvasPoint(event);
 
+    if (interactionMode === "chunk") {
+      captureCanvasPointer(event);
+      const hit = chunkRect ? hitChunkHandle(chunkRect, point) : null;
+      if (hit && hit !== "body") {
+        canvas._drag = { kind: "chunk-resize", handle: hit, origin: point, start: { ...chunkRect } };
+        return;
+      }
+      if (hit === "body") {
+        canvas._drag = { kind: "chunk-move", origin: point, start: { ...chunkRect } };
+        return;
+      }
+      canvas._drag = { kind: "chunk-draw", origin: point };
+      chunkDraft = null;
+      return;
+    }
+
     if (interactionMode === "draw") {
-      canvas.setPointerCapture(event.pointerId);
+      captureCanvasPointer(event);
       if (obstacleTool === "polygon") {
         canvas._drag = { kind: "poly-click", origin: point };
         return;
@@ -4995,7 +5771,7 @@
       if (seed) {
         const wasSelected = selectedSeedId === seed.id;
         if (!wasSelected) selectSeed(seed.id);
-        canvas.setPointerCapture(event.pointerId);
+        captureCanvasPointer(event);
         canvas._drag = {
           kind: "seed",
           seed,
@@ -5007,7 +5783,7 @@
         };
         return;
       }
-      canvas.setPointerCapture(event.pointerId);
+      captureCanvasPointer(event);
       canvas._drag = { kind: "place-seed", origin: point };
       return;
     }
@@ -5017,7 +5793,7 @@
       deselectObstacle();
       const wasSelected = selectedSeedId === seed.id;
       if (!wasSelected) selectSeed(seed.id);
-      canvas.setPointerCapture(event.pointerId);
+      captureCanvasPointer(event);
       canvas._drag = {
         kind: "seed",
         seed,
@@ -5034,7 +5810,7 @@
     if (hit) {
       deselectSeed();
       selectObstacle(hit.obs.id);
-      canvas.setPointerCapture(event.pointerId);
+      captureCanvasPointer(event);
       canvas._drag = {
         kind: "obstacle",
         obs: hit.obs,
@@ -5047,11 +5823,11 @@
       return;
     }
 
-    canvas.setPointerCapture(event.pointerId);
+    captureCanvasPointer(event);
     canvas._drag = { kind: "empty-select", origin: point };
   });
 
-  canvas.addEventListener("pointermove", (event) => {
+  function onCanvasPointerMove(event) {
     if (canvas._pan) {
       view.x = canvas._pan.vx + (event.clientX - canvas._pan.ox);
       view.y = canvas._pan.vy + (event.clientY - canvas._pan.oy);
@@ -5069,6 +5845,16 @@
       obstacleDraft.hover = point;
       return;
     }
+    if (!drag && interactionMode === "chunk") {
+      const hit = chunkRect ? hitChunkHandle(chunkRect, point) : null;
+      if (hit === "nw" || hit === "se") canvas.style.cursor = "nwse-resize";
+      else if (hit === "ne" || hit === "sw") canvas.style.cursor = "nesw-resize";
+      else if (hit === "n" || hit === "s") canvas.style.cursor = "ns-resize";
+      else if (hit === "e" || hit === "w") canvas.style.cursor = "ew-resize";
+      else if (hit === "body") canvas.style.cursor = "move";
+      else canvas.style.cursor = "crosshair";
+      return;
+    }
     if (!drag) return;
     if (drag.kind === "seed") {
       const nx = drag.x + (point.x - drag.origin.x);
@@ -5081,6 +5867,23 @@
       return;
     }
     if (drag.kind === "place-seed" || drag.kind === "empty-select" || drag.kind === "poly-click") {
+      return;
+    }
+    if (drag.kind === "chunk-draw") {
+      chunkDraft = normalizeChunkRect(drag.origin.x, drag.origin.y, point.x, point.y);
+      return;
+    }
+    if (drag.kind === "chunk-move") {
+      chunkRect = {
+        x: drag.start.x + (point.x - drag.origin.x),
+        y: drag.start.y + (point.y - drag.origin.y),
+        w: drag.start.w,
+        h: drag.start.h,
+      };
+      return;
+    }
+    if (drag.kind === "chunk-resize") {
+      chunkRect = resizeChunkRect(drag.start, drag.handle, point);
       return;
     }
     if (drag.kind === "draw-shape") {
@@ -5123,13 +5926,13 @@
       }
       syncObstacles();
     }
-  });
+  }
 
-  canvas.addEventListener("pointerup", (event) => {
+  function onCanvasPointerUp(event) {
     if (canvas._pan) {
       canvas._pan = null;
       canvas.classList.remove("pan-mode");
-      return;
+      if (event.button === 1 || !canvas._drag) return;
     }
     const drag = canvas._drag;
     canvas._drag = null;
@@ -5150,6 +5953,17 @@
         deselectSeed();
         deselectObstacle();
       }
+      return;
+    }
+    if (drag.kind === "chunk-draw") {
+      const next = normalizeChunkRect(drag.origin.x, drag.origin.y, point.x, point.y);
+      chunkDraft = null;
+      if (next.w >= 12 && next.h >= 12) chunkRect = next;
+      updateChunkUI();
+      return;
+    }
+    if (drag.kind === "chunk-move" || drag.kind === "chunk-resize") {
+      updateChunkUI();
       return;
     }
     if (drag.kind === "poly-click") {
@@ -5195,6 +6009,24 @@
         if (sim.generation > 0) replayGrowthFromSeeds();
       }
     }
+  }
+
+  canvas.addEventListener("pointermove", onCanvasPointerMove);
+  canvas.addEventListener("pointerup", onCanvasPointerUp);
+  canvas.addEventListener("pointercancel", onCanvasPointerUp);
+  window.addEventListener("pointermove", (event) => {
+    if (!canvas._pan && !canvas._drag) return;
+    if (event.target === canvas) return;
+    onCanvasPointerMove(event);
+  });
+  window.addEventListener("pointerup", (event) => {
+    if (!canvas._pan && !canvas._drag) return;
+    if (event.target === canvas) return;
+    onCanvasPointerUp(event);
+  });
+  window.addEventListener("pointercancel", (event) => {
+    if (!canvas._pan && !canvas._drag) return;
+    onCanvasPointerUp(event);
   });
 
   canvas.addEventListener("dblclick", (event) => {
@@ -5236,6 +6068,15 @@
         updateObstacleUI();
         return;
       }
+      if (chunkDraft) {
+        chunkDraft = null;
+        updateChunkUI();
+        return;
+      }
+      if (interactionMode === "chunk") {
+        setInteractionMode("select");
+        return;
+      }
       deselectSeed();
       deselectObstacle();
       return;
@@ -5246,6 +6087,11 @@
       return;
     }
     if (event.key === "Delete" || event.key === "Backspace") {
+      if (interactionMode === "chunk" && chunkRect) {
+        event.preventDefault();
+        clearChunkSelection();
+        return;
+      }
       if (selectedObstacleId != null) {
         event.preventDefault();
         deleteSelectedObstacle();
@@ -5261,6 +6107,11 @@
   window.addEventListener("resize", resize);
   if (window.ResizeObserver) {
     new ResizeObserver(resize).observe(viewport);
+    if (ui.space3dStage) {
+      new ResizeObserver(() => {
+        if (appPage === "space3d" && space3dViewer) space3dViewer.resize();
+      }).observe(ui.space3dStage);
+    }
   }
   loadSavedIterationsFromStorage();
   setInteractionMode("select");
@@ -5276,8 +6127,10 @@
   renderDescriptorButtons();
   renderMatrixGrid();
   updateMatrixGenerateState();
+  updateChunkUI();
   resize();
   restoreGridSlots();
   refreshSavedSimulationLibrary();
+  refreshSavedMatrixLibrary();
   loop();
 })();

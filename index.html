@@ -68,6 +68,18 @@
       </div>
 
       <div class="section">
+        <div class="section-head">3D Spatial Study</div>
+        <div class="row">
+          <button id="chunkSelect" class="ghost" type="button">Select Chunk</button>
+          <button id="clearChunk" class="ghost" type="button" disabled>Clear Selection</button>
+        </div>
+        <div class="row">
+          <button id="generate3d" class="primary" type="button" disabled>Generate 3D Space</button>
+        </div>
+        <p id="chunkStatus" class="grid-status">Drag a rectangle over grown branches, then generate a 20′ cube study.</p>
+      </div>
+
+      <div class="section">
         <div class="section-head">Repulsion Geometry</div>
         <div class="row">
           <button id="obstacleRect" class="ghost" type="button">Rectangle</button>
@@ -326,6 +338,9 @@
         <button id="tabMatrix" type="button" class="page-tab" role="tab" aria-selected="false">
           Descriptor Matrix
         </button>
+        <button id="tabSpace3d" type="button" class="page-tab" role="tab" aria-selected="false">
+          3D Space
+        </button>
       </nav>
 
       <div class="viewport" id="studioView">
@@ -361,10 +376,32 @@
           </div>
           <div class="row matrix-generate-row">
             <button id="generateMatrix" class="primary" type="button">Generate Matrix</button>
+            <button id="saveMatrix" class="ghost" type="button" disabled>Save Matrix</button>
             <button id="matrixSaveAllPng" class="ghost" type="button" disabled>Save All PNGs</button>
             <button id="matrixSaveAllSvg" class="ghost" type="button" disabled>Save All SVGs</button>
           </div>
-          <p id="matrixStatus" class="grid-status">Import a grid in Studio, then generate candidates and keep the best 9 for this descriptor.</p>
+          <div id="matrixSaveWholePanel" class="save-sim-panel hidden">
+            <label class="ctrl save-sim-name">
+              Matrix Name
+              <input id="matrixWholeName" type="text" maxlength="120" autocomplete="off" placeholder="Workspace — Porosity — Matrix 01" />
+            </label>
+            <div class="row">
+              <button id="matrixConfirmSaveWhole" class="primary" type="button">Save Matrix</button>
+              <button id="matrixCancelSaveWhole" class="ghost" type="button">Cancel</button>
+            </div>
+          </div>
+          <p id="matrixStatus" class="grid-status">Import a grid in Studio, then generate candidates and keep the best 25 for this descriptor.</p>
+          <div class="matrix-saved-block">
+            <p class="save-sim-cat-label">Saved Matrices</p>
+            <div class="row saved-sim-filters saved-matrix-filters" id="savedMatrixFilters" role="group" aria-label="Saved matrix filter">
+              <button type="button" class="ghost active" data-matrix-filter="all">All</button>
+              <button type="button" class="ghost" data-matrix-filter="lobby">Lobby</button>
+              <button type="button" class="ghost" data-matrix-filter="workspace">Workspace</button>
+              <button type="button" class="ghost" data-matrix-filter="gathering">Gathering</button>
+            </div>
+            <ul id="savedMatrixList" class="saved-sim-list saved-matrix-list"></ul>
+            <p id="savedMatrixStatus" class="grid-status">Saved matrices stay in this browser only.</p>
+          </div>
         </div>
         <div class="matrix-body">
           <div id="matrixGrid" class="matrix-grid"></div>
@@ -402,14 +439,26 @@
           </aside>
         </div>
       </div>
+
+      <div id="space3dView" class="space3d-view hidden" aria-label="3D Spatial Study">
+        <div class="space3d-toolbar">
+          <p id="space3dStatus" class="grid-status">Select a 2D chunk in Studio, then Generate 3D Space.</p>
+        </div>
+        <div id="space3dStage" class="space3d-stage"></div>
+        <p class="view-hint">Drag to orbit · Scroll to zoom · Right-drag to pan</p>
+      </div>
     </div>
   </div>
   </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="algorithm.js"></script>
     <script src="saved-simulations-store.js"></script>
+    <script src="saved-matrices-store.js"></script>
     <script src="descriptor-matrix.js"></script>
+    <script src="spatial-3d.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
