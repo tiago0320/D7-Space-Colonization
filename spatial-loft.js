@@ -118,6 +118,96 @@
     });
   }
 
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function copySectionNodes(nodes) {
+    return (nodes || []).map((node) => ({
+      id: node.id,
+      x: Number(node.x) || 0,
+      y: Number(node.y) || 0,
+      z: Number(node.z) || 0,
+    }));
+  }
+
+  function morphSectionNodes(nodes, params) {
+    params = params || {};
+    const out = copySectionNodes(nodes);
+    const strength = clamp(params.strength, 0, 1);
+    if (!out.length || strength <= 1e-6) return out;
+    const smoothness = clamp(params.smoothness != null ? params.smoothness : 0.7, 0, 1);
+    const rng = mulberry32(params.seed != null ? params.seed : 1);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const node of out) {
+      if (node.x < minX) minX = node.x;
+      if (node.y < minY) minY = node.y;
+      if (node.x > maxX) maxX = node.x;
+      if (node.y > maxY) maxY = node.y;
+    }
+    const spanX = Math.max(0.5, maxX - minX);
+    const spanY = Math.max(0.5, maxY - minY);
+    const diag = Math.hypot(spanX, spanY);
+
+    function makeKernels(count, radius, amplitude) {
+      const kernels = [];
+      const inv2r2 = 1 / (2 * Math.max(1e-4, radius) * Math.max(1e-4, radius));
+      for (let i = 0; i < count; i++) {
+        kernels.push({
+          x: minX + rng() * spanX,
+          y: minY + rng() * spanY,
+          dx: (rng() * 2 - 1) * amplitude,
+          dy: (rng() * 2 - 1) * amplitude,
+          inv2r2,
+        });
+      }
+      return kernels;
+    }
+
+    function sample(kernels, x, y) {
+      let sx = 0;
+      let sy = 0;
+      let w = 0;
+      for (const kernel of kernels) {
+        const dx = x - kernel.x;
+        const dy = y - kernel.y;
+        const fall = Math.exp(-(dx * dx + dy * dy) * kernel.inv2r2);
+        sx += kernel.dx * fall;
+        sy += kernel.dy * fall;
+        w += fall;
+      }
+      if (w < 1e-8) return { x: 0, y: 0 };
+      return { x: sx / w, y: sy / w };
+    }
+
+    const amp = diag * (0.035 + strength * 0.3);
+    const coarse = makeKernels(4, diag * 0.55, amp);
+    const fineCount = Math.max(3, Math.round(lerp(18, 3, smoothness)));
+    const fineRadius = diag * lerp(0.12, 0.42, smoothness);
+    const fineAmp = amp * lerp(0.85, 0.18, smoothness);
+    const fine = makeKernels(fineCount, fineRadius, fineAmp);
+    const fineWeight = lerp(1, 0.22, smoothness);
+    const coarseWeight = lerp(0.35, 1, smoothness);
+
+    for (const node of out) {
+      const a = sample(coarse, node.x, node.y);
+      const b = sample(fine, node.x, node.y);
+      node.x += a.x * coarseWeight + b.x * fineWeight;
+      node.y += a.y * coarseWeight + b.y * fineWeight;
+    }
+    return out;
+  }
+
   function invertDeformPoint(x, y, section, width, height) {
     const cx = width * 0.5;
     const cy = height * 0.5;
@@ -516,6 +606,8 @@
     topologyFromChunk,
     deformLocal,
     invertDeformPoint,
+    copySectionNodes,
+    morphSectionNodes,
     sectionMatrix,
     sectionPlacement,
     evaluateSection,

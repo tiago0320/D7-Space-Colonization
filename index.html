@@ -472,19 +472,37 @@
             <button id="space3dLineRedo" class="ghost" type="button" disabled>Redo</button>
           </div>
           <div class="section-head">Section Loft Set</div>
-          <p class="grid-status">Same branch topology, independent section layers. Loft corresponding branches. Voids stay open.</p>
+          <p class="grid-status">Same branch topology, independent section layers. Morph geometry first, then Generate Loft when you choose.</p>
           <div class="row">
             <button id="space3dCreateLoft" class="ghost" type="button" disabled>Create Loft Set</button>
           </div>
           <ul id="space3dSectionList" class="seed-list"></ul>
           <div class="row">
-            <button id="space3dDupSection" class="ghost" type="button" disabled>Duplicate Section</button>
+            <button id="space3dDupSection" class="ghost" type="button" disabled>Add Morphed Section</button>
+            <button id="space3dRemorph" class="ghost" type="button" disabled>Remorph Selected</button>
+          </div>
+          <div class="row">
             <button id="space3dDeleteSection" class="ghost" type="button" disabled>Delete Section</button>
           </div>
           <div class="row">
             <button id="space3dSectionUp" class="ghost" type="button" disabled>Move Section Up</button>
             <button id="space3dSectionDown" class="ghost" type="button" disabled>Move Section Down</button>
           </div>
+          <label class="ctrl" title="Depth between sequential sections along the selected section's local normal.">
+            Section Spacing
+            <span class="value" id="space3dSectionSpacingVal">4.0</span>
+            <input id="space3dSectionSpacing" type="range" min="0.5" max="12" step="0.1" value="4" />
+          </label>
+          <label class="ctrl" title="How far node positions move in a new morph. 0 keeps the previous section's shape.">
+            Morph Strength
+            <span class="value" id="space3dMorphStrengthVal">30</span>
+            <input id="space3dMorphStrength" type="range" min="0" max="100" step="1" value="30" />
+          </label>
+          <label class="ctrl" title="High values move nearby nodes together. Low values allow more localized change.">
+            Morph Smoothness
+            <span class="value" id="space3dMorphSmoothnessVal">70</span>
+            <input id="space3dMorphSmoothness" type="range" min="0" max="100" step="1" value="70" />
+          </label>
           <label class="ctrl" title="Move this section along its local normal. Rotating the section changes that direction.">
             Section Offset
             <span class="value" id="space3dOffsetVal">0.0</span>
@@ -563,13 +581,13 @@
             <input id="space3dNodeScale" type="range" min="50" max="150" step="1" value="100" disabled />
           </label>
           <div class="section-head">Loft Solids</div>
-          <p class="grid-status">Loft corresponding branches only. Do not enclose the whole chunk.</p>
+          <p class="grid-status">Loft corresponding branches only after you inspect the sections. Morphing does not create a loft.</p>
           <p id="space3dLoftStatus" class="grid-status">No loft yet.</p>
           <div class="row">
             <button id="space3dGenerateLoft" class="primary" type="button" disabled>Generate Loft</button>
           </div>
           <div class="row">
-            <button id="space3dLiveLoft" class="primary" type="button">Live Loft</button>
+            <button id="space3dLiveLoft" class="ghost" type="button">Live Loft</button>
             <button id="space3dRegenLoft" class="ghost" type="button" disabled>Regenerate Loft</button>
             <button id="space3dClearLoft" class="ghost" type="button" disabled>Clear Loft</button>
           </div>
@@ -880,9 +898,29 @@
           <div class="row">
             <button id="space3dTurnExport" class="primary" type="button">Export MP4</button>
           </div>
+          <div class="section-head">Saved 3D Variations</div>
+          <p id="space3dSaved3dStatus" class="grid-status">Save the current 3D study in this browser. It stays on this computer until you delete it.</p>
+          <div class="row">
+            <button id="space3dSave3d" class="ghost" type="button" disabled>Save 3D Variation</button>
+          </div>
+          <div class="row">
+            <button id="space3dSave3dUpdate" class="ghost" type="button" disabled>Save</button>
+            <button id="space3dSave3dAs" class="ghost" type="button" disabled>Save As New</button>
+          </div>
+          <div id="space3dSave3dPanel" class="save-sim-panel hidden">
+            <label class="ctrl save-sim-name">
+              Name
+              <input id="space3dSave3dName" type="text" maxlength="80" autocomplete="off" placeholder="3D Variation 01" />
+            </label>
+            <div class="row">
+              <button id="space3dSave3dConfirm" class="primary" type="button">Save</button>
+              <button id="space3dSave3dCancel" class="ghost" type="button">Cancel</button>
+            </div>
+          </div>
+          <ul id="space3dSaved3dList" class="saved-sim-list space3d-saved-list"></ul>
           <div class="space3d-workspace">
             <div class="section-head">Workspace</div>
-            <p class="grid-status">Clears the current 3D study only. The original 2D simulation and saved work stay intact.</p>
+            <p class="grid-status">Clears the current 3D study only. The original 2D simulation, saved simulations, and saved 3D variations stay intact.</p>
             <div class="row">
               <button id="space3dResetWorkspace" class="ghost space3d-reset-workspace" type="button">Reset 3D Space</button>
             </div>
@@ -914,10 +952,20 @@
         <div id="space3dResetDialog" class="space3d-reset-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="space3dResetTitle">
           <div class="space3d-reset-dialog-card">
             <h2 id="space3dResetTitle">Reset 3D Space?</h2>
-            <p>This will delete all chunks, sections, lofts, voxels, and edits from the current 3D workspace. Your original 2D simulation and saved simulations will not be affected.</p>
+            <p>This will delete all chunks, sections, lofts, voxels, and edits from the current 3D workspace. Your original 2D simulation, saved simulations, and saved 3D variations will not be affected.</p>
             <div class="row">
               <button id="space3dResetCancel" class="ghost" type="button">Cancel</button>
               <button id="space3dResetConfirm" class="ghost space3d-reset-confirm" type="button">Reset 3D Space</button>
+            </div>
+          </div>
+        </div>
+        <div id="space3dDelete3dDialog" class="space3d-reset-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="space3dDelete3dTitle">
+          <div class="space3d-reset-dialog-card">
+            <h2 id="space3dDelete3dTitle">Delete this saved 3D variation?</h2>
+            <p>This removes only the saved 3D variation. The original 2D simulation, Saved Simulations, Saved Matrices, and other 3D variations stay intact.</p>
+            <div class="row">
+              <button id="space3dDelete3dCancel" class="ghost" type="button">Cancel</button>
+              <button id="space3dDelete3dConfirm" class="ghost space3d-reset-confirm" type="button">Delete</button>
             </div>
           </div>
         </div>
@@ -942,6 +990,7 @@
     <script src="algorithm.js"></script>
     <script src="saved-simulations-store.js"></script>
     <script src="saved-matrices-store.js"></script>
+    <script src="saved-3d-variations-store.js"></script>
     <script src="descriptor-matrix.js"></script>
     <script src="spatial-mass.js"></script>
     <script src="spatial-loft.js"></script>

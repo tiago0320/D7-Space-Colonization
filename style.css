@@ -1210,3 +1210,15 @@ label.ctrl.save-sim-name input[type="text"] {
   color: var(--text);
 }
 
+.space3d-saved-list {
+  max-height: 240px;
+}
+
+.space3d-saved-list li.active {
+  border-color: var(--gold);
+}
+
+.space3d-saved-unsaved {
+  color: var(--gold);
+}
+

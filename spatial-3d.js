@@ -120,7 +120,7 @@
     };
   }
 
-  const SECTION_TONES = [0xb8b4ac, 0xa8b0b4, 0xb4aca0, 0xa8aca4, 0xb0a8ac];
+  const SECTION_TONES = [0xd2c4a8, 0xa8c4b8, 0xa8b4d0, 0xd0b0b8, 0xc4c0a0];
 
   function captureChunkFromSource(source, bounds, meta) {
     const site = source && source.site;
@@ -1558,7 +1558,7 @@
       const tone = SECTION_TONES[toneIndex % SECTION_TONES.length];
       const lines = new THREE.LineSegments(
         sectionLineGeom(section, loftSet),
-        new THREE.LineBasicMaterial({ color: tone, transparent: true, opacity: 0.88 })
+        new THREE.LineBasicMaterial({ color: tone, transparent: true, opacity: 1 })
       );
       lines.userData.loftLine = true;
       group.add(lines);
@@ -1683,8 +1683,13 @@
         rec.group.userData.sectionId = section.id;
         rec.group.visible = sectionLayersVisible;
         rec.lines.visible = loftLinesVisible;
+        rec.lines.material.opacity = section.id === selectedSectionId ? 1 : 0.86;
         rec.outline.visible = section.id === selectedSectionId;
         rec.plane.visible = !!sourcePlanesVisible;
+        const tone = SECTION_TONES[index % SECTION_TONES.length];
+        rec.lines.material.color.setHex(tone);
+        rec.outline.material.color.setHex(tone);
+        rec.plane.material.color.setHex(tone);
         applySectionObject(rec.group, section);
         rebuildSectionLines(section, loftSet);
         detachSectionHandles(section.id);
@@ -3072,6 +3077,40 @@
       }
     }
 
+    function getCameraState() {
+      const cam = activeCamera;
+      const target = controls && controls.target ? controls.target : workspaceCenter;
+      return {
+        viewMode,
+        position: cam ? [cam.position.x, cam.position.y, cam.position.z] : [32, 24, 32],
+        up: cam ? [cam.up.x, cam.up.y, cam.up.z] : [0, 1, 0],
+        target: [target.x, target.y, target.z],
+        zoom: cam && cam.zoom != null ? cam.zoom : 1,
+      };
+    }
+
+    function applyCameraState(state) {
+      if (!state) return;
+      const mode = state.viewMode || "perspective";
+      applyViewMode(mode, { reset: false });
+      const cam = activeCamera;
+      if (cam && Array.isArray(state.position) && state.position.length >= 3) {
+        cam.position.set(Number(state.position[0]) || 0, Number(state.position[1]) || 0, Number(state.position[2]) || 0);
+      }
+      if (cam && Array.isArray(state.up) && state.up.length >= 3) {
+        cam.up.set(Number(state.up[0]) || 0, Number(state.up[1]) || 0, Number(state.up[2]) || 1);
+      }
+      if (cam && state.zoom != null && Number.isFinite(Number(state.zoom))) {
+        cam.zoom = Math.max(0.05, Number(state.zoom));
+        cam.updateProjectionMatrix();
+      }
+      if (controls && Array.isArray(state.target) && state.target.length >= 3) {
+        controls.target.set(Number(state.target[0]) || 10, Number(state.target[1]) || 10, Number(state.target[2]) || 10);
+        controls.update();
+      }
+      if (cam && controls) cam.lookAt(controls.target);
+    }
+
     return {
       resize,
       resetCamera,
@@ -3082,6 +3121,8 @@
       setViewMode(mode) {
         applyViewMode(mode, { reset: true });
       },
+      getCameraState,
+      applyCameraState,
       start() {
         running = true;
         syncOrbitEnabled();
@@ -3274,9 +3315,17 @@
     let voxelStale = false;
     let voxelStamp = "";
     let voxelInfo = null;
-    let liveLoftOn = true;
+    let liveLoftOn = false;
     let liveVoxelsOn = false;
     let loftStale = false;
+    let applyingSaved3d = false;
+    let workspaceDirty = false;
+    let openedVariationId = null;
+    let openedVariationName = "";
+    let save3dMode = "create";
+    let pendingDelete3dId = null;
+    let rename3dId = null;
+    let saved3dRecords = [];
     let loftCapsules = [];
     let exportNameHint = "";
     let loftDraftAt = 0;
@@ -3317,6 +3366,7 @@
       viewModeUi = mode;
       if (viewer && viewer.setViewMode) viewer.setViewMode(mode);
       paintViewButtons();
+      markWorkspaceDirty();
     }
 
     function isTypingTarget(el) {
@@ -3396,9 +3446,16 @@
       createLoft: document.getElementById("space3dCreateLoft"),
       sectionList: document.getElementById("space3dSectionList"),
       dupSection: document.getElementById("space3dDupSection"),
+      remorph: document.getElementById("space3dRemorph"),
       deleteSection: document.getElementById("space3dDeleteSection"),
       sectionUp: document.getElementById("space3dSectionUp"),
       sectionDown: document.getElementById("space3dSectionDown"),
+      sectionSpacing: document.getElementById("space3dSectionSpacing"),
+      sectionSpacingVal: document.getElementById("space3dSectionSpacingVal"),
+      morphStrength: document.getElementById("space3dMorphStrength"),
+      morphStrengthVal: document.getElementById("space3dMorphStrengthVal"),
+      morphSmoothness: document.getElementById("space3dMorphSmoothness"),
+      morphSmoothnessVal: document.getElementById("space3dMorphSmoothnessVal"),
       offset: document.getElementById("space3dOffset"),
       offsetVal: document.getElementById("space3dOffsetVal"),
       scaleX: document.getElementById("space3dScaleX"),
@@ -3489,6 +3546,18 @@
       turnProgressDetail: document.getElementById("space3dTurnProgressDetail"),
       turnBar: document.getElementById("space3dTurnBar"),
       turnCancel: document.getElementById("space3dTurnCancel"),
+      save3d: document.getElementById("space3dSave3d"),
+      save3dUpdate: document.getElementById("space3dSave3dUpdate"),
+      save3dAs: document.getElementById("space3dSave3dAs"),
+      saved3dStatus: document.getElementById("space3dSaved3dStatus"),
+      save3dPanel: document.getElementById("space3dSave3dPanel"),
+      save3dName: document.getElementById("space3dSave3dName"),
+      save3dConfirm: document.getElementById("space3dSave3dConfirm"),
+      save3dCancel: document.getElementById("space3dSave3dCancel"),
+      saved3dList: document.getElementById("space3dSaved3dList"),
+      delete3dDialog: document.getElementById("space3dDelete3dDialog"),
+      delete3dCancel: document.getElementById("space3dDelete3dCancel"),
+      delete3dConfirm: document.getElementById("space3dDelete3dConfirm"),
     };
 
     function setStatus(message, kind) {
@@ -3535,10 +3604,12 @@
         id: `${loft.id}-sec-${index}`,
         index,
         label: `Section ${pad2(index)}`,
+        kind: sourceSection ? "morph" : "source",
         nodes,
         transform,
         offset: sourceSection ? Number(sourceSection.offset) || 0 : 0,
         deform,
+        morphSeed: sourceSection ? null : 0,
       };
     }
 
@@ -3922,6 +3993,7 @@
       if (els.duplicateChunk) els.duplicateChunk.disabled = !chunk;
       if (els.createLoft) els.createLoft.disabled = !chunk;
       if (els.dupSection) els.dupSection.disabled = !sectionOn;
+      if (els.remorph) els.remorph.disabled = !sectionOn;
       if (els.deleteSection) els.deleteSection.disabled = !sectionOn || (selectedLoft() && selectedLoft().sections.length < 2);
       const loft = selectedLoft();
       const idx = loft && section ? loft.sections.findIndex((item) => item.id === section.id) : -1;
@@ -4014,6 +4086,7 @@
       if (turntableBusy) return;
       const target = transformTarget();
       if (!target || syncingUi) return;
+      markWorkspaceDirty();
       target.transform = {
         x: Number(els.posX?.value ?? target.transform.x),
         y: Number(els.posY?.value ?? target.transform.y),
@@ -4091,10 +4164,11 @@
       list.innerHTML = "";
       const loft = selectedLoft();
       if (!loft) return;
-      loft.sections.forEach((section) => {
+      loft.sections.forEach((section, index) => {
         const item = document.createElement("li");
         item.className = section.id === selectedSectionId ? "selected" : "";
-        item.innerHTML = `<span>${section.label} · offset ${Number(section.offset || 0).toFixed(1)}</span>`;
+        const kind = index === 0 && section.kind !== "morph" ? "Source" : `Morph ${String(index).padStart(2, "0")}`;
+        item.innerHTML = `<span>${section.label} · ${kind} · offset ${Number(section.offset || 0).toFixed(1)}</span>`;
         item.addEventListener("click", () => {
           selectedSectionId = section.id;
           selectedNodeIds = [];
@@ -4132,6 +4206,7 @@
       renderVarList();
       fillTransformUi();
       paintArea();
+      paintSaved3dButtons();
     }
 
     function setGizmoMode(mode) {
@@ -4194,6 +4269,7 @@
       updateSelectMode();
       refreshChunkUi();
       refreshChunks();
+      markWorkspaceDirty();
       setStatus(
         `${chunk.label} placed on the XY plane at Z = 0 · ${chunk.width.toFixed(1)} × ${chunk.height.toFixed(1)}`,
         "active"
@@ -4290,16 +4366,52 @@
       exportNameHint = loft.label;
       refreshChunkUi();
       refreshChunks();
-      setStatus(`${loft.label} · ${section.label} from ${chunk.label}. Duplicate the section to loft.`, "active");
+      setStatus(`${loft.label} · ${section.label} from ${chunk.label}. Add Morphed Section to evolve geometry, then Generate Loft when ready.`, "active");
     }
 
-    function duplicateSection() {
+    function sectionSpacingValue() {
+      return Math.max(0, Number(els.sectionSpacing?.value ?? 4));
+    }
+
+    function morphStrengthValue() {
+      return clamp(Number(els.morphStrength?.value ?? 30) / 100, 0, 1);
+    }
+
+    function morphSmoothnessValue() {
+      return clamp(Number(els.morphSmoothness?.value ?? 70) / 100, 0, 1);
+    }
+
+    function newMorphSeed() {
+      return (Math.random() * 0xffffffff) >>> 0;
+    }
+
+    function morphNodesFrom(sourceNodes) {
+      const lib = global.D7SpatialLoft;
+      const seed = newMorphSeed();
+      if (!lib || !lib.morphSectionNodes) {
+        return { nodes: (sourceNodes || []).map((node) => ({ id: node.id, x: node.x, y: node.y, z: node.z || 0 })), seed };
+      }
+      return {
+        nodes: lib.morphSectionNodes(sourceNodes, {
+          strength: morphStrengthValue(),
+          smoothness: morphSmoothnessValue(),
+          seed,
+        }),
+        seed,
+      };
+    }
+
+    function addMorphedSection() {
       const loft = selectedLoft();
       const section = selectedSection();
       if (!loft || !section) return;
       const index = loft.nextSection++;
       const copy = makeSection(loft, index, section);
-      copy.offset = (Number(section.offset) || 0) + 4;
+      const morphed = morphNodesFrom(section.nodes);
+      copy.kind = "morph";
+      copy.morphSeed = morphed.seed;
+      copy.nodes = morphed.nodes;
+      copy.offset = (Number(section.offset) || 0) + sectionSpacingValue();
       const at = loft.sections.findIndex((item) => item.id === section.id);
       loft.sections.splice(at + 1, 0, copy);
       selectedSectionId = copy.id;
@@ -4307,7 +4419,31 @@
       refreshChunkUi();
       refreshChunks();
       noteLoftGeometryChanged("commit");
-      setStatus(`${copy.label} added · offset ${copy.offset.toFixed(1)} along the local normal.`, "active");
+      setStatus(
+        `${copy.label} morphed from ${section.label} · offset ${copy.offset.toFixed(1)} along the local normal. Loft is not generated until you click Generate Loft.`,
+        "active"
+      );
+    }
+
+    function remorphSelected() {
+      const loft = selectedLoft();
+      const section = selectedSection();
+      if (!loft || !section) return;
+      const idx = loft.sections.findIndex((item) => item.id === section.id);
+      const sourceNodes =
+        idx > 0 ? loft.sections[idx - 1].nodes : (loft.topology && loft.topology.nodes) || section.nodes;
+      const morphed = morphNodesFrom(sourceNodes);
+      if (idx > 0) section.kind = "morph";
+      section.morphSeed = morphed.seed;
+      section.nodes = morphed.nodes;
+      selectedNodeIds = [];
+      refreshChunkUi();
+      refreshChunks();
+      noteLoftGeometryChanged("commit");
+      setStatus(
+        `${section.label} remorphed · topology and depth unchanged. Loft is not generated.`,
+        "active"
+      );
     }
 
     function deleteSection() {
@@ -4504,11 +4640,13 @@
         els.regenLoft.classList.toggle("ghost", !(hasLoft && loftStale));
       }
       if (hasLoft && loftStale) {
-        setLoftStatus("Needs Update", "error");
+        setLoftStatus("Loft Needs Update", "error");
       } else if (hasLoft && liveLoftOn) {
         setLoftStatus("Live Loft · derived from current sections", "active");
       } else if (hasLoft) {
         setLoftStatus("Loft current", "active");
+      } else if (selectedLoft() && selectedLoft().sections.length >= 2) {
+        setLoftStatus("Sections ready · Generate Loft when you choose.");
       } else {
         setLoftStatus("No loft yet.");
       }
@@ -4883,6 +5021,7 @@
     function afterLoftCommitted() {
       loftStale = false;
       paintLiveButtons();
+      if (applyingSaved3d) return;
       if (liveVoxelsOn && viewer && viewer.hasVoxels && viewer.hasVoxels()) {
         generateVoxels({ silent: true });
       } else {
@@ -4958,7 +5097,18 @@
       }, 140);
     }
 
+    function markWorkspaceDirty() {
+      if (applyingSaved3d) return;
+      if (!workspaceDirty) {
+        workspaceDirty = true;
+        paintSaved3dButtons();
+      } else {
+        workspaceDirty = true;
+      }
+    }
+
     function noteLoftGeometryChanged(kind) {
+      markWorkspaceDirty();
       const loft = selectedLoft();
       if (!loft || loft.sections.length < 2) return;
       if (!hasExistingLoft()) return;
@@ -4981,7 +5131,7 @@
     function generateLoft() {
       if (turntableBusy) return;
       if (!selectedLoft() || selectedLoft().sections.length < 2) {
-        setStatus("Duplicate at least one section before generating a loft.", "error");
+        setStatus("Add at least one morphed section before generating a loft.", "error");
         return;
       }
       if (!viewer) ensureViewer();
@@ -5013,7 +5163,7 @@
       if (liveLoftOn && hasExistingLoft() && loftStale) {
         rebuildLoftMesh({ draft: false, silent: true, final: true });
       }
-      setStatus(liveLoftOn ? "Live Loft on · section edits update the loft." : "Live Loft off · edits mark Needs Update.", "active");
+      setStatus(liveLoftOn ? "Live Loft on · section edits update the loft." : "Live Loft off · edits mark Loft Needs Update.", "active");
     }
 
     function toggleLiveVoxels() {
@@ -5242,7 +5392,7 @@
         viewer.setSectionLayersVisible(!els.showSections || els.showSections.checked);
       }
       if (viewer.setLoftLinesVisible) {
-        viewer.setLoftLinesVisible(lines && (!els.showLoftLines || els.showLoftLines.checked));
+        viewer.setLoftLinesVisible(!els.showLoftLines || els.showLoftLines.checked);
       }
       if (viewer.setMassVisible) {
         viewer.setMassVisible(displaySolids);
@@ -5255,6 +5405,7 @@
       }
       if (viewer.setSilhouetteMode) viewer.setSilhouetteMode(silhouetteOn);
       paintDisplayButtons();
+      markWorkspaceDirty();
     }
 
     function generateVoxels(options) {
@@ -5573,6 +5724,9 @@
     bindSlider(els.solidOpacity, els.solidOpacityVal, (v) => `${Math.round(Number(v))}%`);
     bindSlider(els.loftOpacity, els.loftOpacityVal, (v) => `${Math.round(Number(v))}%`);
     bindSlider(els.offset, els.offsetVal, (v) => Number(v).toFixed(1));
+    bindSlider(els.sectionSpacing, els.sectionSpacingVal, (v) => Number(v).toFixed(1));
+    bindSlider(els.morphStrength, els.morphStrengthVal, (v) => `${Math.round(Number(v))}`);
+    bindSlider(els.morphSmoothness, els.morphSmoothnessVal, (v) => `${Math.round(Number(v))}`);
     bindSlider(els.secScale, els.secScaleVal, (v) => `${Math.round(Number(v))}%`);
     bindSlider(els.secScaleX, els.secScaleXVal, (v) => `${Math.round(Number(v))}%`);
     bindSlider(els.secScaleY, els.secScaleYVal, (v) => `${Math.round(Number(v))}%`);
@@ -5595,6 +5749,628 @@
       if (label) label.textContent = format(value);
     }
 
+    function clonePlain(value) {
+      if (value == null) return value;
+      try {
+        return JSON.parse(JSON.stringify(value));
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function saved3dStore() {
+      return global.D7Saved3DVariations || null;
+    }
+
+    function formatSaved3dDate(ms) {
+      if (!ms) return "";
+      try {
+        return new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      } catch (err) {
+        return "";
+      }
+    }
+
+    function packVoxelCells(cells) {
+      const out = [];
+      for (const cell of cells || []) {
+        out.push([
+          Number(cell.ix) || 0,
+          Number(cell.iy) || 0,
+          Number(cell.iz) || 0,
+          Math.max(1, Number(cell.size) || 1),
+        ]);
+      }
+      return out;
+    }
+
+    function unpackVoxelCells(packed) {
+      const cells = [];
+      for (const item of packed || []) {
+        if (Array.isArray(item)) {
+          cells.push({
+            ix: Number(item[0]) || 0,
+            iy: Number(item[1]) || 0,
+            iz: Number(item[2]) || 0,
+            size: Math.max(1, Number(item[3]) || 1),
+            occupied: true,
+          });
+        } else if (item && typeof item === "object") {
+          cells.push({
+            ix: Number(item.ix) || 0,
+            iy: Number(item.iy) || 0,
+            iz: Number(item.iz) || 0,
+            size: Math.max(1, Number(item.size) || 1),
+            occupied: true,
+          });
+        }
+      }
+      return cells;
+    }
+
+    function captureWorkspaceSnapshot() {
+      const masses = {};
+      for (const chunk of chunks) {
+        const hasMass = !!(viewer && viewer.hasMass && viewer.hasMass(chunk.id));
+        if (hasMass || massSeeds.has(chunk.id)) {
+          masses[chunk.id] = {
+            exists: hasMass,
+            seed: massSeeds.get(chunk.id) || 1,
+          };
+        }
+      }
+      const voxelPayload = viewer && viewer.getVoxelExportData ? viewer.getVoxelExportData() : null;
+      const voxelCellsPacked = packVoxelCells((voxelPayload && voxelPayload.cells) || []);
+      const hasVoxels = !!(voxelCellsPacked.length && viewer && viewer.hasVoxels && viewer.hasVoxels());
+      return {
+        nextChunkIndex,
+        nextLoftIndex,
+        selectedChunkId,
+        selectedLoftId,
+        selectedSectionId,
+        chunks: clonePlain(chunks) || [],
+        loftSets: clonePlain(loftSets) || [],
+        morph: {
+          spacing: Number(els.sectionSpacing?.value ?? 4),
+          strength: Number(els.morphStrength?.value ?? 30),
+          smoothness: Number(els.morphSmoothness?.value ?? 70),
+        },
+        loft: {
+          exists: hasExistingLoft(),
+          stale: !!loftStale,
+          style: els.loftStyle?.value || "smooth",
+          width: Number(els.loftWidth?.value ?? 28),
+          thickness: Number(els.loftThick?.value ?? 32),
+          useHierarchy: !!(els.loftHierarchy && els.loftHierarchy.checked),
+          opacity: Number(els.loftOpacity?.value ?? 100),
+          live: !!liveLoftOn,
+        },
+        voxels: {
+          exists: hasVoxels,
+          stale: !!voxelStale,
+          resolution: Number((voxelPayload && voxelPayload.resolution) || els.voxelRes?.value || 20),
+          fidelity: Number(els.voxelFidelity?.value ?? 75),
+          source: els.voxelSource?.value || "loft",
+          target: els.voxelTarget?.value || "selected",
+          cells: voxelCellsPacked,
+          info: voxelInfo
+            ? {
+                occupiedCount: voxelInfo.occupiedCount,
+                voxelCount: voxelInfo.voxelCount,
+                smallCount: voxelInfo.smallCount,
+                mediumCount: voxelInfo.mediumCount,
+                largeCount: voxelInfo.largeCount,
+                components: voxelInfo.components,
+                isolatedCount: voxelInfo.isolatedCount,
+                totalCount: voxelInfo.totalCount,
+              }
+            : null,
+          opacity: Number(els.voxelOpacity?.value ?? 100),
+          colorBySize: !!(els.voxelColorBySize && els.voxelColorBySize.checked),
+          edges: !els.voxelEdges || els.voxelEdges.checked,
+          live: !!liveVoxelsOn,
+        },
+        masses,
+        massParams: {
+          width: Number(els.solidWidth?.value ?? 28),
+          depth: Number(els.solidDepth?.value ?? 40),
+          reach: Number(els.spatialReach?.value ?? 45),
+          fidelity: Number(els.fidelity?.value ?? 80),
+          variation: Number(els.massVariation?.value ?? 22),
+          useHierarchy: !!(els.useHierarchy && els.useHierarchy.checked),
+          opacity: Number(els.solidOpacity?.value ?? 100),
+        },
+        display: {
+          lines: !!displayLines,
+          solids: !!displaySolids,
+          voxels: !!displayVoxels,
+          silhouette: !!silhouetteOn,
+          silhouetteThickness: Number(els.silhouetteThick?.value ?? 3),
+          showSourceChunk: !els.showSourceChunk || els.showSourceChunk.checked,
+          showSections: !els.showSections || els.showSections.checked,
+          showLoftLines: !els.showLoftLines || els.showLoftLines.checked,
+          showLoftSolids: !els.showLoftSolids || els.showLoftSolids.checked,
+          showVoxels: !els.showVoxels || els.showVoxels.checked,
+          showBranches: !els.showBranches || els.showBranches.checked,
+          showPlane: !!(els.showPlane && els.showPlane.checked),
+          showWireframe: !!(els.showWireframe && els.showWireframe.checked),
+        },
+        camera: viewer && viewer.getCameraState ? viewer.getCameraState() : { viewMode: viewModeUi },
+      };
+    }
+
+    function blobToDataUrl(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    async function captureSaved3dThumbnail() {
+      try {
+        if (!viewer || !viewer.capturePng) return "";
+        const result = await viewer.capturePng({ size: 256, transparent: false });
+        const blob = result && result.blob;
+        if (!blob) return "";
+        return await blobToDataUrl(blob);
+      } catch (err) {
+        return "";
+      }
+    }
+
+    function setSaved3dStatus(message, kind) {
+      if (!els.saved3dStatus) return;
+      els.saved3dStatus.textContent = message;
+      els.saved3dStatus.classList.toggle("active", kind === "active");
+      els.saved3dStatus.classList.toggle("error", kind === "error");
+      els.saved3dStatus.classList.toggle("space3d-saved-unsaved", kind === "unsaved");
+    }
+
+    function paintSaved3dButtons() {
+      const hasStudy = chunks.length > 0;
+      if (els.save3d) els.save3d.disabled = !hasStudy;
+      if (els.save3dUpdate) els.save3dUpdate.disabled = !openedVariationId || !workspaceDirty;
+      if (els.save3dAs) els.save3dAs.disabled = !openedVariationId;
+      if (!hasStudy) {
+        setSaved3dStatus("Save the current 3D study in this browser. It stays on this computer until you delete it.");
+      } else if (openedVariationId && workspaceDirty) {
+        setSaved3dStatus(`Unsaved Changes · ${openedVariationName || "3D Variation"}`, "unsaved");
+      } else if (openedVariationId) {
+        setSaved3dStatus(`Opened · ${openedVariationName || "3D Variation"}`, "active");
+      } else {
+        setSaved3dStatus("Current study is not saved yet.");
+      }
+    }
+
+    function closeSave3dPanel() {
+      if (els.save3dPanel) els.save3dPanel.classList.add("hidden");
+      save3dMode = "create";
+    }
+
+    function openSave3dPanel(mode, presetName) {
+      save3dMode = mode || "create";
+      if (!els.save3dPanel) return;
+      els.save3dPanel.classList.remove("hidden");
+      if (els.save3dName) {
+        els.save3dName.value = presetName || "";
+        els.save3dName.focus();
+        els.save3dName.select();
+      }
+      if (els.save3dConfirm) {
+        els.save3dConfirm.textContent = mode === "rename" ? "Rename" : "Save";
+      }
+    }
+
+    function closeDelete3dDialog() {
+      pendingDelete3dId = null;
+      if (els.delete3dDialog) els.delete3dDialog.classList.add("hidden");
+    }
+
+    function openDelete3dDialog(id) {
+      pendingDelete3dId = id;
+      if (els.delete3dDialog) els.delete3dDialog.classList.remove("hidden");
+      if (els.delete3dCancel) els.delete3dCancel.focus();
+    }
+
+    function renderSaved3dList() {
+      const list = els.saved3dList;
+      if (!list) return;
+      list.innerHTML = "";
+      for (const record of saved3dRecords) {
+        const item = document.createElement("li");
+        if (record.id === openedVariationId) item.className = "active";
+        if (record.thumbnail) {
+          const img = document.createElement("img");
+          img.alt = "";
+          img.width = 72;
+          img.height = 72;
+          img.src = record.thumbnail;
+          item.appendChild(img);
+        }
+        const body = document.createElement("div");
+        body.className = "saved-sim-card-body";
+        const title = document.createElement("strong");
+        title.className = "saved-sim-card-title";
+        title.textContent = record.name || "Untitled";
+        const meta = document.createElement("div");
+        meta.className = "saved-sim-card-meta";
+        const created = formatSaved3dDate(record.createdAt);
+        const updated = formatSaved3dDate(record.updatedAt);
+        meta.innerHTML = created
+          ? `Created ${created}${updated && updated !== created ? `<br>Modified ${updated}` : ""}`
+          : "";
+        const actions = document.createElement("div");
+        actions.className = "saved-sim-card-actions";
+        const openBtn = document.createElement("button");
+        openBtn.type = "button";
+        openBtn.textContent = "Open";
+        openBtn.addEventListener("click", () => openSaved3dVariation(record.id));
+        const dupBtn = document.createElement("button");
+        dupBtn.type = "button";
+        dupBtn.textContent = "Duplicate";
+        dupBtn.addEventListener("click", () => duplicateSaved3dVariation(record.id));
+        const renameBtn = document.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.textContent = "Rename";
+        renameBtn.addEventListener("click", () => {
+          rename3dId = record.id;
+          openSave3dPanel("rename", record.name || "");
+        });
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", () => openDelete3dDialog(record.id));
+        actions.appendChild(openBtn);
+        actions.appendChild(dupBtn);
+        actions.appendChild(renameBtn);
+        actions.appendChild(delBtn);
+        body.appendChild(title);
+        body.appendChild(meta);
+        body.appendChild(actions);
+        item.appendChild(body);
+        list.appendChild(item);
+      }
+    }
+
+    async function refreshSaved3dList() {
+      const store = saved3dStore();
+      if (!store) {
+        setSaved3dStatus("Saved 3D Variations need IndexedDB in this browser.", "error");
+        return;
+      }
+      try {
+        saved3dRecords = await store.list();
+        renderSaved3dList();
+        paintSaved3dButtons();
+      } catch (err) {
+        setSaved3dStatus(err && err.message ? err.message : "Could not read saved 3D variations.", "error");
+      }
+    }
+
+    async function persistSaved3dRecord(record) {
+      const store = saved3dStore();
+      if (!store) throw new Error("Saved 3D Variations need IndexedDB in this browser.");
+      return store.put(record);
+    }
+
+    async function commitSaved3d(options) {
+      const opts = options || {};
+      if (!chunks.length) {
+        setStatus("Place a 3D chunk before saving a variation.", "error");
+        return;
+      }
+      const store = saved3dStore();
+      if (!store) {
+        setStatus("Saved 3D Variations need IndexedDB in this browser.", "error");
+        return;
+      }
+      const asNew = !!opts.asNew;
+      const renameOnly = !!opts.renameOnly;
+      let name = String(opts.name != null ? opts.name : "").trim();
+      try {
+        const records = saved3dRecords.length ? saved3dRecords : await store.list();
+        if (!name) name = store.nextDefaultName(records);
+        let thumbnail = "";
+        if (!renameOnly) {
+          thumbnail = await captureSaved3dThumbnail();
+        }
+        const now = Date.now();
+        let record;
+        if (renameOnly) {
+          const targetId = rename3dId || openedVariationId;
+          if (!targetId) throw new Error("That saved 3D variation was not found.");
+          const existing = await store.get(targetId);
+          if (!existing) throw new Error("That saved 3D variation was not found.");
+          record = { ...existing, name, updatedAt: now };
+          rename3dId = null;
+        } else if (!asNew && openedVariationId) {
+          const existing = await store.get(openedVariationId);
+          record = {
+            ...(existing || {}),
+            id: openedVariationId,
+            name,
+            createdAt: (existing && existing.createdAt) || now,
+            updatedAt: now,
+            version: store.DATA_VERSION || 1,
+            thumbnail: thumbnail || (existing && existing.thumbnail) || "",
+            workspace: captureWorkspaceSnapshot(),
+          };
+        } else {
+          record = {
+            id: store.createId(),
+            name,
+            createdAt: now,
+            updatedAt: now,
+            version: store.DATA_VERSION || 1,
+            thumbnail: thumbnail || "",
+            workspace: captureWorkspaceSnapshot(),
+          };
+        }
+        await persistSaved3dRecord(record);
+        if (renameOnly) {
+          if (openedVariationId === record.id) openedVariationName = record.name;
+          workspaceDirty = workspaceDirty;
+        } else {
+          openedVariationId = record.id;
+          openedVariationName = record.name;
+          workspaceDirty = false;
+        }
+        closeSave3dPanel();
+        await refreshSaved3dList();
+        setStatus(`Saved ${record.name}. It will remain after you close the browser.`, "active");
+      } catch (err) {
+        setStatus(err && err.message ? err.message : "Could not save the 3D variation.", "error");
+      }
+    }
+
+    function applyControlSnapshot(workspace) {
+      const morph = workspace.morph || {};
+      setSlider(els.sectionSpacing, els.sectionSpacingVal, morph.spacing != null ? morph.spacing : 4, (v) => Number(v).toFixed(1));
+      setSlider(els.morphStrength, els.morphStrengthVal, morph.strength != null ? morph.strength : 30, (v) => `${Math.round(Number(v))}`);
+      setSlider(els.morphSmoothness, els.morphSmoothnessVal, morph.smoothness != null ? morph.smoothness : 70, (v) => `${Math.round(Number(v))}`);
+      const loft = workspace.loft || {};
+      if (els.loftStyle) els.loftStyle.value = loft.style || "smooth";
+      setSlider(els.loftWidth, els.loftWidthVal, loft.width != null ? loft.width : 28, (v) => `${Math.round(Number(v))}%`);
+      setSlider(els.loftThick, els.loftThickVal, loft.thickness != null ? loft.thickness : 32, (v) => `${Math.round(Number(v))}%`);
+      if (els.loftHierarchy) els.loftHierarchy.checked = !!loft.useHierarchy;
+      setSlider(els.loftOpacity, els.loftOpacityVal, loft.opacity != null ? loft.opacity : 100, (v) => `${Math.round(Number(v))}%`);
+      liveLoftOn = !!loft.live;
+      const voxels = workspace.voxels || {};
+      if (els.voxelRes) els.voxelRes.value = String(voxels.resolution || 20);
+      setSlider(els.voxelFidelity, els.voxelFidelityVal, voxels.fidelity != null ? voxels.fidelity : 75, (v) => `${Math.round(Number(v))}%`);
+      if (els.voxelSource) els.voxelSource.value = voxels.source || "loft";
+      if (els.voxelTarget) els.voxelTarget.value = voxels.target || "selected";
+      setSlider(els.voxelOpacity, els.voxelOpacityVal, voxels.opacity != null ? voxels.opacity : 100, (v) => `${Math.round(Number(v))}%`);
+      if (els.voxelColorBySize) els.voxelColorBySize.checked = !!voxels.colorBySize;
+      if (els.voxelEdges) els.voxelEdges.checked = voxels.edges !== false;
+      liveVoxelsOn = !!voxels.live;
+      const mass = workspace.massParams || {};
+      setSlider(els.solidWidth, els.solidWidthVal, mass.width != null ? mass.width : 28, (v) => `${Math.round(Number(v))}%`);
+      setSlider(els.solidDepth, els.solidDepthVal, mass.depth != null ? mass.depth : 40, (v) => `${Math.round(Number(v))}%`);
+      setSlider(els.spatialReach, els.spatialReachVal, mass.reach != null ? mass.reach : 45, (v) => `${Math.round(Number(v))}%`);
+      setSlider(els.fidelity, els.fidelityVal, mass.fidelity != null ? mass.fidelity : 80, (v) => `${Math.round(Number(v))}%`);
+      setSlider(els.massVariation, els.massVariationVal, mass.variation != null ? mass.variation : 22, (v) => `${Math.round(Number(v))}%`);
+      if (els.useHierarchy) els.useHierarchy.checked = !!mass.useHierarchy;
+      setSlider(els.solidOpacity, els.solidOpacityVal, mass.opacity != null ? mass.opacity : 100, (v) => `${Math.round(Number(v))}%`);
+      const display = workspace.display || {};
+      displayLines = display.lines !== false;
+      displaySolids = display.solids !== false;
+      displayVoxels = display.voxels !== false;
+      silhouetteOn = !!display.silhouette;
+      setSlider(els.silhouetteThick, els.silhouetteThickVal, display.silhouetteThickness != null ? display.silhouetteThickness : 3, (v) => `${Math.round(Number(v))}`);
+      if (els.showSourceChunk) els.showSourceChunk.checked = display.showSourceChunk !== false;
+      if (els.showSections) els.showSections.checked = display.showSections !== false;
+      if (els.showLoftLines) els.showLoftLines.checked = display.showLoftLines !== false;
+      if (els.showLoftSolids) els.showLoftSolids.checked = display.showLoftSolids !== false;
+      if (els.showVoxels) els.showVoxels.checked = display.showVoxels !== false;
+      if (els.showBranches) els.showBranches.checked = display.showBranches !== false;
+      if (els.showPlane) els.showPlane.checked = !!display.showPlane;
+      if (els.showWireframe) els.showWireframe.checked = !!display.showWireframe;
+    }
+
+    function restoreMasses(workspace) {
+      const lib = global.D7SpatialMass;
+      const masses = workspace.masses || {};
+      massSeeds.clear();
+      if (!lib || !global.THREE || !viewer) return;
+      for (const chunk of chunks) {
+        const rec = masses[chunk.id];
+        if (!rec) continue;
+        massSeeds.set(chunk.id, rec.seed || 1);
+        if (!rec.exists) continue;
+        const result = lib.generate(global.THREE, chunk, Object.assign(massParams(), { seed: rec.seed || 1 }));
+        if (!result || !result.vertexCount) continue;
+        const geom = new global.THREE.BufferGeometry();
+        geom.setAttribute("position", new global.THREE.Float32BufferAttribute(result.positions, 3));
+        geom.setAttribute("normal", new global.THREE.Float32BufferAttribute(result.normals, 3));
+        viewer.setMass(chunk.id, geom, chunk, solidOpacityValue());
+      }
+    }
+
+    function restoreWorkspaceFromRecord(record) {
+      const workspace = (record && record.workspace) || {};
+      applyingSaved3d = true;
+      try {
+        resetWorkspace({ silent: true, skipCamera: true, keepSaved: true });
+        const loadedChunks = clonePlain(workspace.chunks) || [];
+        const loadedLofts = clonePlain(workspace.loftSets) || [];
+        chunks.length = 0;
+        for (const chunk of loadedChunks) {
+          ensureGraphIds(chunk);
+          chunks.push(chunk);
+        }
+        loftSets.length = 0;
+        for (const loft of loadedLofts) loftSets.push(loft);
+        nextChunkIndex = Math.max(Number(workspace.nextChunkIndex) || 1, chunks.reduce((max, item) => Math.max(max, Number(item.index) || 0), 0) + 1);
+        nextLoftIndex = Math.max(Number(workspace.nextLoftIndex) || 1, loftSets.length + 1);
+        selectedChunkId = workspace.selectedChunkId || (chunks[0] ? chunks[0].id : null);
+        selectedLoftId = workspace.selectedLoftId || (loftSets[0] ? loftSets[0].id : null);
+        selectedSectionId = workspace.selectedSectionId || null;
+        if (selectedLoftId && !loftSets.some((item) => item.id === selectedLoftId)) {
+          selectedLoftId = loftSets[0] ? loftSets[0].id : null;
+        }
+        const loft = selectedLoft();
+        if (loft && selectedSectionId && !loft.sections.some((item) => item.id === selectedSectionId)) {
+          selectedSectionId = loft.sections[0] ? loft.sections[0].id : null;
+        }
+        applyControlSnapshot(workspace);
+        ensureViewer();
+        refreshChunks();
+        if (viewer) {
+          if (viewer.setLoftOpacity) viewer.setLoftOpacity(loftOpacityValue());
+          if (viewer.setVoxelOpacity) viewer.setVoxelOpacity(voxelOpacityValue());
+          if (viewer.setMassOpacity) viewer.setMassOpacity(solidOpacityValue());
+          if (viewer.setVoxelColorBySize) viewer.setVoxelColorBySize(!!(els.voxelColorBySize && els.voxelColorBySize.checked));
+          if (viewer.setVoxelEdges) viewer.setVoxelEdges(!els.voxelEdges || els.voxelEdges.checked);
+          if (viewer.setSilhouetteMode) viewer.setSilhouetteMode(silhouetteOn);
+          if (viewer.setSilhouetteThickness) viewer.setSilhouetteThickness(els.silhouetteThick ? els.silhouetteThick.value : 3);
+        }
+        const loftState = workspace.loft || {};
+        if (loftState.exists && loft && loft.sections.length >= 2) {
+          rebuildLoftMesh({ draft: false, silent: true, final: true });
+          loftStale = !!loftState.stale;
+        } else {
+          loftStale = false;
+        }
+        restoreMasses(workspace);
+        const voxelState = workspace.voxels || {};
+        const restoredCells = unpackVoxelCells(voxelState.cells);
+        if (voxelState.exists && restoredCells.length && viewer && viewer.setVoxels) {
+          const payload = {
+            cells: restoredCells,
+            resolution: voxelState.resolution || 20,
+            occupiedCount: (voxelState.info && voxelState.info.occupiedCount) || restoredCells.length,
+            voxelCount: (voxelState.info && voxelState.info.voxelCount) || restoredCells.length,
+            smallCount: voxelState.info ? voxelState.info.smallCount : restoredCells.filter((c) => c.size <= 1).length,
+            mediumCount: voxelState.info ? voxelState.info.mediumCount : restoredCells.filter((c) => c.size === 2).length,
+            largeCount: voxelState.info ? voxelState.info.largeCount : restoredCells.filter((c) => c.size >= 3).length,
+            components: voxelState.info ? voxelState.info.components : 1,
+            isolatedCount: voxelState.info ? voxelState.info.isolatedCount : 0,
+            totalCount: (voxelState.info && voxelState.info.totalCount) || 0,
+          };
+          viewer.setVoxels(payload);
+          voxelInfo = payload;
+          voxelStamp = currentVoxelStamp();
+          voxelStale = !!voxelState.stale;
+        }
+        applyDisplayToggles();
+        if (viewer && viewer.applyCameraState && workspace.camera) {
+          viewer.applyCameraState(workspace.camera);
+          viewModeUi = workspace.camera.viewMode || viewModeUi;
+          paintViewButtons();
+        }
+        refreshChunkUi();
+        paintLiveButtons();
+        paintVoxelButtons();
+        paintExportButtons();
+      } finally {
+        applyingSaved3d = false;
+      }
+    }
+
+    async function openSaved3dVariation(id) {
+      const store = saved3dStore();
+      if (!store) {
+        setStatus("Saved 3D Variations need IndexedDB in this browser.", "error");
+        return;
+      }
+      try {
+        const record = await store.get(id);
+        if (!record) {
+          setStatus("That saved 3D variation was not found.", "error");
+          await refreshSaved3dList();
+          return;
+        }
+        restoreWorkspaceFromRecord(record);
+        openedVariationId = record.id;
+        openedVariationName = record.name || "3D Variation";
+        workspaceDirty = false;
+        closeSave3dPanel();
+        closeDelete3dDialog();
+        await refreshSaved3dList();
+        setStatus(`Opened ${openedVariationName}. Continue editing from this saved study.`, "active");
+      } catch (err) {
+        setStatus(err && err.message ? err.message : "Could not open the 3D variation.", "error");
+      }
+    }
+
+    async function duplicateSaved3dVariation(id) {
+      const store = saved3dStore();
+      if (!store) return;
+      try {
+        const record = await store.get(id);
+        if (!record) return;
+        const now = Date.now();
+        const copy = {
+          ...clonePlain(record),
+          id: store.createId(),
+          name: store.duplicateName(record.name),
+          createdAt: now,
+          updatedAt: now,
+        };
+        await persistSaved3dRecord(copy);
+        await refreshSaved3dList();
+        setStatus(`Duplicated as ${copy.name}.`, "active");
+      } catch (err) {
+        setStatus(err && err.message ? err.message : "Could not duplicate the 3D variation.", "error");
+      }
+    }
+
+    async function confirmDeleteSaved3d() {
+      const id = pendingDelete3dId;
+      closeDelete3dDialog();
+      if (!id) return;
+      const store = saved3dStore();
+      if (!store) return;
+      try {
+        await store.remove(id);
+        if (openedVariationId === id) {
+          openedVariationId = null;
+          openedVariationName = "";
+          workspaceDirty = chunks.length > 0;
+        }
+        await refreshSaved3dList();
+        setStatus("Saved 3D variation deleted. The current workspace and 2D simulation are unchanged.", "active");
+      } catch (err) {
+        setStatus(err && err.message ? err.message : "Could not delete the 3D variation.", "error");
+      }
+    }
+
+    function beginSave3d(mode) {
+      if (turntableBusy) return;
+      if (!chunks.length && mode !== "rename") {
+        setStatus("Place a 3D chunk before saving a variation.", "error");
+        return;
+      }
+      const store = saved3dStore();
+      const preset =
+        mode === "rename"
+          ? openedVariationName
+          : mode === "update"
+            ? openedVariationName
+            : mode === "asNew"
+              ? store
+                ? store.duplicateName(openedVariationName || "3D Variation")
+                : ""
+              : "";
+      openSave3dPanel(mode || "create", preset);
+    }
+
+    function submitSave3dPanel() {
+      const name = els.save3dName ? els.save3dName.value : "";
+      if (save3dMode === "rename") {
+        commitSaved3d({ renameOnly: true, name });
+        return;
+      }
+      if (save3dMode === "update") {
+        commitSaved3d({ asNew: false, name });
+        return;
+      }
+      commitSaved3d({ asNew: save3dMode === "asNew" || !openedVariationId, name });
+    }
+
     function reset3dControls() {
       setControl(els.posX, "0");
       setControl(els.posY, "0");
@@ -5606,6 +6382,9 @@
       setControl(els.scaleX, "1");
       setControl(els.scaleY, "1");
       setSlider(els.offset, els.offsetVal, 0, (v) => Number(v).toFixed(1));
+      setSlider(els.sectionSpacing, els.sectionSpacingVal, 4, (v) => Number(v).toFixed(1));
+      setSlider(els.morphStrength, els.morphStrengthVal, 30, (v) => `${Math.round(Number(v))}`);
+      setSlider(els.morphSmoothness, els.morphSmoothnessVal, 70, (v) => `${Math.round(Number(v))}`);
       setSlider(els.secScale, els.secScaleVal, 100, (v) => `${Math.round(Number(v))}%`);
       setSlider(els.secScaleX, els.secScaleXVal, 100, (v) => `${Math.round(Number(v))}%`);
       setSlider(els.secScaleY, els.secScaleYVal, 100, (v) => `${Math.round(Number(v))}%`);
@@ -5665,9 +6444,14 @@
       if (els.resetCancel) els.resetCancel.focus();
     }
 
-    function resetWorkspace() {
+    function resetWorkspace(options) {
       if (turntableBusy) return;
-      closeResetDialog();
+      const silent = !!(options && options.silent);
+      const keepSaved = !!(options && options.keepSaved);
+      const skipCamera = !!(options && options.skipCamera);
+      if (!silent) closeResetDialog();
+      closeSave3dPanel();
+      closeDelete3dDialog();
       selecting = false;
       draft = null;
       drag = null;
@@ -5702,7 +6486,7 @@
       loftDraftQueued = false;
       if (loftFinalTimer) clearTimeout(loftFinalTimer);
       loftFinalTimer = 0;
-      liveLoftOn = true;
+      liveLoftOn = false;
       liveVoxelsOn = false;
       displayLines = true;
       displaySolids = true;
@@ -5729,7 +6513,7 @@
         if (viewer.setEditAxis) viewer.setEditAxis("free");
       }
       setGizmoMode("translate");
-      setViewMode("perspective");
+      if (!skipCamera) setViewMode("perspective");
       updateSelectMode();
       refreshChunks();
       applyDisplayToggles();
@@ -5741,10 +6525,19 @@
       setLoftStatus("No loft yet.");
       setVoxelStatus("No voxel model yet.");
       drawPreview();
-      setStatus(
-        "3D Space cleared. The 2D simulation is unchanged. Select a region of the full 20 \u00d7 20 2D simulation to place that exact geometry in 3D.",
-        "active"
-      );
+      if (!keepSaved) {
+        openedVariationId = null;
+        openedVariationName = "";
+        workspaceDirty = false;
+        paintSaved3dButtons();
+        renderSaved3dList();
+      }
+      if (!silent) {
+        setStatus(
+          "3D Space cleared. The 2D simulation and saved 3D variations are unchanged. Select a region of the full 20 \u00d7 20 2D simulation to place that exact geometry in 3D.",
+          "active"
+        );
+      }
     }
 
     if (els.resetView) {
@@ -5754,10 +6547,36 @@
     }
     if (els.resetWorkspace) els.resetWorkspace.addEventListener("click", openResetDialog);
     if (els.resetCancel) els.resetCancel.addEventListener("click", closeResetDialog);
-    if (els.resetConfirm) els.resetConfirm.addEventListener("click", resetWorkspace);
+    if (els.resetConfirm) els.resetConfirm.addEventListener("click", () => resetWorkspace());
     if (els.resetDialog) {
       els.resetDialog.addEventListener("click", (event) => {
         if (event.target === els.resetDialog) closeResetDialog();
+      });
+    }
+    if (els.save3d) {
+      els.save3d.addEventListener("click", () => beginSave3d(openedVariationId ? "update" : "create"));
+    }
+    if (els.save3dUpdate) {
+      els.save3dUpdate.addEventListener("click", () => {
+        commitSaved3d({ asNew: false, name: openedVariationName });
+      });
+    }
+    if (els.save3dAs) els.save3dAs.addEventListener("click", () => beginSave3d("asNew"));
+    if (els.save3dConfirm) els.save3dConfirm.addEventListener("click", submitSave3dPanel);
+    if (els.save3dCancel) els.save3dCancel.addEventListener("click", closeSave3dPanel);
+    if (els.save3dName) {
+      els.save3dName.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          submitSave3dPanel();
+        }
+      });
+    }
+    if (els.delete3dCancel) els.delete3dCancel.addEventListener("click", closeDelete3dDialog);
+    if (els.delete3dConfirm) els.delete3dConfirm.addEventListener("click", confirmDeleteSaved3d);
+    if (els.delete3dDialog) {
+      els.delete3dDialog.addEventListener("click", (event) => {
+        if (event.target === els.delete3dDialog) closeDelete3dDialog();
       });
     }
 
@@ -5775,6 +6594,18 @@
           event.preventDefault();
           closeResetDialog();
         }
+        return;
+      }
+      if (els.delete3dDialog && !els.delete3dDialog.classList.contains("hidden")) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeDelete3dDialog();
+        }
+        return;
+      }
+      if (els.save3dPanel && !els.save3dPanel.classList.contains("hidden") && event.key === "Escape") {
+        event.preventDefault();
+        closeSave3dPanel();
         return;
       }
       if (!space3dTabActive() || isTypingTarget(event.target)) return;
@@ -5853,7 +6684,8 @@
     if (els.lineUndo) els.lineUndo.addEventListener("click", undoLineEdit);
     if (els.lineRedo) els.lineRedo.addEventListener("click", redoLineEdit);
     if (els.createLoft) els.createLoft.addEventListener("click", createLoftSet);
-    if (els.dupSection) els.dupSection.addEventListener("click", duplicateSection);
+    if (els.dupSection) els.dupSection.addEventListener("click", addMorphedSection);
+    if (els.remorph) els.remorph.addEventListener("click", remorphSelected);
     if (els.deleteSection) els.deleteSection.addEventListener("click", deleteSection);
     if (els.sectionUp) els.sectionUp.addEventListener("click", () => moveSection(-1));
     if (els.sectionDown) els.sectionDown.addEventListener("click", () => moveSection(1));
@@ -6113,6 +6945,7 @@
     refreshChunkUi();
     updateSelectMode();
     paintViewButtons();
+    refreshSaved3dList();
 
     return {
       show() {
@@ -6124,6 +6957,7 @@
         v.start();
         v.resize();
         refreshChunks();
+        refreshSaved3dList();
         if (!booted) {
           booted = true;
           setStatus("Select a region of the full 20 \u00d7 20 2D simulation to place that exact geometry in 3D.");
