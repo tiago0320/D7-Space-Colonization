@@ -333,7 +333,7 @@
 
       <div class="viewport" id="studioView">
         <canvas id="stage" aria-label="Space colonization growth canvas"></canvas>
-        <p class="view-hint">Scroll to zoom · Middle-drag to pan</p>
+        <p class="view-hint">Scroll to zoom · Right-drag or middle-drag to pan</p>
       </div>
 
       <div id="matrixView" class="matrix-view hidden" aria-label="Descriptor Matrix">
@@ -446,6 +446,31 @@
             <button id="space3dDeleteChunk" class="ghost" type="button" disabled>Delete Selected Chunk</button>
             <button id="space3dDuplicateChunk" class="ghost" type="button" disabled>Duplicate Chunk</button>
           </div>
+          <div class="section-head">Edit Lines</div>
+          <p class="grid-status">Select nodes and branch segments. Move, rotate, scale, or delete. The original 2D simulation is unchanged.</p>
+          <div class="row">
+            <button id="space3dEditLines" class="ghost" type="button" disabled>Edit Lines</button>
+          </div>
+          <div class="row">
+            <button id="space3dLineMove" class="ghost" type="button" disabled>Move</button>
+            <button id="space3dLineRotate" class="ghost" type="button" disabled>Rotate</button>
+            <button id="space3dLineScale" class="ghost" type="button" disabled>Scale</button>
+          </div>
+          <div class="row">
+            <button id="space3dAxisFree" class="ghost" type="button" disabled>Free</button>
+            <button id="space3dAxisX" class="ghost" type="button" disabled>X</button>
+            <button id="space3dAxisY" class="ghost" type="button" disabled>Y</button>
+            <button id="space3dAxisZ" class="ghost" type="button" disabled>Z</button>
+          </div>
+          <div class="row">
+            <button id="space3dMoveSegment" class="ghost" type="button" disabled>Move Segment</button>
+            <button id="space3dBoxSelect" class="ghost" type="button" disabled>Box Select</button>
+          </div>
+          <div class="row">
+            <button id="space3dDeleteLine" class="ghost" type="button" disabled>Delete Selected</button>
+            <button id="space3dLineUndo" class="ghost" type="button" disabled>Undo</button>
+            <button id="space3dLineRedo" class="ghost" type="button" disabled>Redo</button>
+          </div>
           <div class="section-head">Section Loft Set</div>
           <p class="grid-status">Same branch topology, independent section layers. Loft corresponding branches. Voids stay open.</p>
           <div class="row">
@@ -539,10 +564,12 @@
           </label>
           <div class="section-head">Loft Solids</div>
           <p class="grid-status">Loft corresponding branches only. Do not enclose the whole chunk.</p>
+          <p id="space3dLoftStatus" class="grid-status">No loft yet.</p>
           <div class="row">
             <button id="space3dGenerateLoft" class="primary" type="button" disabled>Generate Loft</button>
           </div>
           <div class="row">
+            <button id="space3dLiveLoft" class="primary" type="button">Live Loft</button>
             <button id="space3dRegenLoft" class="ghost" type="button" disabled>Regenerate Loft</button>
             <button id="space3dClearLoft" class="ghost" type="button" disabled>Clear Loft</button>
           </div>
@@ -567,12 +594,32 @@
             <input id="space3dLoftHierarchy" type="checkbox" />
             Use Branch Hierarchy
           </label>
+          <label class="ctrl" title="Fade the loft to compare it with voxels or source lines.">
+            Loft Opacity
+            <span class="value" id="space3dLoftOpacityVal">100%</span>
+            <input id="space3dLoftOpacity" type="range" min="10" max="100" step="1" value="100" />
+          </label>
           <div class="row">
             <button id="space3dSaveVar" class="ghost" type="button" disabled>Save Loft Variation</button>
             <button id="space3dDupVar" class="ghost" type="button" disabled>Duplicate Variation</button>
           </div>
           <ul id="space3dVarList" class="seed-list"></ul>
           <div class="section-head">Display</div>
+          <p class="grid-status">Independent representations of the same 20 × 20 × 20 field. Combine any of them.</p>
+          <div class="row">
+            <button id="space3dDispLines" class="primary" type="button">Lines</button>
+            <button id="space3dDispSolids" class="primary" type="button">Loft</button>
+            <button id="space3dDispVoxels" class="primary" type="button">Voxels</button>
+          </div>
+          <div class="row">
+            <button id="space3dSilhouette" class="ghost" type="button">Outline + Interior</button>
+          </div>
+          <p class="grid-status">Red outer contour from the current camera. Voxel edges stay black and readable inside the form.</p>
+          <label class="ctrl compact">
+            Outline Thickness
+            <span class="value" id="space3dSilhouetteThickVal">3</span>
+            <input id="space3dSilhouetteThick" type="range" min="1" max="8" step="1" value="3" />
+          </label>
           <label class="check">
             <input id="space3dShowSourceChunk" type="checkbox" checked />
             Show Source Chunk
@@ -588,6 +635,10 @@
           <label class="check">
             <input id="space3dShowLoftSolids" type="checkbox" checked />
             Show Loft Solids
+          </label>
+          <label class="check">
+            <input id="space3dShowVoxels" type="checkbox" checked />
+            Show Voxels
           </label>
           <div class="section-head">Transform</div>
           <p class="grid-status">Position in feet · scale 1.0 keeps original 2D size</p>
@@ -688,8 +739,167 @@
             <input id="space3dShowWireframe" type="checkbox" />
             Show Solid Wireframe
           </label>
+          <div class="section-head">Voxels</div>
+          <p class="grid-status">Adaptive small / medium / large voxels on one grid. Empty cells stay void.</p>
+          <div class="row">
+            <button id="space3dGenerateVoxels" class="primary" type="button" disabled>Generate Voxels</button>
+          </div>
+          <div class="row">
+            <button id="space3dLiveVoxels" class="ghost" type="button">Live Voxels</button>
+            <button id="space3dRegenVoxels" class="ghost" type="button" disabled>Regenerate Voxels</button>
+            <button id="space3dClearVoxels" class="ghost" type="button" disabled>Clear Voxels</button>
+          </div>
+          <p id="space3dVoxelStatus" class="grid-status">No voxel model yet.</p>
+          <p id="space3dVoxelStats" class="grid-status">Small: 0 · Medium: 0 · Large: 0 · Total: 0 · Connected: 0 · Isolated: 0</p>
+          <label class="ctrl compact" title="Number of smallest cells across the 20' cube. Medium = 2×, Large = 3×.">
+            Voxel Resolution
+            <select id="space3dVoxelRes">
+              <option value="10">10 · Low</option>
+              <option value="20" selected>20 · Medium</option>
+              <option value="30">30 · High</option>
+              <option value="40">40 · Very High</option>
+            </select>
+          </label>
+          <label class="ctrl" title="How closely larger voxels must match the loft. High keeps more small cells.">
+            Voxel Fidelity
+            <span class="value" id="space3dVoxelFidelityVal">75%</span>
+            <input id="space3dVoxelFidelity" type="range" min="0" max="100" step="1" value="75" />
+          </label>
+          <label class="ctrl compact">
+            Voxel Source
+            <select id="space3dVoxelSource">
+              <option value="loft" selected>Lofted Solid</option>
+              <option value="lines">Branch Lines</option>
+              <option value="solids">Generated Solids</option>
+            </select>
+          </label>
+          <label class="ctrl compact">
+            Voxelize
+            <select id="space3dVoxelTarget">
+              <option value="selected" selected>Selected Chunk</option>
+              <option value="visible">Visible Geometry</option>
+            </select>
+          </label>
+          <label class="ctrl" title="Fade voxels to inspect voids between occupied cells.">
+            Voxel Opacity
+            <span class="value" id="space3dVoxelOpacityVal">100%</span>
+            <input id="space3dVoxelOpacity" type="range" min="10" max="100" step="1" value="100" />
+          </label>
+          <label class="check" title="Tint small, medium, and large voxels with related tones.">
+            <input id="space3dVoxelColorBySize" type="checkbox" />
+            Color by Voxel Size
+          </label>
+          <label class="check" title="Thin edge lines only. Cube sizes stay exact and touching.">
+            <input id="space3dVoxelEdges" type="checkbox" checked />
+            Show Voxel Edges
+          </label>
+          <div class="section-head">3D Export</div>
+          <p class="grid-status">OBJ is a mesh. 3DM is a Rhino Brep / polysurface. Coordinates stay in feet.</p>
+          <p id="space3dExportStatus" class="grid-status">Generate a loft or voxels to export.</p>
+          <div class="row">
+            <button id="space3dExportLoftObj" class="ghost" type="button" disabled>Export Loft Mesh (.OBJ)</button>
+            <button id="space3dExportLoft3dm" class="ghost" type="button" disabled>Export Loft Polysurface (.3DM)</button>
+          </div>
+          <div class="row">
+            <button id="space3dExportVoxelsObj" class="ghost" type="button" disabled>Export Voxel Mesh (.OBJ)</button>
+            <button id="space3dExportVoxels3dm" class="ghost" type="button" disabled>Export Voxel Polysurface (.3DM)</button>
+          </div>
+          <p class="grid-status">PNG captures the current 3D view only. Editing helpers and UI are not included.</p>
+          <label class="ctrl compact">
+            PNG Resolution
+            <select id="space3dPngRes">
+              <option value="1920">1920 × 1920</option>
+              <option value="3000" selected>3000 × 3000</option>
+              <option value="4000">4000 × 4000</option>
+            </select>
+          </label>
+          <label class="ctrl compact">
+            PNG Background
+            <select id="space3dPngBg">
+              <option value="current" selected>Current Background</option>
+              <option value="transparent">Transparent</option>
+            </select>
+          </label>
+          <div class="row">
+            <button id="space3dExportPng" class="ghost" type="button">Save PNG</button>
+          </div>
+          <div class="section-head">360 Turntable</div>
+          <p class="grid-status">Fixed camera. The 20 × 20 × 20 volume fills the frame. The box itself is hidden.</p>
+          <label class="ctrl compact">
+            Duration
+            <select id="space3dTurnDur">
+              <option value="5">5 seconds</option>
+              <option value="8">8 seconds</option>
+              <option value="10" selected>10 seconds</option>
+              <option value="15">15 seconds</option>
+              <option value="20">20 seconds</option>
+            </select>
+          </label>
+          <label class="ctrl compact">
+            FPS
+            <select id="space3dTurnFps">
+              <option value="24">24</option>
+              <option value="30" selected>30</option>
+              <option value="60">60</option>
+            </select>
+          </label>
+          <label class="ctrl compact">
+            Video Resolution
+            <select id="space3dTurnRes">
+              <option value="1280">1280 × 1280</option>
+              <option value="1920" selected>1920 × 1920</option>
+              <option value="2560">2560 × 2560</option>
+            </select>
+          </label>
+          <label class="ctrl compact">
+            Direction
+            <select id="space3dTurnDir">
+              <option value="cw" selected>Clockwise</option>
+              <option value="ccw">Counterclockwise</option>
+            </select>
+          </label>
+          <label class="ctrl compact">
+            Rotation Center
+            <select id="space3dTurnPivot">
+              <option value="model" selected>Model Center</option>
+              <option value="workspace">Workspace Center</option>
+            </select>
+          </label>
+          <label class="ctrl compact">
+            Video Background
+            <select id="space3dTurnBg">
+              <option value="current" selected>Current Background</option>
+              <option value="transparent" disabled>Transparent (not in MP4)</option>
+            </select>
+          </label>
+          <p id="space3dTurnStatus" class="grid-status">Preview the 360°, then Export MP4.</p>
+          <div class="row">
+            <button id="space3dTurnPreview" class="ghost" type="button">Preview</button>
+            <button id="space3dTurnStop" class="ghost" type="button" disabled>Stop</button>
+          </div>
+          <div class="row">
+            <button id="space3dTurnExport" class="primary" type="button">Export MP4</button>
+          </div>
+          <div class="space3d-workspace">
+            <div class="section-head">Workspace</div>
+            <p class="grid-status">Clears the current 3D study only. The original 2D simulation and saved work stay intact.</p>
+            <div class="row">
+              <button id="space3dResetWorkspace" class="ghost space3d-reset-workspace" type="button">Reset 3D Space</button>
+            </div>
+          </div>
         </aside>
         <div class="space3d-main">
+          <div class="space3d-viewport-bar" role="group" aria-label="Camera view">
+            <button type="button" class="ghost space3d-view-btn" data-view="isometric" title="Isometric view. Pan and zoom only.">ISO</button>
+            <button type="button" class="ghost space3d-view-btn" data-view="front" title="Front view">FRONT</button>
+            <button type="button" class="ghost space3d-view-btn" data-view="back" title="Back view">BACK</button>
+            <button type="button" class="ghost space3d-view-btn" data-view="left" title="Left view">LEFT</button>
+            <button type="button" class="ghost space3d-view-btn" data-view="right" title="Right view">RIGHT</button>
+            <button type="button" class="ghost space3d-view-btn" data-view="top" title="Top view">TOP</button>
+            <button type="button" class="ghost space3d-view-btn" data-view="bottom" title="Bottom view">BOTTOM</button>
+            <button type="button" class="ghost space3d-view-btn active" data-view="perspective" title="Perspective view">PERSP</button>
+            <span id="space3dEditBadge" class="space3d-edit-badge" hidden>Edit Lines</span>
+          </div>
           <div id="space3dStage" class="space3d-stage"></div>
           <div class="space3d-preview" id="space3dPreviewWrap" aria-label="2D Reference">
             <span class="space3d-preview-label">2D Reference · 20 × 20</span>
@@ -699,7 +909,25 @@
             </div>
             <p id="space3dPreviewSize" class="space3d-chunk-size">Selected Area: —</p>
           </div>
-          <p class="view-hint">Left-drag orbit · Right-drag pan · Scroll zoom</p>
+          <p class="view-hint" id="space3dViewHint">Left-drag orbit · Right-drag pan · Scroll zoom</p>
+        </div>
+        <div id="space3dResetDialog" class="space3d-reset-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="space3dResetTitle">
+          <div class="space3d-reset-dialog-card">
+            <h2 id="space3dResetTitle">Reset 3D Space?</h2>
+            <p>This will delete all chunks, sections, lofts, voxels, and edits from the current 3D workspace. Your original 2D simulation and saved simulations will not be affected.</p>
+            <div class="row">
+              <button id="space3dResetCancel" class="ghost" type="button">Cancel</button>
+              <button id="space3dResetConfirm" class="ghost space3d-reset-confirm" type="button">Reset 3D Space</button>
+            </div>
+          </div>
+        </div>
+        <div id="space3dTurnOverlay" class="space3d-turntable-overlay hidden" role="status" aria-live="polite">
+          <div class="space3d-turntable-card">
+            <p id="space3dTurnProgressTitle">Rendering 360 Video</p>
+            <p id="space3dTurnProgressDetail">0 / 0 frames</p>
+            <div class="space3d-turntable-bar"><span id="space3dTurnBar"></span></div>
+            <button id="space3dTurnCancel" class="ghost" type="button">Cancel</button>
+          </div>
         </div>
       </div>
     </div>
@@ -710,12 +938,16 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/rhino3dm@8.17.0/rhino3dm.min.js"></script>
     <script src="algorithm.js"></script>
     <script src="saved-simulations-store.js"></script>
     <script src="saved-matrices-store.js"></script>
     <script src="descriptor-matrix.js"></script>
     <script src="spatial-mass.js"></script>
     <script src="spatial-loft.js"></script>
+    <script src="spatial-voxels.js"></script>
+    <script src="spatial-export.js"></script>
+    <script src="spatial-turntable.js"></script>
     <script src="spatial-3d.js"></script>
     <script src="app.js"></script>
   </body>

@@ -9,6 +9,10 @@ Studio web app for growing path-constrained space-colonization branches on impor
 - **3D Space**: clip a 2D chunk of grown branches, place it in a 20' × 20' × 20' cube, then transform it with Move / Rotate / Scale gizmos
 - **Branch Solids**: loft rectangular solids along the selected 2D branches; space between branches stays void
 - **Section Loft Set**: duplicate a chunk as editable section layers, deform each layer, and loft corresponding branches into 3D solids
+- **Adaptive voxels**: one connected field of Small / Medium / Large cubes derived from the current loft
+- **3D Export**: download the current loft or voxels as an OBJ mesh or a Rhino `.3dm` Brep / closed polysurface
+- **360 Turntable**: preview and export a real H.264 MP4 of the current 3D study rotating 360° with a fixed camera
+- **Outline + Interior**: red outer contour from the current camera, with black voxel edges still readable inside the form
 - Display controls for grid opacity, attractor size/color, branch thickness, and branch hierarchy colors
 - Save simulations locally (Lobby, Workspace, Gathering) with IndexedDB
 - Export camera-independent PNG (with optional restore metadata) and SVG
@@ -30,8 +34,11 @@ Then visit http://localhost:8000
 
 - **Studio**: Upload a grid, add roots, press Grow, then save or export
 - Scroll to zoom, middle-drag to pan
-- **3D Space** (tab): **Select 2D Chunk**, draw on the 2D Reference, **Confirm Selection**, then transform the chunk in the cube
+- **3D Space** (tab): **Select 2D Chunk**, draw on the 2D Reference, **Confirm Selection**, then transform the chunk in the cube. Use **ISO / FRONT / PERSP** views, **Save PNG**, **Outline + Interior**, and **Reset 3D Space** (2D work is kept)
 - **Section Loft**: with a chunk selected, **Create Loft Set**, **Duplicate Section**, shape layers, then **Generate Loft**
+- **Voxels**: **Generate Voxels** from the loft; **Voxel Resolution** sets the smallest cell count across 20'; **Voxel Fidelity** controls how readily larger cubes replace small ones
+- **360 Turntable**: set the view, **Preview**, then **Export MP4**. The camera stays fixed; the study rotates 360°. The 20' cube frames the video and is hidden in the recording
+- **3D Export**: after a loft or voxels exist, **Export Loft/Voxel Mesh (.OBJ)** or **Export Loft/Voxel Polysurface (.3DM)** (units stay in feet)
 - **Branch Solids**: with a chunk selected, **Generate Branch Solids** to loft along the 2D network without enclosing voids
 - **Repulsion Geometry**: draw rectangles, circles, or polygons; switch Hard Boundary vs Repulsion
 - **Saved Simulations**: name a layout and store it in this browser only

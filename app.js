@@ -5492,30 +5492,51 @@
     obs.h = Math.max(8, Math.abs(maxY - minY));
   }
 
+  let spacePan = false;
+  let suppressContextMenu = false;
+
+  function beginCanvasPan(event) {
+    event.preventDefault();
+    canvas.classList.add("pan-mode");
+    captureCanvasPointer(event);
+    canvas._pan = {
+      ox: event.clientX,
+      oy: event.clientY,
+      vx: view.x,
+      vy: view.y,
+      moved: false,
+    };
+  }
+
+  function isCanvasPanEvent(event) {
+    return event.button === 1 || event.button === 2 || (event.button === 0 && spacePan);
+  }
+
   canvas.addEventListener(
     "wheel",
     (event) => {
       event.preventDefault();
+      if (event.ctrlKey) {
+        zoomAt(event.clientX, event.clientY, event.deltaY > 0 ? 0.9 : 1.1);
+        return;
+      }
+      if (Math.abs(event.deltaX) > 0.01 || event.shiftKey) {
+        view.x -= event.deltaX;
+        view.y -= event.deltaY;
+        return;
+      }
       zoomAt(event.clientX, event.clientY, event.deltaY > 0 ? 0.9 : 1.1);
     },
     { passive: false }
   );
 
   canvas.addEventListener("auxclick", (event) => {
-    if (event.button === 1) event.preventDefault();
+    if (event.button === 1 || event.button === 2) event.preventDefault();
   });
 
   canvas.addEventListener("pointerdown", (event) => {
-    if (event.button === 1) {
-      event.preventDefault();
-      canvas.classList.add("pan-mode");
-      captureCanvasPointer(event);
-      canvas._pan = {
-        ox: event.clientX,
-        oy: event.clientY,
-        vx: view.x,
-        vy: view.y,
-      };
+    if (isCanvasPanEvent(event)) {
+      beginCanvasPan(event);
       return;
     }
     if (event.button !== 0) return;
@@ -5594,8 +5615,11 @@
 
   function onCanvasPointerMove(event) {
     if (canvas._pan) {
-      view.x = canvas._pan.vx + (event.clientX - canvas._pan.ox);
-      view.y = canvas._pan.vy + (event.clientY - canvas._pan.oy);
+      const dx = event.clientX - canvas._pan.ox;
+      const dy = event.clientY - canvas._pan.oy;
+      if (Math.hypot(dx, dy) >= 3) canvas._pan.moved = true;
+      view.x = canvas._pan.vx + dx;
+      view.y = canvas._pan.vy + dy;
       return;
     }
     const point = canvasPoint(event);
@@ -5668,9 +5692,10 @@
 
   function onCanvasPointerUp(event) {
     if (canvas._pan) {
+      if (canvas._pan.moved) suppressContextMenu = true;
       canvas._pan = null;
-      canvas.classList.remove("pan-mode");
-      if (event.button === 1 || !canvas._drag) return;
+      if (!spacePan) canvas.classList.remove("pan-mode");
+      if (event.button === 1 || event.button === 2 || !canvas._drag) return;
     }
     const drag = canvas._drag;
     canvas._drag = null;
@@ -5764,6 +5789,10 @@
 
   canvas.addEventListener("contextmenu", (event) => {
     event.preventDefault();
+    if (suppressContextMenu) {
+      suppressContextMenu = false;
+      return;
+    }
     if (interactionMode === "draw" && obstacleDraft) {
       obstacleDraft = null;
       updateObstacleUI();
@@ -5789,6 +5818,12 @@
 
   window.addEventListener("keydown", (event) => {
     if (isTypingTarget(event.target)) return;
+    if (event.code === "Space" && appPage === "studio") {
+      event.preventDefault();
+      spacePan = true;
+      canvas.classList.add("pan-mode");
+      return;
+    }
     if (event.key === "Escape") {
       if (obstacleDraft) {
         obstacleDraft = null;
@@ -5815,6 +5850,16 @@
         deleteSelectedRoot();
       }
     }
+  });
+
+  window.addEventListener("keyup", (event) => {
+    if (event.code !== "Space") return;
+    spacePan = false;
+    if (!canvas._pan) canvas.classList.remove("pan-mode");
+  });
+  window.addEventListener("blur", () => {
+    spacePan = false;
+    if (!canvas._pan) canvas.classList.remove("pan-mode");
   });
 
   window.addEventListener("resize", resize);

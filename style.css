@@ -903,6 +903,61 @@ label.ctrl.save-sim-name input[type="text"] {
   margin-bottom: 8px;
 }
 
+.space3d-viewport-bar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(17, 17, 17, 0.92);
+  border-bottom: 1px solid var(--line);
+  z-index: 3;
+  pointer-events: auto;
+}
+
+.space3d-viewport-bar .space3d-view-btn {
+  flex: 0 0 auto;
+  min-width: 2.6rem;
+  padding: 5px 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  border-radius: 2px;
+}
+
+.space3d-viewport-bar .space3d-view-btn.active {
+  border-color: var(--gold);
+  color: var(--text);
+  background: var(--elevated);
+}
+
+.space3d-view.is-edit-lines .space3d-viewport-bar {
+  border-bottom-color: var(--gold);
+}
+
+.space3d-edit-badge {
+  margin-left: auto;
+  padding: 3px 8px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #111;
+  background: var(--gold);
+  border-radius: 2px;
+}
+
+.space3d-box-select {
+  display: none;
+  position: absolute;
+  border: 1px solid rgba(232, 213, 163, 0.95);
+  background: rgba(232, 213, 163, 0.12);
+  pointer-events: none;
+  z-index: 5;
+}
+
 .space3d-xyz {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -1030,6 +1085,128 @@ label.ctrl.save-sim-name input[type="text"] {
 
 #space3dSectionList li.selected span,
 #space3dVarList li.selected span {
+  color: var(--text);
+}
+
+.space3d-workspace {
+  margin-top: 28px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+}
+
+.space3d-workspace .section-head {
+  color: var(--muted);
+}
+
+.space3d-reset-workspace {
+  width: 100%;
+  border-color: #4a4844;
+  color: #b8b4ac;
+}
+
+.space3d-reset-workspace:hover {
+  border-color: #8a8680;
+  color: var(--text);
+}
+
+.space3d-turntable-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  pointer-events: auto;
+}
+
+.space3d-turntable-card {
+  width: min(22rem, calc(100% - 36px));
+  padding: 16px 16px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.space3d-turntable-card p {
+  margin: 0 0 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+#space3dTurnProgressDetail {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.space3d-turntable-bar {
+  height: 4px;
+  margin: 8px 0 12px;
+  background: #222;
+  overflow: hidden;
+}
+
+.space3d-turntable-bar span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: #e8d5a3;
+}
+
+.space3d-turntable-card .ghost {
+  width: 100%;
+}
+
+.space3d-view.is-turntable-busy .space3d-hud,
+.space3d-view.is-turntable-busy .space3d-main {
+  pointer-events: none;
+}
+
+.space3d-reset-dialog {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.68);
+  pointer-events: auto;
+}
+
+.space3d-reset-dialog-card {
+  width: min(28rem, calc(100% - 36px));
+  padding: 18px 18px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.space3d-reset-dialog-card h2 {
+  margin: 0 0 10px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.space3d-reset-dialog-card p {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.space3d-reset-dialog-card .row {
+  margin-bottom: 0;
+  justify-content: flex-end;
+}
+
+.space3d-reset-confirm {
+  border-color: #8a8680;
   color: var(--text);
 }
 

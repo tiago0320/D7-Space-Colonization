@@ -58,6 +58,7 @@
       id: node.id != null ? node.id : i,
       x: node.x,
       y: node.y,
+      z: node.z || 0,
       parentIndex: node.parentIndex,
       order: node.order || 1,
       thickness: node.thickness,
@@ -65,21 +66,24 @@
     }));
     const segments = [];
     const seen = new Set();
-    function addSeg(a, b, order, thickness, rootId) {
+    function addSeg(a, b, order, thickness, rootId, id) {
       if (a == null || b == null || a < 0 || b < 0 || a === b) return;
       const key = a < b ? `${a}:${b}` : `${b}:${a}`;
       if (seen.has(key)) return;
       seen.add(key);
       segments.push({
+        id: id || `${a}:${b}`,
         a,
         b,
+        startNodeId: a,
+        endNodeId: b,
         order: order || 1,
         thickness,
         rootId,
       });
     }
     if (chunk.segments && chunk.segments.length) {
-      for (const seg of chunk.segments) addSeg(seg.a, seg.b, seg.order, seg.thickness, seg.rootId);
+      for (const seg of chunk.segments) addSeg(seg.a, seg.b, seg.order, seg.thickness, seg.rootId, seg.id);
     } else {
       for (let i = 0; i < nodes.length; i++) {
         addSeg(nodes[i].parentIndex, i, nodes[i].order, nodes[i].thickness, nodes[i].rootId);
@@ -110,7 +114,7 @@
       let py = node.y - cy + shy;
       const rx = px * c - py * sn;
       const ry = px * sn + py * c;
-      return { id: node.id, x: cx + rx * sx, y: cy + ry * sy };
+      return { id: node.id, x: cx + rx * sx, y: cy + ry * sy, z: node.z || 0 };
     });
   }
 
@@ -183,7 +187,7 @@
     const tmp = [0, 0, 0];
     const nodes = {};
     for (const node of local) {
-      applyMat4(e, node.x, node.y, 0, tmp);
+      applyMat4(e, node.x, node.y, node.z || 0, tmp);
       nodes[node.id] = { x: tmp[0], y: tmp[1], z: tmp[2] };
     }
     const xAxis = new THREE.Vector3(1, 0, 0).transformDirection(matrix).normalize();
@@ -213,16 +217,17 @@
     return { nodes, xAxis, yAxis, zAxis };
   }
 
-  function samplePath(THREE, sections, width, height, style) {
+  function samplePath(THREE, sections, width, height, style, extraSteps) {
     const evaluated = sections.map((section) => evaluateSection(THREE, section, width, height));
-    if (evaluated.length < 2 || style !== "smooth") return evaluated;
+    const steps =
+      extraSteps != null ? extraSteps : style === "smooth" ? 2 : 0;
+    if (evaluated.length < 2 || steps < 1) return evaluated;
     const out = [];
-    const steps = 2;
     for (let i = 0; i < evaluated.length - 1; i++) {
       const a = evaluated[i];
       const b = evaluated[i + 1];
       for (let k = i === 0 ? 0 : 1; k <= steps; k++) {
-        out.push(lerpEval(a, b, smoothstep(k / steps)));
+        out.push(lerpEval(a, b, style === "smooth" ? smoothstep(k / steps) : k / steps));
       }
     }
     return out;
@@ -371,11 +376,21 @@
     }
   }
 
-  function generate(THREE, loftSet, params) {
+  function stitchBoxRun(positions, normals, boxes) {
+    if (!boxes || boxes.length < 2) return false;
+    for (let i = 0; i < boxes.length - 1; i++) {
+      stitchPrism(positions, normals, boxes[i], boxes[i + 1], i === 0, i === boxes.length - 2);
+    }
+    return true;
+  }
+
+  function collectBarRuns(THREE, loftSet, params) {
+    params = params || {};
+    const empty = { ok: false, runs: [], capsules: [], skipped: 0, samples: [] };
     const sections = (loftSet && loftSet.sections) || [];
     const topology = loftSet && loftSet.topology;
     if (!THREE || sections.length < 2 || !topology || !topology.segments || !topology.segments.length) {
-      return { positions: [], normals: [], vertexCount: 0, triangleCount: 0, clipped: false, outside: 0 };
+      return empty;
     }
     const width = loftSet.width;
     const height = loftSet.height;
@@ -383,28 +398,94 @@
     const halfW0 = 0.04 + clamp(params.width, 0, 1) * 0.42;
     const halfT0 = 0.03 + clamp(params.thickness, 0, 1) * 0.38;
     const useHierarchy = !!params.useHierarchy;
-    const samples = samplePath(THREE, sections, width, height, style);
-    if (samples.length < 2) {
-      return { positions: [], normals: [], vertexCount: 0, triangleCount: 0, clipped: false, outside: 0 };
-    }
+    const extraSteps = params.draft ? 0 : params.steps != null ? params.steps : style === "smooth" ? 2 : 0;
+    const samples = samplePath(THREE, sections, width, height, style, extraSteps);
+    if (samples.length < 2) return empty;
 
-    const positions = [];
-    const normals = [];
+    const runs = [];
+    const capsules = [];
+    let skipped = 0;
 
     for (const seg of topology.segments) {
       const hw = halfW0 * orderScale(seg.order, useHierarchy);
       const ht = halfT0 * orderScale(seg.order, useHierarchy);
-      const boxes = [];
+      const radius = Math.max(hw, ht);
+      const ia = seg.a != null ? seg.a : seg.startNodeId;
+      const ib = seg.b != null ? seg.b : seg.endNodeId;
+      let boxes = [];
+      let formed = false;
+      let prevA = null;
+      let prevB = null;
+      function flush() {
+        if (boxes.length >= 2) {
+          runs.push({ boxes: boxes.slice(), hw, ht });
+          formed = true;
+        }
+        boxes = [];
+        prevA = null;
+        prevB = null;
+      }
       for (const sample of samples) {
-        const A = sample.nodes[seg.a];
-        const B = sample.nodes[seg.b];
-        if (!A || !B) continue;
-        if (Math.hypot(B.x - A.x, B.y - A.y, B.z - A.z) < 1e-4) continue;
+        const A = sample.nodes[ia];
+        const B = sample.nodes[ib];
+        if (!A || !B) {
+          flush();
+          continue;
+        }
+        if (Math.hypot(B.x - A.x, B.y - A.y, B.z - A.z) < 1e-4) {
+          flush();
+          continue;
+        }
         boxes.push(barCorners(A, B, sample.zAxis, hw, ht));
+        capsules.push({
+          ax: A.x,
+          ay: A.y,
+          az: A.z,
+          bx: B.x,
+          by: B.y,
+          bz: B.z,
+          radius,
+        });
+        if (prevA && prevB) {
+          capsules.push({
+            ax: prevA.x,
+            ay: prevA.y,
+            az: prevA.z,
+            bx: A.x,
+            by: A.y,
+            bz: A.z,
+            radius,
+          });
+          capsules.push({
+            ax: prevB.x,
+            ay: prevB.y,
+            az: prevB.z,
+            bx: B.x,
+            by: B.y,
+            bz: B.z,
+            radius,
+          });
+        }
+        prevA = A;
+        prevB = B;
       }
-      for (let i = 0; i < boxes.length - 1; i++) {
-        stitchPrism(positions, normals, boxes[i], boxes[i + 1], i === 0, i === boxes.length - 2);
-      }
+      flush();
+      if (!formed) skipped += 1;
+    }
+
+    return { ok: true, runs, capsules, skipped, samples, draft: !!params.draft };
+  }
+
+  function generate(THREE, loftSet, params) {
+    const collected = collectBarRuns(THREE, loftSet, params);
+    if (!collected.ok) {
+      return { positions: [], normals: [], vertexCount: 0, triangleCount: 0, clipped: false, outside: 0, skipped: 0 };
+    }
+
+    const positions = [];
+    const normals = [];
+    for (const run of collected.runs) {
+      stitchBoxRun(positions, normals, run.boxes);
     }
 
     const outside = clipPositions(positions);
@@ -412,11 +493,20 @@
     return {
       positions,
       normals,
+      capsules: collected.capsules,
       vertexCount: positions.length / 3,
       triangleCount: positions.length / 9,
       clipped: outside > 0,
       outside,
+      skipped: collected.skipped,
+      draft: collected.draft,
     };
+  }
+
+  function generateSolidRuns(THREE, loftSet, params) {
+    const collected = collectBarRuns(THREE, loftSet, params);
+    if (!collected.ok) return { runs: [], skipped: 0 };
+    return { runs: collected.runs, skipped: collected.skipped };
   }
 
   global.D7SpatialLoft = {
@@ -429,6 +519,8 @@
     sectionMatrix,
     sectionPlacement,
     evaluateSection,
+    samplePath,
     generate,
+    generateSolidRuns,
   };
 })(window);
