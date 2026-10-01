@@ -155,6 +155,38 @@
     return segs;
   }
 
+  function worldSegmentsFromLoftSet(THREE, loftSet) {
+    const lib = global.D7SpatialLoft;
+    if (!THREE || !loftSet || !lib || typeof lib.evaluateSection !== "function") return [];
+    const segs = [];
+    const topology = loftSet.topology || {};
+    const topoSegs = topology.segments || [];
+    const sections = loftSet.sections || [];
+    for (let s = 0; s < sections.length; s++) {
+      const evaluated = lib.evaluateSection(THREE, sections[s], loftSet.width, loftSet.height);
+      const nodes = evaluated && evaluated.nodes;
+      if (!nodes) continue;
+      for (let i = 0; i < topoSegs.length; i++) {
+        const seg = topoSegs[i];
+        const ia = seg.a != null ? seg.a : seg.startNodeId;
+        const ib = seg.b != null ? seg.b : seg.endNodeId;
+        const A = nodes[ia];
+        const B = nodes[ib];
+        if (!A || !B) continue;
+        segs.push({
+          ax: A.x,
+          ay: A.y,
+          az: A.z,
+          bx: B.x,
+          by: B.y,
+          bz: B.z,
+          order: seg.order || 1,
+        });
+      }
+    }
+    return segs;
+  }
+
   function collectCells(occupied, resolution) {
     const cell = CUBE / resolution;
     const cells = [];
@@ -178,11 +210,11 @@
     return cells;
   }
 
-  function voxelizeSegments(segments, resolution, width, useHierarchy) {
+  function voxelizeSegments(segments, resolution, width, useHierarchy, occupied) {
     const res = clampRes(resolution);
     const cell = CUBE / res;
-    const occupied = new Uint8Array(res * res * res);
-    const baseR = cell * 0.22 + 0.1 + clamp(width, 0, 1) * 1.05;
+    const occ = occupied || new Uint8Array(res * res * res);
+    const baseR = Math.max(cell * 0.72, cell * 0.22 + 0.1 + clamp(width, 0, 1) * 1.05);
     let marked = 0;
     for (let s = 0; s < segments.length; s++) {
       const seg = segments[s];
@@ -207,17 +239,18 @@
           const cy = (iy + 0.5) * cell;
           for (let ix = i0; ix <= i1; ix++) {
             const idx = ix + iy * res + iz * res * res;
-            if (occupied[idx]) continue;
+            if (occ[idx]) continue;
             const cx = (ix + 0.5) * cell;
             if (distPointSeg2(cx, cy, cz, seg.ax, seg.ay, seg.az, seg.bx, seg.by, seg.bz) <= r2) {
-              occupied[idx] = 1;
+              occ[idx] = 1;
               marked += 1;
             }
           }
         }
       }
     }
-    return { occupied, marked, resolution: res, cell };
+    if (occupied) return { occupied: occ, marked: countOccupied(occ), resolution: res, cell };
+    return { occupied: occ, marked, resolution: res, cell };
   }
 
   function countOccupied(occupied) {
@@ -671,24 +704,11 @@
 
   function finalizeVoxels(voxels, res) {
     if (!voxels.length) return { voxels: [], components: 0, isolatedCount: 0 };
-    const first = connectedGroups(voxels, res);
-    let working = voxels;
-    if (voxels.length > 1 && countIsolated(first.adj)) {
-      working = [];
-      for (let i = 0; i < voxels.length; i++) {
-        if (first.adj[i].length) working.push(voxels[i]);
-      }
-    }
-    if (!working.length) return { voxels: [], components: 0, isolatedCount: 0 };
-    const second = connectedGroups(working, res);
-    const best = second.groups[0] || [];
-    const final = [];
-    for (let i = 0; i < best.length; i++) final.push(working[best[i]]);
-    const third = connectedGroups(final, res);
+    const graph = connectedGroups(voxels, res);
     return {
-      voxels: final,
-      components: third.groups.length,
-      isolatedCount: countIsolated(third.adj),
+      voxels: voxels.slice(),
+      components: graph.groups.length,
+      isolatedCount: countIsolated(graph.adj),
     };
   }
 
@@ -758,8 +778,7 @@
       if (!blockTouchesVoxels(b.ix, b.iy, b.iz, span, voxels)) continue;
       const snapshot = voxels.slice();
       replaceCovered(voxels, b.ix, b.iy, b.iz, span, cell, res);
-      const graph = connectedGroups(voxels, res);
-      if (graph.groups.length !== 1 || countIsolated(graph.adj) || !countSize(voxels, span)) {
+      if (!countSize(voxels, span)) {
         restoreVoxels(voxels, snapshot);
         continue;
       }
@@ -1025,26 +1044,28 @@
           ? "solids"
           : "lines";
     let packed;
+    const width = params.width != null ? params.width : 0.28;
+    const useHierarchy = !!params.useHierarchy;
     if (source === "loft") {
       packed = voxelizeGeometries(params.geometries || [], resolution);
       if (params.capsules && params.capsules.length) {
         voxelizeCapsules(params.capsules, resolution, packed.occupied);
-        packed.marked = countOccupied(packed.occupied);
       }
+      if (params.segments && params.segments.length) {
+        voxelizeSegments(params.segments, resolution, width, useHierarchy, packed.occupied);
+      }
+      packed.marked = countOccupied(packed.occupied);
     } else if (source === "solids") {
       packed = voxelizeGeometries(params.geometries || [], resolution);
+      if (params.segments && params.segments.length) {
+        voxelizeSegments(params.segments, resolution, width, useHierarchy, packed.occupied);
+      }
+      packed.marked = countOccupied(packed.occupied);
     } else {
-      packed = voxelizeSegments(
-        params.segments || [],
-        resolution,
-        params.width != null ? params.width : 0.28,
-        !!params.useHierarchy
-      );
+      packed = voxelizeSegments(params.segments || [], resolution, width, useHierarchy);
     }
     reconnectCloseIslands(packed.occupied, packed.resolution);
-    const main = keepLargestComponent(packed.occupied, packed.resolution);
-    packed.occupied = main.occupied;
-    packed.marked = main.marked;
+    packed.marked = countOccupied(packed.occupied);
     const fidelity = params && params.fidelity != null ? Number(params.fidelity) : 0.75;
     const adapted = adaptMultiSize(packed.occupied, packed.resolution, cell, fidelity);
     const cells = adapted.voxels.length ? adapted.voxels : collectCells(packed.occupied, packed.resolution);
@@ -1070,6 +1091,7 @@
     clampRes,
     cellSize,
     worldSegmentsFromChunk,
+    worldSegmentsFromLoftSet,
     generate,
     voxelsFaceTouch,
   };

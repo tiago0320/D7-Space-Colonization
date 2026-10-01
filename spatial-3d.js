@@ -5430,6 +5430,18 @@
       let segments = [];
       let geometries = [];
       let capsules = [];
+      function collectLineSegments(loftList) {
+        const out = [];
+        if (lib.worldSegmentsFromLoftSet && loftList && loftList.length) {
+          for (let i = 0; i < loftList.length; i++) {
+            out.push.apply(out, lib.worldSegmentsFromLoftSet(global.THREE, loftList[i]));
+          }
+        }
+        for (let i = 0; i < targets.length; i++) {
+          out.push.apply(out, lib.worldSegmentsFromChunk(global.THREE, targets[i]));
+        }
+        return out;
+      }
       if (source === "loft") {
         if (!hasExistingLoft()) {
           if (!silent) setStatus("Generate a loft before voxelizing the lofted solid.", "error");
@@ -5438,6 +5450,13 @@
         const geom = viewer.getLoftGeometry ? viewer.getLoftGeometry() : null;
         if (geom) geometries.push(geom);
         capsules = loftCapsules || [];
+        const loftList =
+          els.voxelTarget && els.voxelTarget.value === "visible"
+            ? loftSets.slice()
+            : selectedLoft()
+              ? [selectedLoft()]
+              : loftSets.slice();
+        segments = collectLineSegments(loftList);
         if (!geometries.length) {
           if (!silent) setStatus("Generate a loft before voxelizing the lofted solid.", "error");
           return;
@@ -5447,6 +5466,8 @@
         const loft = selectedLoft();
         const includeLoft = !!(viewer.hasLoft && viewer.hasLoft() && (!selectedId || (loft && loft.sourceChunkId === selectedId)));
         geometries = viewer.collectSolidGeometries ? viewer.collectSolidGeometries(selectedId, includeLoft) : [];
+        const loftList = includeLoft && loft ? [loft] : [];
+        segments = collectLineSegments(loftList);
         if (!geometries.length) {
           if (!silent) setStatus("Generate branch solids or a loft before voxelizing solids.", "error");
           return;
