@@ -399,6 +399,7 @@
 
     function frameOrthoToWorkspace(cam, dir, aspect, margin) {
       const m = margin != null ? margin : 1.08;
+      const a = Math.max(1e-6, aspect);
       const d = dir.clone().normalize();
       cam.position.copy(workspaceCenter).addScaledVector(d, CUBE * 3.5);
       setCameraUpForDirection(cam, d);
@@ -411,6 +412,7 @@
       let minY = Infinity;
       let maxY = -Infinity;
       let minZ = Infinity;
+      let maxZ = -Infinity;
       for (let xi = 0; xi <= 1; xi++) {
         for (let yi = 0; yi <= 1; yi++) {
           for (let zi = 0; zi <= 1; zi++) {
@@ -420,21 +422,21 @@
             minY = Math.min(minY, p.y);
             maxY = Math.max(maxY, p.y);
             minZ = Math.min(minZ, p.z);
+            maxZ = Math.max(maxZ, p.z);
           }
         }
       }
+      const cx = (minX + maxX) * 0.5;
+      const cy = (minY + maxY) * 0.5;
       let halfW = ((maxX - minX) * m) / 2;
       let halfH = ((maxY - minY) * m) / 2;
-      if (halfW / Math.max(halfH, 1e-6) > aspect) {
-        halfH = halfW / aspect;
-      } else {
-        halfW = halfH * aspect;
-      }
-      cam.left = -halfW;
-      cam.right = halfW;
-      cam.top = halfH;
-      cam.bottom = -halfH;
-      cam.near = Math.max(0.1, -minZ - CUBE);
+      if (halfW / Math.max(halfH, 1e-6) > a) halfH = halfW / a;
+      else halfW = halfH * a;
+      cam.left = cx - halfW;
+      cam.right = cx + halfW;
+      cam.top = cy + halfH;
+      cam.bottom = cy - halfH;
+      cam.near = Math.max(0.1, -maxZ - CUBE);
       cam.far = Math.max(cam.near + 1, -minZ + CUBE * 4);
       cam.zoom = 1;
       cam.updateProjectionMatrix();
