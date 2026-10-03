@@ -134,6 +134,7 @@
     tabStudio: document.getElementById("tabStudio"),
     tabMatrix: document.getElementById("tabMatrix"),
     tabSpace3d: document.getElementById("tabSpace3d"),
+    tabGrid3d: document.getElementById("tabGrid3d"),
     studioView: document.getElementById("studioView"),
     studioHud: document.getElementById("studioHud"),
     matrixView: document.getElementById("matrixView"),
@@ -171,6 +172,7 @@
     matrixConfirmSave: document.getElementById("matrixConfirmSave"),
     matrixCancelSave: document.getElementById("matrixCancelSave"),
     space3dView: document.getElementById("space3dView"),
+    grid3dView: document.getElementById("grid3dView"),
     space3dStage: document.getElementById("space3dStage"),
     space3dStatus: document.getElementById("space3dStatus"),
   };
@@ -188,6 +190,7 @@
   let matrixExporting = false;
   let appPage = "studio";
   let space3dStudio = null;
+  let grid3dStudio = null;
   const MatrixLib = window.D7DescriptorMatrix;
   let matrixType = "lobby";
   let matrixDescriptor = "interlocking";
@@ -236,7 +239,7 @@
   let activeGridId = null;
   let nextGridId = 1;
   const gridLibrary = [];
-  const GRID_SLOT_COUNT = 3;
+  const GRID_SLOT_COUNT = 1;
   const GRID_IDB_NAME = "d7-space-colonization";
   const GRID_IDB_STORE = "grid-slots";
   const GRID_IDB_VERSION = 1;
@@ -1210,8 +1213,8 @@
     if (ui.replaceGrid) {
       ui.replaceGrid.disabled = batchRunning;
       ui.replaceGrid.textContent = gridSlots[activeSlotIndex]?.entry
-        ? "Replace this grid"
-        : "Upload grid";
+        ? "Replace site drawing"
+        : "Upload site drawing";
     }
     if (!filled) {
       ui.gridCycleStatus.textContent = "No grids loaded";
@@ -1220,7 +1223,7 @@
     }
     const entry = gridSlots[activeSlotIndex]?.entry || activeGridEntry();
     if (entry) {
-      ui.gridCycleStatus.textContent = `Active: Grid ${activeSlotIndex + 1} · ${entry.name}`;
+      ui.gridCycleStatus.textContent = `Active site drawing: ${entry.name}`;
       ui.gridCycleStatus.classList.add("active");
     } else {
       ui.gridCycleStatus.textContent = `${filled} grid${filled === 1 ? "" : "s"} loaded`;
@@ -3142,9 +3145,11 @@
   function setAppPage(page) {
     if (page === "matrix") appPage = "matrix";
     else if (page === "space3d") appPage = "space3d";
+    else if (page === "grid3d") appPage = "grid3d";
     else appPage = "studio";
     const matrix = appPage === "matrix";
     const space3d = appPage === "space3d";
+    const grid3d = appPage === "grid3d";
     if (ui.tabStudio) {
       ui.tabStudio.classList.toggle("active", appPage === "studio");
       ui.tabStudio.setAttribute("aria-selected", appPage === "studio" ? "true" : "false");
@@ -3157,21 +3162,33 @@
       ui.tabSpace3d.classList.toggle("active", space3d);
       ui.tabSpace3d.setAttribute("aria-selected", space3d ? "true" : "false");
     }
+    if (ui.tabGrid3d) {
+      ui.tabGrid3d.classList.toggle("active", grid3d);
+      ui.tabGrid3d.setAttribute("aria-selected", grid3d ? "true" : "false");
+    }
     if (ui.studioView) ui.studioView.classList.toggle("hidden", appPage !== "studio");
     if (ui.matrixView) ui.matrixView.classList.toggle("hidden", !matrix);
     if (ui.space3dView) ui.space3dView.classList.toggle("hidden", !space3d);
+    if (ui.grid3dView) ui.grid3dView.classList.toggle("hidden", !grid3d);
     const appEl = document.querySelector(".app");
     if (appEl) {
       appEl.classList.toggle("matrix-mode", matrix);
       appEl.classList.toggle("space3d-mode", space3d);
+      appEl.classList.toggle("grid3d-mode", grid3d);
     }
     if (space3dStudio) {
       if (space3d) space3dStudio.show();
       else space3dStudio.hide();
     }
-    if (matrix) {
+    if (grid3dStudio) {
+      if (grid3d) grid3dStudio.show();
+      else grid3dStudio.hide();
+    }
+    if (matrix || grid3d || space3d) {
       playing = false;
       ui.play.textContent = "Grow";
+    }
+    if (matrix) {
       renderDescriptorButtons();
       renderMatrixGrid();
       updateMatrixGenerateState();
@@ -3354,6 +3371,7 @@
     if (ui.tabStudio) ui.tabStudio.disabled = matrixGenerating || matrixExporting;
     if (ui.tabMatrix) ui.tabMatrix.disabled = matrixGenerating || matrixExporting;
     if (ui.tabSpace3d) ui.tabSpace3d.disabled = matrixGenerating || matrixExporting;
+    if (ui.tabGrid3d) ui.tabGrid3d.disabled = matrixGenerating || matrixExporting;
   }
 
   function captureStudioSession() {
@@ -3898,6 +3916,21 @@
     }
   }
 
+  async function syncSharedCustomGridFromStudioUpload(file, svgText) {
+    if (!window.D7CustomGrid || !file) return;
+    try {
+      await window.D7CustomGrid.init();
+      const name = file.name || "Custom grid";
+      const lower = name.toLowerCase();
+      if (svgText || lower.endsWith(".svg")) {
+        const text = svgText || (await file.text());
+        await window.D7CustomGrid.importSvgTextAndActivate(text, name, 1);
+      }
+    } catch (err) {
+      console.warn("Could not sync site drawing to shared 3D grid", err);
+    }
+  }
+
   async function importGridFile(file, slotIndex = pendingSlotIndex) {
     if (!file) return false;
     if (slotIndex == null || slotIndex < 0 || slotIndex >= GRID_SLOT_COUNT) {
@@ -3947,6 +3980,7 @@
       }
       if (previous) removeVariantsForGrid(previous.id);
       await persistGridSlot(slotIndex, file, entry);
+      await syncSharedCustomGridFromStudioUpload(file, svgText);
       return true;
     } catch (err) {
       setGridStatus(err.message || "Could not read that file.", "error");
@@ -5369,6 +5403,7 @@
   if (ui.tabStudio) ui.tabStudio.addEventListener("click", () => setAppPage("studio"));
   if (ui.tabMatrix) ui.tabMatrix.addEventListener("click", () => setAppPage("matrix"));
   if (ui.tabSpace3d) ui.tabSpace3d.addEventListener("click", () => setAppPage("space3d"));
+  if (ui.tabGrid3d) ui.tabGrid3d.addEventListener("click", () => setAppPage("grid3d"));
   if (ui.matrixTypeRow) {
     ui.matrixTypeRow.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-matrix-type]");
@@ -5870,6 +5905,12 @@
         if (appPage === "space3d" && space3dStudio) space3dStudio.resize();
       }).observe(ui.space3dStage);
     }
+    const grid3dStage = document.getElementById("grid3dStage");
+    if (grid3dStage) {
+      new ResizeObserver(() => {
+        if (appPage === "grid3d" && grid3dStudio) grid3dStudio.resize();
+      }).observe(grid3dStage);
+    }
   }
   loadSavedIterationsFromStorage();
   setInteractionMode("select");
@@ -5936,8 +5977,31 @@
       },
     });
   }
+  if (window.D7GridGrowth && typeof window.D7GridGrowth.mount === "function") {
+    grid3dStudio = window.D7GridGrowth.mount();
+  }
+  if (window.D7CustomGrid && typeof window.D7CustomGrid.init === "function") {
+    window.D7CustomGrid.init().catch((err) => console.warn("Shared grid load failed", err));
+  }
   resize();
-  restoreGridSlots();
+  async function maybeMigrateSharedCustomGridFromSlot0() {
+    if (!window.D7CustomGrid) return;
+    try {
+      await window.D7CustomGrid.init();
+      if (window.D7CustomGrid.isCustom()) return;
+      const entry = gridSlots[0]?.entry;
+      if (!entry?.svgText) return;
+      await window.D7CustomGrid.importSvgTextAndActivate(
+        entry.svgText,
+        entry.name || "Custom grid",
+        1
+      );
+    } catch (err) {
+      console.warn("Could not migrate site SVG to shared custom grid", err);
+    }
+  }
+
+  restoreGridSlots().then(() => maybeMigrateSharedCustomGridFromSlot0());
   refreshSavedSimulationLibrary();
   refreshSavedMatrixLibrary();
   loop();

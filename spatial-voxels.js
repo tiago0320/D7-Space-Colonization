@@ -19,6 +19,16 @@
     return CUBE / res;
   }
 
+  function sizeFeet(resolution) {
+    const cell = cellSize(resolution);
+    return {
+      cell,
+      small: cell * SIZE_SMALL,
+      medium: cell * SIZE_MED,
+      large: cell * SIZE_LARGE,
+    };
+  }
+
   function clampRes(resolution) {
     const n = Number(resolution) || 20;
     if (RESOLUTIONS.indexOf(n) >= 0) return n;
@@ -1090,6 +1100,7 @@
     RESOLUTIONS,
     clampRes,
     cellSize,
+    sizeFeet,
     worldSegmentsFromChunk,
     worldSegmentsFromLoftSet,
     generate,

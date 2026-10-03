@@ -65,6 +65,86 @@
     return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
   }
 
+  const MIN_CHUNK_SIDE = 0.4;
+
+  function formatChunkFootprint(rect) {
+    if (!rect || rect.w < MIN_CHUNK_SIDE || rect.h < MIN_CHUNK_SIDE) return null;
+    const side = rect.w.toFixed(1).replace(/\.0$/, "");
+    return `${side}' × ${side}'`;
+  }
+
+  function chunkSizeLabel(rect) {
+    const footprint = formatChunkFootprint(rect);
+    return footprint ? `Selected Chunk: ${footprint}` : "Selected Chunk: \u2014";
+  }
+
+  function clampSquareInSite(x, y, side) {
+    let s = clamp(side, MIN_CHUNK_SIDE, CUBE);
+    let px = clamp(x, 0, CUBE - s);
+    let py = clamp(y, 0, CUBE - s);
+    s = Math.min(s, CUBE - px, CUBE - py);
+    return { x: px, y: py, w: s, h: s };
+  }
+
+  function squareFromPoints(a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    let side = Math.max(Math.abs(dx), Math.abs(dy));
+    if (side < MIN_CHUNK_SIDE) return { x: a.x, y: a.y, w: 0, h: 0 };
+    let x = dx >= 0 ? a.x : a.x - side;
+    let y = dy >= 0 ? a.y : a.y - side;
+    return clampSquareInSite(x, y, side);
+  }
+
+  function resizeSquareFromHandle(origin, handle, pt) {
+    const p = { x: clamp(pt.x, 0, CUBE), y: clamp(pt.y, 0, CUBE) };
+    const x0 = origin.x;
+    const y0 = origin.y;
+    const x1 = origin.x + origin.w;
+    const y1 = origin.y + origin.h;
+    let side;
+    let x;
+    let y;
+    if (handle === "nw") {
+      side = Math.max(x1 - p.x, y1 - p.y);
+      x = x1 - side;
+      y = y1 - side;
+    } else if (handle === "ne") {
+      side = Math.max(p.x - x0, y1 - p.y);
+      x = x0;
+      y = y1 - side;
+    } else if (handle === "se") {
+      side = Math.max(p.x - x0, p.y - y0);
+      x = x0;
+      y = y0;
+    } else if (handle === "sw") {
+      side = Math.max(x1 - p.x, p.y - y0);
+      x = x1 - side;
+      y = y0;
+    } else {
+      return clampSquareInSite(origin.x, origin.y, origin.w);
+    }
+    return clampSquareInSite(x, y, side);
+  }
+
+  function normalizeSquareBounds(bounds) {
+    const side = clamp(Math.min(bounds.w, bounds.h), MIN_CHUNK_SIDE, CUBE);
+    return clampSquareInSite(bounds.x, bounds.y, side);
+  }
+
+  function clampRectInSite(x, y, w, h) {
+    const rw = clamp(w, MIN_CHUNK_SIDE, CUBE);
+    const rh = clamp(h, MIN_CHUNK_SIDE, CUBE);
+    const px = clamp(x, 0, CUBE - rw);
+    const py = clamp(y, 0, CUBE - rh);
+    return {
+      x: px,
+      y: py,
+      w: Math.min(rw, CUBE - px),
+      h: Math.min(rh, CUBE - py),
+    };
+  }
+
   function clipSegmentToRect(ax, ay, bx, by, rect) {
     const xmin = rect.x;
     const xmax = rect.x + rect.w;
@@ -106,9 +186,9 @@
     };
   }
 
-  function defaultChunkTransform(width) {
+  function defaultChunkTransform() {
     return {
-      x: clamp((CUBE - width) * 0.5, 0, CUBE),
+      x: 0,
       y: 0,
       z: 0,
       rx: 0,
@@ -120,11 +200,68 @@
     };
   }
 
+  function snapshotOriginalChunk(chunk) {
+    if (!chunk || chunk.original) return;
+    chunk.original = {
+      width: chunk.width,
+      height: chunk.height,
+      bounds: chunk.bounds ? JSON.parse(JSON.stringify(chunk.bounds)) : null,
+      sourceBounds: chunk.sourceBounds ? JSON.parse(JSON.stringify(chunk.sourceBounds)) : null,
+      nodes: JSON.parse(JSON.stringify(chunk.nodes || [])),
+      branches: JSON.parse(JSON.stringify(chunk.branches || [])),
+      segments: JSON.parse(JSON.stringify(chunk.segments || [])),
+      roots: JSON.parse(JSON.stringify(chunk.roots || [])),
+      attractors: JSON.parse(JSON.stringify(chunk.attractors || [])),
+    };
+  }
+
+  function scaleChunkPlanarGeometry(chunk, factor) {
+    const f = Number(factor);
+    if (!Number.isFinite(f) || Math.abs(f - 1) < 1e-9) return;
+    const mul = (rec) => {
+      if (rec.x != null) rec.x *= f;
+      if (rec.y != null) rec.y *= f;
+      if (rec.ax != null) rec.ax *= f;
+      if (rec.ay != null) rec.ay *= f;
+      if (rec.bx != null) rec.bx *= f;
+      if (rec.by != null) rec.by *= f;
+    };
+    for (const node of chunk.nodes || []) mul(node);
+    for (const branch of chunk.branches || []) mul(branch);
+    for (const root of chunk.roots || []) mul(root);
+    for (const point of chunk.attractors || []) mul(point);
+  }
+
+  function normalizeChunkToSection(chunk) {
+    if (!chunk) return null;
+    snapshotOriginalChunk(chunk);
+    const orig = chunk.original;
+    const side = Math.max(MIN_CHUNK_SIDE, Number(orig.width) || Number(chunk.width) || CUBE);
+    const scale = CUBE / side;
+    chunk.originalWidth = orig.width;
+    chunk.originalHeight = orig.height;
+    chunk.sectionScale = scale;
+    chunk.nodes = JSON.parse(JSON.stringify(orig.nodes || []));
+    chunk.branches = JSON.parse(JSON.stringify(orig.branches || []));
+    chunk.segments = JSON.parse(JSON.stringify(orig.segments || []));
+    chunk.roots = JSON.parse(JSON.stringify(orig.roots || []));
+    chunk.attractors = JSON.parse(JSON.stringify(orig.attractors || []));
+    scaleChunkPlanarGeometry(chunk, scale);
+    ensureGraphIds(chunk);
+    rebuildBranchesFromGraph(chunk);
+    chunk.width = CUBE;
+    chunk.height = CUBE;
+    chunk.normalized = true;
+    chunk.transform = defaultChunkTransform();
+    return chunk;
+  }
+
   const SECTION_TONES = [0xd2c4a8, 0xa8c4b8, 0xa8b4d0, 0xd0b0b8, 0xc4c0a0];
 
   function captureChunkFromSource(source, bounds, meta) {
     const site = source && source.site;
-    if (!site || !bounds || bounds.w < 0.05 || bounds.h < 0.05) return null;
+    if (!site || !bounds || bounds.w < MIN_CHUNK_SIDE || bounds.h < MIN_CHUNK_SIDE) return null;
+    bounds = normalizeSquareBounds(bounds);
     const nodes = source.nodes || [];
     const ftNodes = nodes.map((node) => {
       const ft = worldToFt(node.x, node.y, site);
@@ -271,7 +408,7 @@
         order: node.order,
       })),
       sourceBounds: { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
-      transform: defaultChunkTransform(bounds.w),
+      transform: defaultChunkTransform(),
     };
   }
 
@@ -545,22 +682,49 @@
     cube.userData.workspaceBound = true;
     scene.add(cube);
 
+    const sharedGridMat = new THREE.LineBasicMaterial({
+      color: 0x5a5a5a,
+      transparent: true,
+      opacity: 0.14,
+      depthWrite: false,
+    });
+    const sharedGridLines = new THREE.LineSegments(new THREE.BufferGeometry(), sharedGridMat);
+    sharedGridLines.name = "sharedCustomGrid";
+    sharedGridLines.visible = false;
+    scene.add(sharedGridLines);
+
+    function refreshSharedGrid() {
+      const cg = global.D7CustomGrid;
+      if (!cg || !cg.isCustom()) {
+        sharedGridLines.visible = false;
+        return;
+      }
+      const pos = cg.linePositions();
+      if (!pos || !pos.length) {
+        sharedGridLines.visible = false;
+        return;
+      }
+      if (sharedGridLines.geometry) sharedGridLines.geometry.dispose();
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      sharedGridLines.geometry = geom;
+      sharedGridLines.visible = cg.getShowGrid();
+    }
+
     const turntableGroup = new THREE.Group();
     turntableGroup.name = "turntable";
     const chunksGroup = new THREE.Group();
     const sectionsGroup = new THREE.Group();
-    const massesGroup = new THREE.Group();
     const loftGroup = new THREE.Group();
     const voxelsGroup = new THREE.Group();
     const handlesGroup = new THREE.Group();
     scene.add(turntableGroup);
     turntableGroup.add(chunksGroup);
     turntableGroup.add(sectionsGroup);
-    turntableGroup.add(massesGroup);
     turntableGroup.add(loftGroup);
     turntableGroup.add(voxelsGroup);
     scene.add(handlesGroup);
-    turntableChildren.push(chunksGroup, sectionsGroup, massesGroup, loftGroup, voxelsGroup);
+    turntableChildren.push(chunksGroup, sectionsGroup, loftGroup, voxelsGroup);
 
     const silFillMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
@@ -655,7 +819,6 @@
 
     const chunkMeshes = new Map();
     const sectionMeshes = new Map();
-    const massMeshes = new Map();
     let loftRec = null;
     let voxelRec = null;
     let voxelCells = [];
@@ -672,11 +835,8 @@
     let sectionLayersVisible = true;
     let loftLinesVisible = true;
     let loftSolidsVisible = true;
-    let massesVisible = true;
-    let sectionCutEnabled = false;
-    let massOpacity = 1;
     let loftOpacity = 1;
-    let massWireframe = false;
+    let loftWireframe = false;
     let editBranches = false;
     let selectedSectionId = null;
     let selectedNodeIds = [];
@@ -926,7 +1086,6 @@
       chunksGroup.remove(rec.group);
       rec.group.traverse(disposeObject);
       chunkMeshes.delete(id);
-      removeMass(id);
     }
 
     function applySourceVisibility(group) {
@@ -943,57 +1102,15 @@
       }
     }
 
-    function slabPlanes(chunk) {
-      const helper = global.D7SpatialMass && global.D7SpatialMass.sourcePlaneWorld;
-      if (!helper || !chunk) return [];
-      const { point, normal } = helper(THREE, chunk.transform, chunk.width, chunk.height);
-      const half = 0.16;
-      const np = normal.dot(point);
-      return [
-        new THREE.Plane(normal.clone().multiplyScalar(-1), np + half),
-        new THREE.Plane(normal.clone(), -np + half),
-      ];
-    }
-
-    function removeMass(id) {
-      const rec = massMeshes.get(id);
-      if (!rec) return;
-      if (rec.wire) {
-        massesGroup.remove(rec.wire);
-        disposeObject(rec.wire);
-      }
-      massesGroup.remove(rec.mesh);
-      rec.mesh.traverse(disposeObject);
-      massMeshes.delete(id);
-    }
-
-    function rebuildMassWire(rec) {
-      if (!rec) return;
-      if (rec.wire) {
-        massesGroup.remove(rec.wire);
-        disposeObject(rec.wire);
-        rec.wire = null;
-      }
-      if (!massWireframe || !rec.mesh) return;
-      const EdgesGeom = THREE.EdgesGeometry;
-      if (!EdgesGeom) return;
-      rec.wire = new THREE.LineSegments(
-        new EdgesGeom(rec.mesh.geometry, 28),
-        new THREE.LineBasicMaterial({ color: 0x8a8680, transparent: true, opacity: 0.7 })
-      );
-      massesGroup.add(rec.wire);
-    }
-
-    function setMassWireframe(enabled) {
-      massWireframe = !!enabled;
-      for (const rec of massMeshes.values()) rebuildMassWire(rec);
+    function setLoftWireframe(enabled) {
+      loftWireframe = !!enabled;
       if (loftRec) {
         if (loftRec.wire) {
           loftGroup.remove(loftRec.wire);
           disposeObject(loftRec.wire);
           loftRec.wire = null;
         }
-        if (massWireframe && loftRec.mesh) {
+        if (loftWireframe && loftRec.mesh) {
           const EdgesGeom = THREE.EdgesGeometry;
           if (EdgesGeom) {
             loftRec.wire = new THREE.LineSegments(
@@ -1005,10 +1122,9 @@
         }
       }
       applyLoftWireVisibility();
-      applyMassOverlayVisibility();
     }
 
-    function applyMassOpacity(mat, opacity) {
+    function applyMeshOpacity(mat, opacity) {
       const o = Math.max(0.1, Math.min(1, opacity));
       mat.opacity = o;
       mat.transparent = o < 0.999;
@@ -1016,50 +1132,9 @@
       mat.needsUpdate = true;
     }
 
-    function setMassOpacity(opacity) {
-      massOpacity = Math.max(0.1, Math.min(1, opacity));
-      for (const rec of massMeshes.values()) applyMassOpacity(rec.material, massOpacity);
-    }
-
     function setLoftOpacity(opacity) {
       loftOpacity = Math.max(0.1, Math.min(1, opacity));
-      if (loftRec) applyMassOpacity(loftRec.material, loftOpacity);
-    }
-
-    function setMass(id, geometry, chunk, opacity) {
-      removeMass(id);
-      if (!geometry) return null;
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0xe6e2da,
-        roughness: 0.78,
-        metalness: 0.02,
-        side: THREE.DoubleSide,
-        flatShading: false,
-      });
-      applyMassOpacity(mat, opacity != null ? opacity : massOpacity);
-      const mesh = new THREE.Mesh(geometry, mat);
-      mesh.userData.chunkId = id;
-      mesh.userData.mass = true;
-      massesGroup.add(mesh);
-      const rec = { mesh, material: mat };
-      massMeshes.set(id, rec);
-      rebuildMassWire(rec);
-      applySilhouetteMaterials();
-      applyMassOverlayVisibility();
-      return rec;
-    }
-
-    function applyMassOverlayVisibility() {
-      const showMesh = massesVisible && !voxelsCovering();
-      for (const rec of massMeshes.values()) {
-        rec.mesh.visible = showMesh;
-        if (rec.wire) rec.wire.visible = showMesh && massWireframe && !silhouetteMode;
-      }
-    }
-
-    function setMassVisible(visible) {
-      massesVisible = !!visible;
-      applyMassOverlayVisibility();
+      if (loftRec) applyMeshOpacity(loftRec.material, loftOpacity);
     }
 
     function applyVoxelOpacity(mat, opacity) {
@@ -1179,7 +1254,7 @@
 
     function applyLoftWireVisibility() {
       if (loftRec && loftRec.wire) {
-        loftRec.wire.visible = !!(massWireframe && loftSolidsVisible && !voxelsCovering() && !silhouetteMode);
+        loftRec.wire.visible = !!(loftWireframe && loftSolidsVisible && !voxelsCovering() && !silhouetteMode);
       }
     }
 
@@ -1271,25 +1346,12 @@
           restoreMaterialLook(loftRec.material);
         }
       }
-      for (const rec of massMeshes.values()) {
-        if (!rec.material) continue;
-        if (on) {
-          rememberMaterialLook(rec.material);
-          rec.material.color.setHex(0x3f3f3c);
-          if (rec.material.emissive) rec.material.emissive.setHex(0x101010);
-          rec.material.roughness = 0.92;
-          rec.material.needsUpdate = true;
-        } else {
-          restoreMaterialLook(rec.material);
-        }
-      }
     }
 
     function clearVoxels() {
       disposeVoxelRec();
       voxelCells = [];
       applyLoftOverlayVisibility();
-      applyMassOverlayVisibility();
     }
 
     function setVoxels(payload) {
@@ -1329,7 +1391,6 @@
       mesh.renderOrder = 2;
       applySilhouetteMaterials();
       applyLoftOverlayVisibility();
-      applyMassOverlayVisibility();
       return voxelRec;
     }
 
@@ -1338,7 +1399,6 @@
       if (voxelRec) voxelRec.mesh.visible = voxelsVisible;
       applyVoxelEdgeVisibility();
       applyLoftOverlayVisibility();
-      applyMassOverlayVisibility();
     }
 
     function setVoxelOpacity(opacity) {
@@ -1364,31 +1424,8 @@
       applySilhouetteMaterials();
     }
 
-    function collectSolidGeometries(chunkId, includeLoft) {
-      const geos = [];
-      for (const [id, rec] of massMeshes) {
-        if (chunkId && id !== chunkId) continue;
-        if (rec.mesh && rec.mesh.geometry) geos.push(rec.mesh.geometry);
-      }
-      if (includeLoft && loftRec && loftRec.mesh && loftRec.mesh.geometry) {
-        geos.push(loftRec.mesh.geometry);
-      }
-      return geos;
-    }
-
     function getLoftGeometry() {
       return loftRec && loftRec.mesh ? loftRec.mesh.geometry : null;
-    }
-
-    function applySectionCut(enabled, chunk) {
-      sectionCutEnabled = !!enabled;
-      renderer.localClippingEnabled = true;
-      for (const [id, rec] of massMeshes) {
-        const use = sectionCutEnabled && chunk && chunk.id === id;
-        rec.material.clippingPlanes = use ? slabPlanes(chunk) : [];
-        rec.material.clipIntersection = !!use;
-        rec.material.needsUpdate = true;
-      }
     }
 
     function makeChunkMesh(chunk) {
@@ -2340,10 +2377,10 @@
       if (data.pick || data.outline || data.editNode || data.editSeg || data.sourcePlane || data.sourceBranch) {
         return false;
       }
-      if (data.loft || data.voxels || data.mass) return true;
+      if (data.loft || data.voxels) return true;
       let parent = obj.parent;
       while (parent) {
-        if (parent === loftGroup || parent === massesGroup || parent === voxelsGroup) return true;
+        if (parent === loftGroup || parent === voxelsGroup) return true;
         parent = parent.parent;
       }
       return false;
@@ -2355,7 +2392,6 @@
       applySilhouetteMaterials();
       applyVoxelEdgeVisibility();
       applyLoftOverlayVisibility();
-      applyMassOverlayVisibility();
       attachGizmo();
     }
 
@@ -2466,7 +2502,7 @@
 
     function attachLoftWire(geometry) {
       disposeLoftWire();
-      if (!loftRec || !massWireframe || !geometry) return;
+      if (!loftRec || !loftWireframe || !geometry) return;
       const EdgesGeom = THREE.EdgesGeometry;
       if (!EdgesGeom) return;
       loftRec.wire = new THREE.LineSegments(
@@ -2494,7 +2530,7 @@
           loftRec.mesh.geometry.dispose();
         }
         loftRec.mesh.geometry = geometry;
-        applyMassOpacity(loftRec.material, op);
+        applyMeshOpacity(loftRec.material, op);
         if (draft) disposeLoftWire();
         else attachLoftWire(geometry);
         applySilhouetteMaterials();
@@ -2510,7 +2546,7 @@
         polygonOffsetFactor: 4,
         polygonOffsetUnits: 4,
       });
-      applyMassOpacity(mat, op);
+      applyMeshOpacity(mat, op);
       const mesh = new THREE.Mesh(geometry, mat);
       mesh.userData.loft = true;
       loftGroup.add(mesh);
@@ -2555,7 +2591,6 @@
       if (editPivot) editPivot.visible = false;
       for (const id of Array.from(chunkMeshes.keys())) disposeChunkMesh(id);
       for (const id of Array.from(sectionMeshes.keys())) disposeSectionMesh(id);
-      for (const id of Array.from(massMeshes.keys())) removeMass(id);
       setLoft(null);
       clearVoxels();
       finishTurntablePreview(false);
@@ -2564,22 +2599,19 @@
       capturingTurntable = false;
       turntableLock = false;
       clearHandles();
-      applySectionCut(false);
       voxelResolution = 20;
       voxelOpacity = 1;
       voxelColorBySize = false;
       voxelEdges = true;
       voxelsVisible = true;
-      massOpacity = 1;
       loftOpacity = 1;
-      massWireframe = false;
+      loftWireframe = false;
       sourceBranchesVisible = true;
       sourcePlanesVisible = false;
       sourceChunksVisible = true;
       sectionLayersVisible = true;
       loftLinesVisible = true;
       loftSolidsVisible = true;
-      massesVisible = true;
       applyViewMode("perspective", { reset: true });
     }
 
@@ -3228,18 +3260,8 @@
         loftSolidsVisible = !!visible;
         applyLoftOverlayVisibility();
       },
-      setSectionCut(enabled, chunk) {
-        applySectionCut(enabled, chunk);
-      },
-      setMass,
-      setMassOpacity,
       setLoftOpacity,
-      setMassWireframe,
-      setMassVisible,
-      removeMass,
-      hasMass(id) {
-        return massMeshes.has(id);
-      },
+      setLoftWireframe,
       setLoft,
       clearLoft() {
         setLoft(null);
@@ -3257,7 +3279,6 @@
       setVoxelOpacity,
       setVoxelEdges,
       setVoxelColorBySize,
-      collectSolidGeometries,
       capturePng,
       previewTurntable,
       stopTurntablePreview,
@@ -3275,6 +3296,10 @@
           cells: voxelCells.slice(),
           resolution: voxelResolution,
         };
+      },
+      refreshSharedGrid,
+      setSharedGridVisible(visible) {
+        sharedGridLines.visible = !!visible;
       },
     };
   }
@@ -3329,6 +3354,12 @@
     let rename3dId = null;
     let saved3dRecords = [];
     let loftCapsules = [];
+    let genMode = "both";
+    let genBusy = false;
+    let genCancel = false;
+    let generatedVars = [];
+    let selectedGenKey = null;
+    let genSessionSeed = 1;
     let exportNameHint = "";
     let loftDraftAt = 0;
     let loftDraftQueued = false;
@@ -3337,7 +3368,6 @@
     let selectedLineSegIds = [];
     let nodeOrigins = null;
     let nodeToolOrigins = null;
-    const massSeeds = new Map();
     let selecting = false;
     let draft = null;
     let drag = null;
@@ -3413,6 +3443,7 @@
       lineUndo: document.getElementById("space3dLineUndo"),
       lineRedo: document.getElementById("space3dLineRedo"),
       chunkSize: document.getElementById("space3dChunkSize"),
+      chunkNormalize: document.getElementById("space3dChunkNormalize"),
       previewSize: document.getElementById("space3dPreviewSize"),
       posX: document.getElementById("space3dPosX"),
       posY: document.getElementById("space3dPosY"),
@@ -3425,23 +3456,6 @@
       moveMode: document.getElementById("space3dMoveMode"),
       rotateMode: document.getElementById("space3dRotateMode"),
       scaleMode: document.getElementById("space3dScaleMode"),
-      generateMass: document.getElementById("space3dGenerateMass"),
-      regenMass: document.getElementById("space3dRegenMass"),
-      regenVar: document.getElementById("space3dRegenVar"),
-      clearMass: document.getElementById("space3dClearMass"),
-      fidelity: document.getElementById("space3dFidelity"),
-      fidelityVal: document.getElementById("space3dFidelityVal"),
-      massVariation: document.getElementById("space3dMassVariation"),
-      massVariationVal: document.getElementById("space3dMassVariationVal"),
-      solidWidth: document.getElementById("space3dSolidWidth"),
-      solidWidthVal: document.getElementById("space3dSolidWidthVal"),
-      solidDepth: document.getElementById("space3dSolidDepth"),
-      solidDepthVal: document.getElementById("space3dSolidDepthVal"),
-      spatialReach: document.getElementById("space3dSpatialReach"),
-      spatialReachVal: document.getElementById("space3dSpatialReachVal"),
-      solidOpacity: document.getElementById("space3dSolidOpacity"),
-      solidOpacityVal: document.getElementById("space3dSolidOpacityVal"),
-      useHierarchy: document.getElementById("space3dUseHierarchy"),
       showBranches: document.getElementById("space3dShowBranches"),
       showPlane: document.getElementById("space3dShowPlane"),
       showWireframe: document.getElementById("space3dShowWireframe"),
@@ -3504,6 +3518,20 @@
       showLoftLines: document.getElementById("space3dShowLoftLines"),
       showLoftSolids: document.getElementById("space3dShowLoftSolids"),
       showVoxels: document.getElementById("space3dShowVoxels"),
+      showSharedGrid: document.getElementById("space3dShowSharedGrid"),
+      customGridStatus: document.getElementById("space3dCustomGridStatus"),
+      activeGridName: document.getElementById("space3dActiveGridName"),
+      gridStats: document.getElementById("space3dGridStats"),
+      gridValidity: document.getElementById("space3dGridValidity"),
+      importGrid: document.getElementById("space3dImportGrid"),
+      replaceCustomGrid: document.getElementById("space3dReplaceGrid"),
+      customGridFile: document.getElementById("space3dCustomGridFile"),
+      rasterPanel: document.getElementById("space3dRasterPanel"),
+      rasterOverlay: document.getElementById("space3dRasterOverlay"),
+      rasterThreshold: document.getElementById("space3dRasterThreshold"),
+      rasterThresholdVal: document.getElementById("space3dRasterThresholdVal"),
+      useDetected: document.getElementById("space3dUseDetected"),
+      verticalSpacing: document.getElementById("space3dVerticalSpacing"),
       dispLines: document.getElementById("space3dDispLines"),
       dispSolids: document.getElementById("space3dDispSolids"),
       dispVoxels: document.getElementById("space3dDispVoxels"),
@@ -3525,6 +3553,8 @@
       voxelColorBySize: document.getElementById("space3dVoxelColorBySize"),
       voxelEdges: document.getElementById("space3dVoxelEdges"),
       voxelStats: document.getElementById("space3dVoxelStats"),
+      voxelSizeReadout: document.getElementById("space3dVoxelSizeReadout"),
+      workspaceReadout: document.getElementById("space3dWorkspaceReadout"),
       exportStatus: document.getElementById("space3dExportStatus"),
       exportLoft3dm: document.getElementById("space3dExportLoft3dm"),
       exportLoftObj: document.getElementById("space3dExportLoftObj"),
@@ -3560,6 +3590,22 @@
       delete3dDialog: document.getElementById("space3dDelete3dDialog"),
       delete3dCancel: document.getElementById("space3dDelete3dCancel"),
       delete3dConfirm: document.getElementById("space3dDelete3dConfirm"),
+      genModeA: document.getElementById("space3dGenModeA"),
+      genModeB: document.getElementById("space3dGenModeB"),
+      genModeBoth: document.getElementById("space3dGenModeBoth"),
+      genAnchor: document.getElementById("space3dGenAnchor"),
+      genVariation: document.getElementById("space3dGenVariation"),
+      genVariationVal: document.getElementById("space3dGenVariationVal"),
+      genExpansion: document.getElementById("space3dGenExpansion"),
+      genExpansionVal: document.getElementById("space3dGenExpansionVal"),
+      genOpenness: document.getElementById("space3dGenOpenness"),
+      genOpennessVal: document.getElementById("space3dGenOpennessVal"),
+      genGrowth: document.getElementById("space3dGenGrowth"),
+      genGrowthVal: document.getElementById("space3dGenGrowthVal"),
+      genStatus: document.getElementById("space3dGenStatus"),
+      generateVars: document.getElementById("space3dGenerateVars"),
+      genCancel: document.getElementById("space3dGenCancel"),
+      genGallery: document.getElementById("space3dGenGallery"),
     };
 
     function setStatus(message, kind) {
@@ -3621,14 +3667,69 @@
       }
     }
 
+    function formatFeet(n, digits) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return "0.0'";
+      return `${v.toFixed(digits == null ? 1 : digits)}'`;
+    }
+
+    function formatChunkFeet(w, h) {
+      return `${formatFeet(w)} W × ${formatFeet(h)} H`;
+    }
+
+    function paintWorkspaceReadout() {
+      const chunk = selectedChunk();
+      const base = "Workspace: 20' W × 20' D × 20' H";
+      let text = base;
+      if (chunk && chunk.width > 0 && chunk.height > 0) {
+        const label = chunk.normalized
+          ? `Section ${formatSquareFeet(CUBE)} (normalized)`
+          : `Chunk ${formatChunkFeet(chunk.width, chunk.height)}`;
+        text = `${base} · ${label}`;
+      } else if (draft && draft.w >= MIN_CHUNK_SIDE) {
+        text = `${base} · Selection ${formatChunkFootprint(draft)}`;
+      }
+      if (els.workspaceReadout) els.workspaceReadout.textContent = text;
+    }
+
+    function paintVoxelSizeReadout() {
+      if (!els.voxelSizeReadout) return;
+      const lib = global.D7SpatialVoxels;
+      const sizes = lib && lib.sizeFeet ? lib.sizeFeet(Number(els.voxelRes?.value ?? 20)) : { cell: 1, small: 1, medium: 2, large: 3 };
+      els.voxelSizeReadout.textContent = `Aligned grid ${formatFeet(sizes.cell)} · Small ${formatFeet(sizes.small)} · Medium ${formatFeet(sizes.medium)} · Large ${formatFeet(sizes.large)}`;
+    }
+
+    function formatSquareFeet(side) {
+      const s = Number(side);
+      if (!Number.isFinite(s)) return "—";
+      return `${s.toFixed(1).replace(/\.0$/, "")}' × ${s.toFixed(1).replace(/\.0$/, "")}'`;
+    }
+
+    function paintNormalizationReadout() {
+      if (!els.chunkNormalize) return;
+      els.chunkNormalize.style.whiteSpace = "pre-line";
+      const chunk = selectedChunk();
+      if (chunk && chunk.normalized) {
+        const ow = chunk.originalWidth != null ? chunk.originalWidth : chunk.original?.width || chunk.bounds?.w;
+        const scale = chunk.sectionScale != null ? chunk.sectionScale : CUBE / Math.max(MIN_CHUNK_SIDE, ow || CUBE);
+        els.chunkNormalize.textContent = `Original: ${formatSquareFeet(ow)}\nNormalized: 20' × 20'\nScale Factor: ${scale.toFixed(2)}×`;
+        return;
+      }
+      if (selecting && draft && draft.w >= MIN_CHUNK_SIDE) {
+        els.chunkNormalize.textContent = `Selection: ${formatChunkFootprint(draft)}\nNormalized: 20' × 20' (on confirm)\nScale Factor: ${(CUBE / draft.w).toFixed(2)}×`;
+        return;
+      }
+      els.chunkNormalize.textContent =
+        "Square selections scale uniformly to 20' × 20' in the sectional plane when confirmed.";
+    }
+
     function paintArea() {
       const rect = draft || (selectedChunk() ? selectedChunk().bounds : null);
-      const text =
-        rect && rect.w >= 0.05 && rect.h >= 0.05
-          ? `Selected Area: ${rect.w.toFixed(1)} × ${rect.h.toFixed(1)}`
-          : "Selected Area: \u2014";
+      const text = chunkSizeLabel(rect);
       if (els.chunkSize) els.chunkSize.textContent = text;
       if (els.previewSize) els.previewSize.textContent = text;
+      paintNormalizationReadout();
+      paintWorkspaceReadout();
     }
 
     function eventToFt(event, canvas) {
@@ -3638,27 +3739,15 @@
       return { x: u * CUBE, y: v * CUBE };
     }
 
-    function rectFromPoints(a, b) {
-      const x0 = clamp(Math.min(a.x, b.x), 0, CUBE);
-      const y0 = clamp(Math.min(a.y, b.y), 0, CUBE);
-      const x1 = clamp(Math.max(a.x, b.x), 0, CUBE);
-      const y1 = clamp(Math.max(a.y, b.y), 0, CUBE);
-      return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-    }
-
     function hitHandle(pt, rect, canvas) {
       if (!rect) return null;
       const box = canvas.getBoundingClientRect();
       const tol = (10 / Math.max(1, box.width)) * CUBE;
       const spots = [
         ["nw", rect.x, rect.y],
-        ["n", rect.x + rect.w * 0.5, rect.y],
         ["ne", rect.x + rect.w, rect.y],
-        ["e", rect.x + rect.w, rect.y + rect.h * 0.5],
         ["se", rect.x + rect.w, rect.y + rect.h],
-        ["s", rect.x + rect.w * 0.5, rect.y + rect.h],
         ["sw", rect.x, rect.y + rect.h],
-        ["w", rect.x, rect.y + rect.h * 0.5],
       ];
       for (const [id, x, y] of spots) {
         if (Math.abs(pt.x - x) <= tol && Math.abs(pt.y - y) <= tol) return id;
@@ -3666,22 +3755,7 @@
       return null;
     }
 
-    function resizeFromHandle(origin, handle, pt) {
-      let x0 = origin.x;
-      let y0 = origin.y;
-      let x1 = origin.x + origin.w;
-      let y1 = origin.y + origin.h;
-      const p = { x: clamp(pt.x, 0, CUBE), y: clamp(pt.y, 0, CUBE) };
-      if (handle.indexOf("w") >= 0) x0 = p.x;
-      if (handle.indexOf("e") >= 0) x1 = p.x;
-      if (handle.indexOf("n") >= 0) y0 = p.y;
-      if (handle.indexOf("s") >= 0) y1 = p.y;
-      return rectFromPoints({ x: x0, y: y0 }, { x: x1, y: y1 });
-    }
-
     function cursorForHandle(handle) {
-      if (handle === "n" || handle === "s") return "ns-resize";
-      if (handle === "e" || handle === "w") return "ew-resize";
       if (handle === "nw" || handle === "se") return "nwse-resize";
       if (handle === "ne" || handle === "sw") return "nesw-resize";
       if (handle === "move") return "move";
@@ -3717,13 +3791,9 @@
         if (handles) {
           const spots = [
             [rect.x, rect.y],
-            [rect.x + rect.w * 0.5, rect.y],
             [rect.x + rect.w, rect.y],
-            [rect.x + rect.w, rect.y + rect.h * 0.5],
             [rect.x + rect.w, rect.y + rect.h],
-            [rect.x + rect.w * 0.5, rect.y + rect.h],
             [rect.x, rect.y + rect.h],
-            [rect.x, rect.y + rect.h * 0.5],
           ];
           ctx.setLineDash([]);
           ctx.fillStyle = "#111";
@@ -3749,7 +3819,14 @@
         );
       }
       if (draft && selecting) {
-        strokeRect(draft, "rgba(255,255,255,0.95)", 1.5, [5, 3], null, true);
+        strokeRect(
+          draft,
+          "rgba(255,255,255,0.95)",
+          1.5,
+          [5, 3],
+          formatChunkFootprint(draft),
+          true
+        );
       }
     }
 
@@ -3760,7 +3837,7 @@
         els.selectChunk.classList.toggle("ghost", !selecting);
       }
       if (els.confirmChunk) {
-        els.confirmChunk.disabled = !selecting || !draft || draft.w < 0.4 || draft.h < 0.4;
+        els.confirmChunk.disabled = !selecting || !draft || draft.w < MIN_CHUNK_SIDE;
       }
       if (els.cancelChunk) els.cancelChunk.disabled = !selecting;
       paintArea();
@@ -3993,6 +4070,8 @@
       }
       if (els.deleteChunk) els.deleteChunk.disabled = !chunk;
       if (els.duplicateChunk) els.duplicateChunk.disabled = !chunk;
+      if (els.generateVars) els.generateVars.disabled = !chunk || genBusy;
+      if (els.genCancel) els.genCancel.disabled = !genBusy;
       if (els.createLoft) els.createLoft.disabled = !chunk;
       if (els.dupSection) els.dupSection.disabled = !sectionOn;
       if (els.remorph) els.remorph.disabled = !sectionOn;
@@ -4011,11 +4090,6 @@
       paintVoxelButtons();
       paintLiveButtons();
       paintExportButtons();
-      const hasMass = !!(chunk && viewer && viewer.hasMass && viewer.hasMass(chunk.id));
-      if (els.generateMass) els.generateMass.disabled = !chunk;
-      if (els.regenMass) els.regenMass.disabled = !hasMass;
-      if (els.regenVar) els.regenVar.disabled = !hasMass;
-      if (els.clearMass) els.clearMass.disabled = !hasMass;
       const canLoft = !!(loft && loft.sections.length >= 2);
       const hasLoft = !!(viewer && viewer.hasLoft && viewer.hasLoft());
       if (els.generateLoft) els.generateLoft.disabled = !canLoft;
@@ -4137,7 +4211,11 @@
       for (const chunk of chunks) {
         const item = document.createElement("li");
         item.className = chunk.id === selectedChunkId ? "selected" : "";
-        item.innerHTML = `<span>${chunk.label} · ${chunk.width.toFixed(1)} × ${chunk.height.toFixed(1)}</span>`;
+        const footprint =
+          chunk.normalized && chunk.originalWidth
+            ? `${formatSquareFeet(chunk.originalWidth)} → 20' × 20'`
+            : formatChunkFootprint(chunk.bounds) || formatChunkFeet(chunk.width, chunk.height);
+        item.innerHTML = `<span>${chunk.label} · ${footprint}</span>`;
         const remove = document.createElement("button");
         remove.type = "button";
         remove.textContent = "×";
@@ -4233,7 +4311,7 @@
       selecting = true;
       draft = null;
       updateSelectMode();
-      setStatus("Draw a rectangle on the 2D Reference. The full 20 × 20 field stays visible.", "active");
+      setStatus("Draw a square on the 2D Reference. It scales uniformly to 20' × 20' when confirmed.", "active");
     }
 
     function cancelSelect() {
@@ -4245,17 +4323,18 @@
     }
 
     function confirmSelection() {
-      if (!draft || draft.w < 0.4 || draft.h < 0.4) {
-        setStatus("Draw a region on the 2D Reference first.", "error");
+      if (!draft || draft.w < MIN_CHUNK_SIDE) {
+        setStatus("Draw a square region on the 2D Reference first.", "error");
         return;
       }
+      const selection = normalizeSquareBounds(draft);
       const source = api && api.capture2d ? api.capture2d() : null;
       if (!source || !source.nodes || !source.nodes.length) {
         setStatus("Grow a 2D simulation in Studio first. The chunk copies existing branches.", "error");
         return;
       }
       const index = nextChunkIndex++;
-      const chunk = captureChunkFromSource(source, draft, {
+      let chunk = captureChunkFromSource(source, selection, {
         id: `chunk-${index}`,
         index,
         label: `Chunk ${pad2(index)}`,
@@ -4264,6 +4343,7 @@
         setStatus("No branch geometry in that region.", "error");
         return;
       }
+      normalizeChunkToSection(chunk);
       chunks.push(chunk);
       selectedChunkId = chunk.id;
       selecting = false;
@@ -4272,8 +4352,9 @@
       refreshChunkUi();
       refreshChunks();
       markWorkspaceDirty();
+      const scale = chunk.sectionScale || 1;
       setStatus(
-        `${chunk.label} placed on the XY plane at Z = 0 · ${chunk.width.toFixed(1)} × ${chunk.height.toFixed(1)}`,
+        `${chunk.label} normalized to 20' × 20' · scale ${scale.toFixed(2)}× from ${formatSquareFeet(chunk.originalWidth)}`,
         "active"
       );
     }
@@ -4283,8 +4364,6 @@
       if (index < 0) return;
       const chunk = chunks[index];
       chunks.splice(index, 1);
-      massSeeds.delete(id);
-      if (viewer && viewer.removeMass) viewer.removeMass(id);
       if (chunk.loftSetId) {
         const li = loftSets.findIndex((item) => item.id === chunk.loftSetId);
         if (li >= 0) loftSets.splice(li, 1);
@@ -4669,9 +4748,9 @@
       if (els.exportLoftObj) els.exportLoftObj.disabled = !hasLoft;
       if (els.exportVoxels3dm) els.exportVoxels3dm.disabled = !hasVoxels;
       if (els.exportVoxelsObj) els.exportVoxelsObj.disabled = !hasVoxels;
-      if (!hasLoft && !hasVoxels) setExportStatus("Generate a loft or voxels to export.");
-      else if (hasLoft && hasVoxels) setExportStatus("Ready · loft and voxels");
-      else if (hasLoft) setExportStatus("Ready · loft");
+      if (!hasLoft && !hasVoxels) setExportStatus("Generate a 3D variation or voxels to export.");
+      else if (hasLoft && hasVoxels) setExportStatus("Ready · solid and voxels");
+      else if (hasLoft) setExportStatus("Ready · generated solid");
       else setExportStatus("Ready · voxels");
     }
 
@@ -4905,7 +4984,7 @@
 
     function ensureLoftForExport() {
       if (!hasExistingLoft()) {
-        setStatus("Generate a loft before exporting.", "error");
+        setStatus("Generate a 3D variation before exporting.", "error");
         return false;
       }
       if (loftStale) {
@@ -4942,26 +5021,33 @@
       const base = exportBaseName();
       try {
         if (kind === "3dm") {
-          setStatus("Writing Rhino polysurface...", "active");
-          const loftLib = global.D7SpatialLoft;
-          const loft = selectedLoft();
-          if (!loftLib || !loftLib.generateSolidRuns || !loft) {
-            throw new Error("Polysurface generation failed");
+          if (selectedGenKey && generatedVars.length && lib.exportGeometryMesh3dm) {
+            setStatus("Writing Rhino mesh in feet...", "active");
+            await lib.exportGeometryMesh3dm(geom, `${base}.3dm`, "GENERATED");
+            setExportStatus(`Saved ${base}.3dm · Rhino mesh · 1 unit = 1 foot`, "active");
+            setStatus(`Exported ${base}.3dm · Rhino mesh · units: Feet. Workspace 20' cube. Not a Brep.`, "active");
+          } else {
+            setStatus("Writing Rhino polysurface...", "active");
+            const loftLib = global.D7SpatialLoft;
+            const loft = selectedLoft();
+            if (!loftLib || !loftLib.generateSolidRuns || !loft) {
+              throw new Error("Polysurface generation failed");
+            }
+            const solids = loftLib.generateSolidRuns(global.THREE, loft, loftParams(false));
+            if (!solids || !solids.runs || !solids.runs.length) {
+              throw new Error("Polysurface generation failed");
+            }
+            const result = await lib.exportLoftPolysurface(solids.runs, `${base}.3dm`, "LOFT");
+            const n = result && result.closed != null ? result.closed : result.added;
+            setExportStatus(`Saved ${base}.3dm · ${n} closed polysurface${n === 1 ? "" : "s"} · units: Feet`, "active");
+            setStatus(`Exported ${base}.3dm · Rhino Brep · model units: Feet.`, "active");
           }
-          const solids = loftLib.generateSolidRuns(global.THREE, loft, loftParams(false));
-          if (!solids || !solids.runs || !solids.runs.length) {
-            throw new Error("Polysurface generation failed");
-          }
-          const result = await lib.exportLoftPolysurface(solids.runs, `${base}.3dm`, "LOFT");
-          const n = result && result.closed != null ? result.closed : result.added;
-          setExportStatus(`Saved ${base}.3dm · ${n} closed polysurface${n === 1 ? "" : "s"}`, "active");
-          setStatus(`Exported ${base}.3dm · Rhino Brep · units: feet.`, "active");
         } else {
           setStatus("Writing OBJ mesh...", "active");
           const text = lib.geometryToOBJ(geom, base);
           lib.exportOBJ(text, `${base}.obj`);
-          setExportStatus(`Saved ${base}.obj · mesh`, "active");
-          setStatus(`Exported ${base}.obj · mesh · units: feet.`, "active");
+          setExportStatus(`Saved ${base}.obj · mesh · 1 unit = 1 foot`, "active");
+          setStatus(`Exported ${base}.obj · mesh. 1 OBJ unit = 1 foot. Import into Rhino with units = Feet.`, "active");
         }
       } catch (err) {
         const msg = err && err.message ? err.message : "Export failed.";
@@ -4991,7 +5077,7 @@
           const result = await lib.exportVoxelPolysurface(data.cells, data.resolution, `${base}.3dm`, "VOXELS");
           const n = result && result.closed != null ? result.closed : result.added;
           setExportStatus(`Saved ${base}.3dm · ${n} closed polysurface${n === 1 ? "" : "s"}`, "active");
-          setStatus(`Exported ${base}.3dm · closed voxel Breps · units: feet.`, "active");
+          setStatus(`Exported ${base}.3dm · closed voxel Breps · model units: Feet.`, "active");
         } else {
           const mesh = currentVoxelMesh();
           if (!mesh || !mesh.quads || !mesh.quads.length) {
@@ -5001,7 +5087,7 @@
           setStatus("Writing voxel OBJ mesh...", "active");
           lib.exportOBJ(lib.voxelToOBJ(mesh, base), `${base}.obj`);
           setExportStatus(`Saved ${base}.obj · mesh`, "active");
-          setStatus(`Exported ${base}.obj · mesh · units: feet.`, "active");
+          setStatus(`Exported ${base}.obj · voxel mesh. 1 OBJ unit = 1 foot. Import into Rhino with units = Feet.`, "active");
         }
       } catch (err) {
         const msg = err && err.message ? err.message : "Voxel export failed.";
@@ -5236,21 +5322,6 @@
       setStatus(`Loaded ${variation.label}.`, "active");
     }
 
-    function massParams() {
-      return {
-        fidelity: Number(els.fidelity?.value ?? 80) / 100,
-        variation: Number(els.massVariation?.value ?? 22) / 100,
-        width: Number(els.solidWidth?.value ?? 28) / 100,
-        depth: Number(els.solidDepth?.value ?? 40) / 100,
-        reach: Number(els.spatialReach?.value ?? 45) / 100,
-        useHierarchy: !!(els.useHierarchy && els.useHierarchy.checked),
-      };
-    }
-
-    function solidOpacityValue() {
-      return Number(els.solidOpacity?.value ?? 100) / 100;
-    }
-
     function voxelOpacityValue() {
       return Number(els.voxelOpacity?.value ?? 100) / 100;
     }
@@ -5267,10 +5338,8 @@
       const res = lib ? lib.clampRes(Number(els.voxelRes?.value ?? 20)) : 20;
       const source = els.voxelSource ? els.voxelSource.value : "loft";
       const target = els.voxelTarget ? els.voxelTarget.value : "selected";
-      const width = Number(els.solidWidth?.value ?? 28);
-      const hier = !!(els.useHierarchy && els.useHierarchy.checked);
       const fidelity = Math.round(Number(els.voxelFidelity?.value ?? 75));
-      const parts = [`${res}|${source}|${target}|${width}|${hier ? 1 : 0}|${fidelity}`];
+      const parts = [`${res}|${source}|${target}|${fidelity}`];
       const list = voxelTargetChunks();
       for (let i = 0; i < list.length; i++) {
         const c = list[i];
@@ -5305,9 +5374,6 @@
         }
       }
       if (viewer) {
-        for (const c of list) {
-          parts.push(`m:${c.id}:${viewer.hasMass && viewer.hasMass(c.id) ? 1 : 0}`);
-        }
         parts.push(`loftMesh:${viewer.hasLoft && viewer.hasLoft() ? 1 : 0}`);
       }
       return parts.join("|");
@@ -5347,8 +5413,10 @@
         setVoxelStatus("Voxel model outdated", "error");
       } else if (hasModel && voxelInfo) {
         const voidCount = voxelInfo.totalCount - voxelInfo.occupiedCount;
+        const sizes = global.D7SpatialVoxels && global.D7SpatialVoxels.sizeFeet ? global.D7SpatialVoxels.sizeFeet(voxelInfo.resolution) : null;
+        const sizeNote = sizes ? ` · cell ${formatFeet(sizes.cell)}` : "";
         setVoxelStatus(
-          `${voxelInfo.resolution}³ · ${voxelInfo.voxelCount || voxelInfo.occupiedCount} voxels · ${voidCount} void`,
+          `${voxelInfo.resolution}³${sizeNote} · ${voxelInfo.voxelCount || voxelInfo.occupiedCount} voxels · ${voidCount} void`,
           "active"
         );
       } else if (!hasModel) {
@@ -5361,6 +5429,7 @@
           els.voxelStats.textContent = "Small: 0 · Medium: 0 · Large: 0 · Total: 0 · Connected: 0 · Isolated: 0";
         }
       }
+      paintVoxelSizeReadout();
       paintExportButtons();
     }
 
@@ -5384,8 +5453,8 @@
       if (viewer.setSourcePlanesVisible) {
         viewer.setSourcePlanesVisible(!!(els.showPlane && els.showPlane.checked));
       }
-      if (viewer.setMassWireframe) {
-        viewer.setMassWireframe(!!(els.showWireframe && els.showWireframe.checked));
+      if (viewer.setLoftWireframe) {
+        viewer.setLoftWireframe(!!(els.showWireframe && els.showWireframe.checked));
       }
       if (viewer.setSourceChunksVisible) {
         viewer.setSourceChunksVisible(lines && (!els.showSourceChunk || els.showSourceChunk.checked));
@@ -5396,9 +5465,6 @@
       if (viewer.setLoftLinesVisible) {
         viewer.setLoftLinesVisible(!els.showLoftLines || els.showLoftLines.checked);
       }
-      if (viewer.setMassVisible) {
-        viewer.setMassVisible(displaySolids);
-      }
       if (viewer.setLoftSolidsVisible) {
         viewer.setLoftSolidsVisible(displaySolids && (!els.showLoftSolids || els.showLoftSolids.checked));
       }
@@ -5406,6 +5472,10 @@
         viewer.setVoxelsVisible(displayVoxels);
       }
       if (viewer.setSilhouetteMode) viewer.setSilhouetteMode(silhouetteOn);
+      if (viewer.refreshSharedGrid) viewer.refreshSharedGrid();
+      if (viewer.setSharedGridVisible && els.showSharedGrid) {
+        viewer.setSharedGridVisible(els.showSharedGrid.checked);
+      }
       paintDisplayButtons();
       markWorkspaceDirty();
     }
@@ -5426,8 +5496,8 @@
       }
       if (!viewer) ensureViewer();
       const resolution = lib.clampRes(Number(els.voxelRes?.value ?? 20));
-      const width = Number(els.solidWidth?.value ?? 28) / 100;
-      const useHierarchy = !!(els.useHierarchy && els.useHierarchy.checked);
+      const width = 0.28;
+      const useHierarchy = false;
       const fidelity = Number(els.voxelFidelity?.value ?? 75) / 100;
       let segments = [];
       let geometries = [];
@@ -5446,7 +5516,7 @@
       }
       if (source === "loft") {
         if (!hasExistingLoft()) {
-          if (!silent) setStatus("Generate a loft before voxelizing the lofted solid.", "error");
+          if (!silent) setStatus("Generate a 3D variation before voxelizing.", "error");
           return;
         }
         const geom = viewer.getLoftGeometry ? viewer.getLoftGeometry() : null;
@@ -5460,18 +5530,7 @@
               : loftSets.slice();
         segments = collectLineSegments(loftList);
         if (!geometries.length) {
-          if (!silent) setStatus("Generate a loft before voxelizing the lofted solid.", "error");
-          return;
-        }
-      } else if (source === "solids") {
-        const selectedId = els.voxelTarget && els.voxelTarget.value === "selected" ? selectedChunkId : null;
-        const loft = selectedLoft();
-        const includeLoft = !!(viewer.hasLoft && viewer.hasLoft() && (!selectedId || (loft && loft.sourceChunkId === selectedId)));
-        geometries = viewer.collectSolidGeometries ? viewer.collectSolidGeometries(selectedId, includeLoft) : [];
-        const loftList = includeLoft && loft ? [loft] : [];
-        segments = collectLineSegments(loftList);
-        if (!geometries.length) {
-          if (!silent) setStatus("Generate branch solids or a loft before voxelizing solids.", "error");
+          if (!silent) setStatus("Generate a 3D variation before voxelizing.", "error");
           return;
         }
       } else {
@@ -5539,69 +5598,6 @@
       paintVoxelButtons();
       refreshChunkUi();
       setStatus("Voxels cleared. Lines, lofts, and solids are unchanged.", "active");
-    }
-
-    function generateSpatialMass(options) {
-      if (turntableBusy) return;
-      const chunk = selectedChunk();
-      if (!chunk) {
-        setStatus("Select a placed 2D chunk first.", "error");
-        return;
-      }
-      if (!chunk.branches || !chunk.branches.length) {
-        setStatus("That chunk has no branch geometry to convert into solids.", "error");
-        return;
-      }
-      const lib = global.D7SpatialMass;
-      if (!lib || !global.THREE) {
-        setStatus("Branch-solid generator did not load.", "error");
-        return;
-      }
-      if (!viewer) ensureViewer();
-      let seed = massSeeds.get(chunk.id) || 1;
-      if (options && options.newSeed) seed += 1;
-      massSeeds.set(chunk.id, seed);
-      const params = Object.assign(massParams(), { seed });
-      setStatus(`Generating branch solids from ${chunk.label}...`, "active");
-      const run = () => {
-        try {
-          const result = lib.generate(global.THREE, chunk, params);
-          if (!result.vertexCount) {
-            setStatus("No solid geometry formed from those branches.", "error");
-            refreshChunkUi();
-            return;
-          }
-          const geom = new global.THREE.BufferGeometry();
-          geom.setAttribute("position", new global.THREE.Float32BufferAttribute(result.positions, 3));
-          geom.setAttribute("normal", new global.THREE.Float32BufferAttribute(result.normals, 3));
-          viewer.setMass(chunk.id, geom, chunk, solidOpacityValue());
-          applyDisplayToggles();
-          refreshChunkUi();
-          markVoxelStale();
-          setStatus(
-            `${chunk.label} \u2192 Branch solids · ${result.triangleCount} faces · seed ${seed}`,
-            "active"
-          );
-        } catch (err) {
-          setStatus(err && err.message ? err.message : "Branch-solid generation failed.", "error");
-        }
-      };
-      requestAnimationFrame(run);
-    }
-
-    function clearSelectedMass() {
-      const chunk = selectedChunk();
-      if (!chunk) {
-        setStatus("Select a chunk with solids to clear.", "error");
-        return;
-      }
-      if (!viewer || !viewer.hasMass || !viewer.hasMass(chunk.id)) {
-        setStatus("That chunk has no solids to clear.", "error");
-        return;
-      }
-      viewer.removeMass(chunk.id);
-      refreshChunkUi();
-      setStatus(`${chunk.label} solids cleared. Source branches remain.`, "active");
     }
 
     function drawPreview() {
@@ -5735,16 +5731,169 @@
           viewer.setViewMode(viewModeUi);
         }
         paintViewButtons();
+        if (viewer.refreshSharedGrid) viewer.refreshSharedGrid();
       }
       return viewer;
     }
 
-    bindSlider(els.fidelity, els.fidelityVal, (v) => `${Math.round(Number(v))}%`);
-    bindSlider(els.massVariation, els.massVariationVal, (v) => `${Math.round(Number(v))}%`);
-    bindSlider(els.solidWidth, els.solidWidthVal, (v) => `${Math.round(Number(v))}%`);
-    bindSlider(els.solidDepth, els.solidDepthVal, (v) => `${Math.round(Number(v))}%`);
-    bindSlider(els.spatialReach, els.spatialReachVal, (v) => `${Math.round(Number(v))}%`);
-    bindSlider(els.solidOpacity, els.solidOpacityVal, (v) => `${Math.round(Number(v))}%`);
+    function readCustomVerticalSpacing() {
+      const v = Number(els.verticalSpacing?.value);
+      return Number.isFinite(v) && v > 0 ? v : 1;
+    }
+
+    function paintCustomGridHud() {
+      const cg = global.D7CustomGrid;
+      const d =
+        cg && cg.getDiagnostics
+          ? cg.getDiagnostics()
+          : { name: "None", nodes: 0, edges: 0, components: 0, status: "needs_review" };
+      if (els.activeGridName) els.activeGridName.textContent = `Active Grid: ${d.name || "None"}`;
+      if (els.gridStats) {
+        els.gridStats.textContent = `Detected Nodes: ${d.nodes} · Detected Edges: ${d.edges} · Connected Components: ${d.components}`;
+      }
+      if (els.gridValidity) {
+        const ok = d.status === "valid";
+        els.gridValidity.textContent = `Grid Status: ${ok ? "Valid" : "Needs Review"}`;
+        els.gridValidity.classList.toggle("error", !ok);
+        els.gridValidity.classList.toggle("active", ok);
+      }
+      if (els.rasterPanel) {
+        const p = cg && cg.getPending();
+        els.rasterPanel.classList.toggle("hidden", !(p && p.kind === "raster"));
+        if (p && p.kind === "raster" && els.rasterThreshold) {
+          const t = String(Math.round(p.threshold));
+          if (els.rasterThreshold.value !== t) els.rasterThreshold.value = t;
+          if (els.rasterThresholdVal) els.rasterThresholdVal.textContent = t;
+        }
+      }
+      if (els.useDetected) {
+        els.useDetected.disabled = !(cg && cg.getPending() && cg.getPending().kind === "raster");
+      }
+      if (cg && cg.isCustom() && els.verticalSpacing && cg.getActive()) {
+        const vs = String(cg.getActive().verticalSpacing);
+        if (els.verticalSpacing.value !== vs) {
+          const opt = els.verticalSpacing.querySelector(`option[value="${vs}"]`);
+          if (opt) els.verticalSpacing.value = vs;
+        }
+      }
+      paintSpace3dRasterOverlay();
+    }
+
+    function paintSpace3dRasterOverlay() {
+      if (!els.rasterOverlay) return;
+      const cg = global.D7CustomGrid;
+      const p = cg && cg.getPending();
+      const canvas = els.rasterOverlay;
+      if (!p || p.kind !== "raster") return;
+      const ctx = canvas.getContext("2d");
+      if (!ctx || !p.canvas) return;
+      canvas.width = p.width;
+      canvas.height = p.height;
+      ctx.clearRect(0, 0, p.width, p.height);
+      ctx.drawImage(p.canvas, 0, 0);
+      cg.renderPreviewOverlay(ctx, p.width, p.height);
+    }
+
+    function openCustomGridPicker() {
+      if (!els.customGridFile) return;
+      els.customGridFile.value = "";
+      els.customGridFile.click();
+    }
+
+    async function onCustomGridFileSelected() {
+      const file = els.customGridFile?.files && els.customGridFile.files[0];
+      if (els.customGridFile) els.customGridFile.value = "";
+      if (!file || !global.D7CustomGrid) return;
+      const v = readCustomVerticalSpacing();
+      try {
+        const result = await global.D7CustomGrid.importAndActivate(file, v);
+        if (result && result.kind === "raster") {
+          if (els.customGridStatus) {
+            els.customGridStatus.textContent =
+              "Inspect the red overlay, adjust Detection Sensitivity if needed, then Use Detected Grid.";
+          }
+        } else if (els.customGridStatus) {
+          const a = global.D7CustomGrid.getActive && global.D7CustomGrid.getActive();
+          const stats = a && a.stats;
+          els.customGridStatus.textContent = stats
+            ? `Grid detected and saved · ${stats.planarNodes} nodes · ${stats.planarEdges} edges. 3D Grid Growth uses this automatically.`
+            : "Shared grid saved. 3D Grid Growth uses it automatically.";
+        }
+        paintCustomGridHud();
+      } catch (e) {
+        if (els.customGridStatus) els.customGridStatus.textContent = e.message || String(e);
+      }
+    }
+
+    if (els.importGrid) els.importGrid.addEventListener("click", openCustomGridPicker);
+    if (els.replaceCustomGrid) els.replaceCustomGrid.addEventListener("click", openCustomGridPicker);
+    if (els.customGridFile) els.customGridFile.addEventListener("change", onCustomGridFileSelected);
+    if (els.rasterThreshold && els.rasterThresholdVal) {
+      els.rasterThresholdVal.textContent = String(els.rasterThreshold.value);
+      els.rasterThreshold.addEventListener("input", () => {
+        els.rasterThresholdVal.textContent = String(els.rasterThreshold.value);
+        if (global.D7CustomGrid) {
+          global.D7CustomGrid.setPendingThreshold(els.rasterThreshold.value);
+          paintCustomGridHud();
+        }
+      });
+    }
+    if (els.useDetected) {
+      els.useDetected.addEventListener("click", async () => {
+        if (!global.D7CustomGrid) return;
+        try {
+          await global.D7CustomGrid.confirmRasterAndActivate(readCustomVerticalSpacing());
+          if (els.customGridStatus) {
+            els.customGridStatus.textContent = "Shared grid saved. 3D Grid Growth uses it automatically.";
+          }
+          paintCustomGridHud();
+        } catch (e) {
+          if (els.customGridStatus) els.customGridStatus.textContent = e.message || String(e);
+        }
+      });
+    }
+    if (els.verticalSpacing) {
+      els.verticalSpacing.addEventListener("change", async () => {
+        if (!global.D7CustomGrid || !global.D7CustomGrid.isCustom()) return;
+        try {
+          await global.D7CustomGrid.saveActiveVerticalSpacing(readCustomVerticalSpacing());
+          if (els.customGridStatus) {
+            els.customGridStatus.textContent = "Vertical spacing updated on shared grid.";
+          }
+          paintCustomGridHud();
+        } catch (e) {
+          if (els.customGridStatus) els.customGridStatus.textContent = e.message || String(e);
+        }
+      });
+    }
+
+    if (global.D7CustomGrid) {
+      global.D7CustomGrid.subscribe(() => {
+        paintCustomGridHud();
+        if (viewer && viewer.refreshSharedGrid) viewer.refreshSharedGrid();
+        if (els.showSharedGrid && global.D7CustomGrid.getShowGrid() !== els.showSharedGrid.checked) {
+          els.showSharedGrid.checked = global.D7CustomGrid.getShowGrid();
+        }
+        applyDisplayToggles();
+      });
+      if (global.D7CustomGrid.init) {
+        global.D7CustomGrid.init().then(() => {
+          paintCustomGridHud();
+          if (viewer && viewer.refreshSharedGrid) viewer.refreshSharedGrid();
+        });
+      }
+    }
+    if (els.showSharedGrid) {
+      els.showSharedGrid.addEventListener("change", () => {
+        if (global.D7CustomGrid) global.D7CustomGrid.setShowGrid(els.showSharedGrid.checked);
+        applyDisplayToggles();
+      });
+    }
+
+    bindSlider(els.genVariation, els.genVariationVal, (v) => `${Math.round(Number(v))}`);
+    bindSlider(els.genExpansion, els.genExpansionVal, (v) => `${Math.round(Number(v))}`);
+    bindSlider(els.genOpenness, els.genOpennessVal, (v) => `${Math.round(Number(v))}`);
+    bindSlider(els.genGrowth, els.genGrowthVal, (v) => `${Math.round(Number(v))}`);
     bindSlider(els.loftOpacity, els.loftOpacityVal, (v) => `${Math.round(Number(v))}%`);
     bindSlider(els.offset, els.offsetVal, (v) => Number(v).toFixed(1));
     bindSlider(els.sectionSpacing, els.sectionSpacingVal, (v) => Number(v).toFixed(1));
@@ -5779,6 +5928,190 @@
       } catch (err) {
         return null;
       }
+    }
+
+    function genUserParams() {
+      return {
+        variation: Number(els.genVariation?.value ?? 50),
+        expansion: Number(els.genExpansion?.value ?? 50),
+        openness: Number(els.genOpenness?.value ?? 50),
+        growth: Number(els.genGrowth?.value ?? 0),
+        seed: genSessionSeed,
+      };
+    }
+
+    function setGenStatus(message, kind) {
+      if (!els.genStatus) return;
+      els.genStatus.textContent = message;
+      els.genStatus.classList.toggle("active", kind === "active");
+      els.genStatus.classList.toggle("error", kind === "error");
+    }
+
+    function paintGenMode() {
+      const paint = (el, on) => {
+        if (!el) return;
+        el.classList.toggle("primary", on);
+        el.classList.toggle("ghost", !on);
+      };
+      paint(els.genModeA, genMode === "A");
+      paint(els.genModeB, genMode === "B");
+      paint(els.genModeBoth, genMode === "both");
+    }
+
+    function paintGallery() {
+      const host = els.genGallery;
+      if (!host) return;
+      host.innerHTML = "";
+      const order = ["A1", "A2", "A3", "B1", "B2", "B3"];
+      for (const key of order) {
+        const rec = generatedVars.find((item) => item.key === key);
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "space3d-gen-card" + (selectedGenKey === key ? " active" : "");
+        card.disabled = !rec;
+        const img = rec && rec.thumbnail ? `<img alt="${key}" src="${rec.thumbnail}" />` : `<canvas width="120" height="64"></canvas>`;
+        card.innerHTML = `${img}<span>${rec ? rec.label : key}</span>`;
+        if (rec) {
+          card.addEventListener("click", () => openGeneratedVariation(key));
+        }
+        host.appendChild(card);
+      }
+    }
+
+    function geometryFromGenerated(rec) {
+      const lib = global.D7SpatialGenerate;
+      if (!rec || !lib || !global.THREE) return null;
+      if (rec.packed && lib.geometryFromPacked) return lib.geometryFromPacked(global.THREE, rec.packed);
+      return null;
+    }
+
+    function applyGeneratedGeometry(rec) {
+      if (!rec) return false;
+      ensureViewer();
+      const geom = geometryFromGenerated(rec);
+      if (!geom || !viewer || !viewer.setLoft) return false;
+      viewer.setLoft(geom, loftOpacityValue(), { draft: false });
+      loftCapsules = [];
+      loftStale = false;
+      displaySolids = true;
+      if (els.showLoftSolids) els.showLoftSolids.checked = true;
+      applyDisplayToggles();
+      paintVoxelButtons();
+      return true;
+    }
+
+    function openGeneratedVariation(key) {
+      const rec = generatedVars.find((item) => item.key === key);
+      if (!rec) return;
+      selectedGenKey = key;
+      exportNameHint = rec.label;
+      applyGeneratedGeometry(rec);
+      paintGallery();
+      markWorkspaceDirty();
+      setStatus(`Opened ${rec.label}. Voxelize or export this variation.`, "active");
+      setGenStatus(`${rec.label} · ${rec.triangleCount || 0} faces · seed ${rec.seed}`, "active");
+    }
+
+    async function captureGenThumb() {
+      if (!viewer || !viewer.capturePng) return "";
+      const prevVox = displayVoxels;
+      const prevLines = displayLines;
+      try {
+        displayVoxels = false;
+        displayLines = false;
+        displaySolids = true;
+        if (viewer.setVoxelsVisible) viewer.setVoxelsVisible(false);
+        if (viewer.setSourceChunksVisible) viewer.setSourceChunksVisible(false);
+        if (viewer.setSectionLayersVisible) viewer.setSectionLayersVisible(false);
+        if (viewer.setLoftLinesVisible) viewer.setLoftLinesVisible(false);
+        if (viewer.setLoftSolidsVisible) viewer.setLoftSolidsVisible(true);
+        const result = await viewer.capturePng({ size: 160, transparent: false });
+        const blob = result && result.blob;
+        if (!blob) return "";
+        return await blobToDataUrl(blob);
+      } catch (err) {
+        return "";
+      } finally {
+        displayVoxels = prevVox;
+        displayLines = prevLines;
+        applyDisplayToggles();
+      }
+    }
+
+    async function generateVariations() {
+      const chunk = selectedChunk();
+      const lib = global.D7SpatialGenerate;
+      if (!chunk) {
+        setStatus("Select a 2D chunk first.", "error");
+        return;
+      }
+      if (!lib || !global.THREE) {
+        setStatus("3D generation module did not load.", "error");
+        return;
+      }
+      if (genBusy) return;
+      genBusy = true;
+      genCancel = false;
+      genSessionSeed = (Math.random() * 1e9) | 0;
+      generatedVars = [];
+      selectedGenKey = null;
+      paintGallery();
+      fillTransformUi();
+      const keys = lib.keysForMode(genMode);
+      const user = genUserParams();
+      const anchor = els.genAnchor ? els.genAnchor.value : "center";
+      setStatus(`Generating ${keys.length} volumetric variation(s)...`, "active");
+      try {
+        for (let i = 0; i < keys.length; i++) {
+          if (genCancel) break;
+          const key = keys[i];
+          setGenStatus(`Generating ${key} · ${i + 1} / ${keys.length}`, "active");
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          let rec = null;
+          try {
+            rec = lib.generateOne(global.THREE, chunk, { key, user, anchor });
+          } catch (genErr) {
+            setGenStatus(`${key} failed: ${genErr && genErr.message ? genErr.message : "generation error"}`, "error");
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            continue;
+          }
+          if (!rec || !rec.ok) {
+            setGenStatus((rec && rec.error) || `${key} produced no solid.`, "error");
+            continue;
+          }
+          generatedVars.push({
+            key: rec.key,
+            label: rec.label,
+            mode: rec.mode,
+            seed: rec.seed,
+            params: rec.params,
+            anchor: rec.anchor,
+            packed: rec.packed,
+            triangleCount: rec.triangleCount,
+            thumbnail: "",
+          });
+          paintGallery();
+          if (applyGeneratedGeometry(generatedVars[generatedVars.length - 1])) {
+            generatedVars[generatedVars.length - 1].thumbnail = await captureGenThumb();
+            paintGallery();
+          }
+        }
+        if (genCancel) {
+          setGenStatus("Generation cancelled.");
+          setStatus("Generation cancelled.");
+        } else if (!generatedVars.length) {
+          setGenStatus("No solid geometry was produced.", "error");
+          setStatus("Generation produced no solid. Try a denser chunk.", "error");
+        } else {
+          openGeneratedVariation(generatedVars[0].key);
+          setStatus(`Generated ${generatedVars.length} 3D variation(s). Click a card to inspect.`, "active");
+        }
+      } catch (err) {
+        setStatus(err && err.message ? err.message : "Generation failed.", "error");
+      }
+      genBusy = false;
+      fillTransformUi();
+      markWorkspaceDirty();
     }
 
     function saved3dStore() {
@@ -5832,16 +6165,6 @@
     }
 
     function captureWorkspaceSnapshot() {
-      const masses = {};
-      for (const chunk of chunks) {
-        const hasMass = !!(viewer && viewer.hasMass && viewer.hasMass(chunk.id));
-        if (hasMass || massSeeds.has(chunk.id)) {
-          masses[chunk.id] = {
-            exists: hasMass,
-            seed: massSeeds.get(chunk.id) || 1,
-          };
-        }
-      }
       const voxelPayload = viewer && viewer.getVoxelExportData ? viewer.getVoxelExportData() : null;
       const voxelCellsPacked = packVoxelCells((voxelPayload && voxelPayload.cells) || []);
       const hasVoxels = !!(voxelCellsPacked.length && viewer && viewer.hasVoxels && viewer.hasVoxels());
@@ -5868,6 +6191,13 @@
           opacity: Number(els.loftOpacity?.value ?? 100),
           live: !!liveLoftOn,
         },
+        generation: {
+          mode: genMode,
+          anchor: els.genAnchor ? els.genAnchor.value : "center",
+          user: genUserParams(),
+          selectedKey: selectedGenKey,
+          variations: clonePlain(generatedVars) || [],
+        },
         voxels: {
           exists: hasVoxels,
           stale: !!voxelStale,
@@ -5892,16 +6222,6 @@
           colorBySize: !!(els.voxelColorBySize && els.voxelColorBySize.checked),
           edges: !els.voxelEdges || els.voxelEdges.checked,
           live: !!liveVoxelsOn,
-        },
-        masses,
-        massParams: {
-          width: Number(els.solidWidth?.value ?? 28),
-          depth: Number(els.solidDepth?.value ?? 40),
-          reach: Number(els.spatialReach?.value ?? 45),
-          fidelity: Number(els.fidelity?.value ?? 80),
-          variation: Number(els.massVariation?.value ?? 22),
-          useHierarchy: !!(els.useHierarchy && els.useHierarchy.checked),
-          opacity: Number(els.solidOpacity?.value ?? 100),
         },
         display: {
           lines: !!displayLines,
@@ -6163,20 +6483,15 @@
       const voxels = workspace.voxels || {};
       if (els.voxelRes) els.voxelRes.value = String(voxels.resolution || 20);
       setSlider(els.voxelFidelity, els.voxelFidelityVal, voxels.fidelity != null ? voxels.fidelity : 75, (v) => `${Math.round(Number(v))}%`);
-      if (els.voxelSource) els.voxelSource.value = voxels.source || "loft";
+      if (els.voxelSource) {
+        const src = voxels.source || "loft";
+        els.voxelSource.value = src === "solids" ? "loft" : src;
+      }
       if (els.voxelTarget) els.voxelTarget.value = voxels.target || "selected";
       setSlider(els.voxelOpacity, els.voxelOpacityVal, voxels.opacity != null ? voxels.opacity : 100, (v) => `${Math.round(Number(v))}%`);
       if (els.voxelColorBySize) els.voxelColorBySize.checked = !!voxels.colorBySize;
       if (els.voxelEdges) els.voxelEdges.checked = voxels.edges !== false;
       liveVoxelsOn = !!voxels.live;
-      const mass = workspace.massParams || {};
-      setSlider(els.solidWidth, els.solidWidthVal, mass.width != null ? mass.width : 28, (v) => `${Math.round(Number(v))}%`);
-      setSlider(els.solidDepth, els.solidDepthVal, mass.depth != null ? mass.depth : 40, (v) => `${Math.round(Number(v))}%`);
-      setSlider(els.spatialReach, els.spatialReachVal, mass.reach != null ? mass.reach : 45, (v) => `${Math.round(Number(v))}%`);
-      setSlider(els.fidelity, els.fidelityVal, mass.fidelity != null ? mass.fidelity : 80, (v) => `${Math.round(Number(v))}%`);
-      setSlider(els.massVariation, els.massVariationVal, mass.variation != null ? mass.variation : 22, (v) => `${Math.round(Number(v))}%`);
-      if (els.useHierarchy) els.useHierarchy.checked = !!mass.useHierarchy;
-      setSlider(els.solidOpacity, els.solidOpacityVal, mass.opacity != null ? mass.opacity : 100, (v) => `${Math.round(Number(v))}%`);
       const display = workspace.display || {};
       displayLines = display.lines !== false;
       displaySolids = display.solids !== false;
@@ -6193,25 +6508,6 @@
       if (els.showWireframe) els.showWireframe.checked = !!display.showWireframe;
     }
 
-    function restoreMasses(workspace) {
-      const lib = global.D7SpatialMass;
-      const masses = workspace.masses || {};
-      massSeeds.clear();
-      if (!lib || !global.THREE || !viewer) return;
-      for (const chunk of chunks) {
-        const rec = masses[chunk.id];
-        if (!rec) continue;
-        massSeeds.set(chunk.id, rec.seed || 1);
-        if (!rec.exists) continue;
-        const result = lib.generate(global.THREE, chunk, Object.assign(massParams(), { seed: rec.seed || 1 }));
-        if (!result || !result.vertexCount) continue;
-        const geom = new global.THREE.BufferGeometry();
-        geom.setAttribute("position", new global.THREE.Float32BufferAttribute(result.positions, 3));
-        geom.setAttribute("normal", new global.THREE.Float32BufferAttribute(result.normals, 3));
-        viewer.setMass(chunk.id, geom, chunk, solidOpacityValue());
-      }
-    }
-
     function restoreWorkspaceFromRecord(record) {
       const workspace = (record && record.workspace) || {};
       applyingSaved3d = true;
@@ -6222,6 +6518,9 @@
         chunks.length = 0;
         for (const chunk of loadedChunks) {
           ensureGraphIds(chunk);
+          if (!chunk.normalized && (chunk.width !== CUBE || chunk.height !== CUBE)) {
+            normalizeChunkToSection(chunk);
+          }
           chunks.push(chunk);
         }
         loftSets.length = 0;
@@ -6244,20 +6543,36 @@
         if (viewer) {
           if (viewer.setLoftOpacity) viewer.setLoftOpacity(loftOpacityValue());
           if (viewer.setVoxelOpacity) viewer.setVoxelOpacity(voxelOpacityValue());
-          if (viewer.setMassOpacity) viewer.setMassOpacity(solidOpacityValue());
           if (viewer.setVoxelColorBySize) viewer.setVoxelColorBySize(!!(els.voxelColorBySize && els.voxelColorBySize.checked));
           if (viewer.setVoxelEdges) viewer.setVoxelEdges(!els.voxelEdges || els.voxelEdges.checked);
           if (viewer.setSilhouetteMode) viewer.setSilhouetteMode(silhouetteOn);
           if (viewer.setSilhouetteThickness) viewer.setSilhouetteThickness(els.silhouetteThick ? els.silhouetteThick.value : 3);
         }
         const loftState = workspace.loft || {};
-        if (loftState.exists && loft && loft.sections.length >= 2) {
+        const genState = workspace.generation || {};
+        generatedVars = clonePlain(genState.variations) || [];
+        selectedGenKey = genState.selectedKey || (generatedVars[0] ? generatedVars[0].key : null);
+        genMode = genState.mode === "A" || genState.mode === "B" ? genState.mode : "both";
+        if (els.genAnchor && genState.anchor) els.genAnchor.value = genState.anchor;
+        const gUser = genState.user || {};
+        genSessionSeed = Number(gUser.seed) || genSessionSeed;
+        setSlider(els.genVariation, els.genVariationVal, gUser.variation != null ? gUser.variation : 50, (v) => `${Math.round(Number(v))}`);
+        setSlider(els.genExpansion, els.genExpansionVal, gUser.expansion != null ? gUser.expansion : 50, (v) => `${Math.round(Number(v))}`);
+        setSlider(els.genOpenness, els.genOpennessVal, gUser.openness != null ? gUser.openness : 50, (v) => `${Math.round(Number(v))}`);
+        setSlider(els.genGrowth, els.genGrowthVal, gUser.growth != null ? gUser.growth : 0, (v) => `${Math.round(Number(v))}`);
+        paintGenMode();
+        paintGallery();
+        if (loftState.exists && loft && loft.sections.length >= 2 && !generatedVars.length) {
           rebuildLoftMesh({ draft: false, silent: true, final: true });
           loftStale = !!loftState.stale;
+        } else if (selectedGenKey) {
+          const rec = generatedVars.find((item) => item.key === selectedGenKey) || generatedVars[0];
+          applyGeneratedGeometry(rec);
+          if (rec) setGenStatus(`${rec.label} · ${rec.triangleCount || 0} faces · seed ${rec.seed}`, "active");
+          loftStale = false;
         } else {
           loftStale = false;
         }
-        restoreMasses(workspace);
         const voxelState = workspace.voxels || {};
         const restoredCells = unpackVoxelCells(voxelState.cells);
         if (voxelState.exists && restoredCells.length && viewer && viewer.setVoxels) {
@@ -6421,13 +6736,15 @@
       setControl(els.nodeY, "0");
       setSlider(els.loftWidth, els.loftWidthVal, 28, (v) => `${Math.round(Number(v))}%`);
       setSlider(els.loftThick, els.loftThickVal, 32, (v) => `${Math.round(Number(v))}%`);
-      setSlider(els.solidWidth, els.solidWidthVal, 28, (v) => `${Math.round(Number(v))}%`);
-      setSlider(els.solidDepth, els.solidDepthVal, 40, (v) => `${Math.round(Number(v))}%`);
-      setSlider(els.spatialReach, els.spatialReachVal, 45, (v) => `${Math.round(Number(v))}%`);
-      setSlider(els.fidelity, els.fidelityVal, 80, (v) => `${Math.round(Number(v))}%`);
-      setSlider(els.massVariation, els.massVariationVal, 22, (v) => `${Math.round(Number(v))}%`);
-      setSlider(els.solidOpacity, els.solidOpacityVal, 100, (v) => `${Math.round(Number(v))}%`);
       setSlider(els.loftOpacity, els.loftOpacityVal, 100, (v) => `${Math.round(Number(v))}%`);
+      setSlider(els.genVariation, els.genVariationVal, 50, (v) => `${Math.round(Number(v))}`);
+      setSlider(els.genExpansion, els.genExpansionVal, 50, (v) => `${Math.round(Number(v))}`);
+      setSlider(els.genOpenness, els.genOpennessVal, 50, (v) => `${Math.round(Number(v))}`);
+      setSlider(els.genGrowth, els.genGrowthVal, 0, (v) => `${Math.round(Number(v))}`);
+      if (els.genAnchor) els.genAnchor.value = "center";
+      genMode = "both";
+      paintGenMode();
+      paintGallery();
       setSlider(els.voxelOpacity, els.voxelOpacityVal, 100, (v) => `${Math.round(Number(v))}%`);
       setSlider(els.voxelFidelity, els.voxelFidelityVal, 75, (v) => `${Math.round(Number(v))}%`);
       if (els.loftStyle) els.loftStyle.value = "smooth";
@@ -6435,7 +6752,6 @@
       if (els.voxelSource) els.voxelSource.value = "loft";
       if (els.voxelTarget) els.voxelTarget.value = "selected";
       if (els.loftHierarchy) els.loftHierarchy.checked = false;
-      if (els.useHierarchy) els.useHierarchy.checked = false;
       if (els.showBranches) els.showBranches.checked = true;
       if (els.showPlane) els.showPlane.checked = false;
       if (els.showWireframe) els.showWireframe.checked = false;
@@ -6498,12 +6814,15 @@
       loftSets.length = 0;
       nextChunkIndex = 1;
       nextLoftIndex = 1;
-      massSeeds.clear();
       voxelInfo = null;
       voxelStamp = "";
       voxelStale = false;
       loftStale = false;
       loftCapsules = [];
+      generatedVars = [];
+      selectedGenKey = null;
+      genBusy = false;
+      genCancel = false;
       exportNameHint = "";
       loftDraftAt = 0;
       loftDraftQueued = false;
@@ -6521,14 +6840,13 @@
       if (viewer && viewer.clearWorkspace) viewer.clearWorkspace();
       else if (viewer && viewer.resetCamera) viewer.resetCamera();
       if (viewer) {
-        if (viewer.setMassOpacity) viewer.setMassOpacity(solidOpacityValue());
         if (viewer.setLoftOpacity) viewer.setLoftOpacity(Number(els.loftOpacity?.value ?? 100) / 100);
         if (viewer.setVoxelOpacity) viewer.setVoxelOpacity(voxelOpacityValue());
         if (viewer.setVoxelColorBySize) viewer.setVoxelColorBySize(false);
         if (viewer.setVoxelEdges) viewer.setVoxelEdges(true);
         if (viewer.setSilhouetteMode) viewer.setSilhouetteMode(false);
         if (viewer.setSilhouetteThickness) viewer.setSilhouetteThickness(3);
-        if (viewer.setMassWireframe) viewer.setMassWireframe(false);
+        if (viewer.setLoftWireframe) viewer.setLoftWireframe(false);
         if (viewer.setEditBranches) viewer.setEditBranches(false);
         if (viewer.setBoxSelect) viewer.setBoxSelect(false);
         if (viewer.setMoveSegment) viewer.setMoveSegment(false);
@@ -6557,7 +6875,7 @@
       }
       if (!silent) {
         setStatus(
-          "3D Space cleared. The 2D simulation and saved 3D variations are unchanged. Select a region of the full 20 \u00d7 20 2D simulation to place that exact geometry in 3D.",
+          "3D Space cleared. The 2D simulation and saved 3D variations are unchanged. Select a square region — it normalizes to 20' × 20' in the sectional plane.",
           "active"
         );
       }
@@ -6706,6 +7024,25 @@
     if (els.deleteLine) els.deleteLine.addEventListener("click", deleteSelectedLines);
     if (els.lineUndo) els.lineUndo.addEventListener("click", undoLineEdit);
     if (els.lineRedo) els.lineRedo.addEventListener("click", redoLineEdit);
+    if (els.generateVars) els.generateVars.addEventListener("click", () => generateVariations());
+    if (els.genCancel) {
+      els.genCancel.addEventListener("click", () => {
+        genCancel = true;
+        setGenStatus("Cancelling after the current variation...");
+      });
+    }
+    if (els.genModeA) els.genModeA.addEventListener("click", () => {
+      genMode = "A";
+      paintGenMode();
+    });
+    if (els.genModeB) els.genModeB.addEventListener("click", () => {
+      genMode = "B";
+      paintGenMode();
+    });
+    if (els.genModeBoth) els.genModeBoth.addEventListener("click", () => {
+      genMode = "both";
+      paintGenMode();
+    });
     if (els.createLoft) els.createLoft.addEventListener("click", createLoftSet);
     if (els.dupSection) els.dupSection.addEventListener("click", addMorphedSection);
     if (els.remorph) els.remorph.addEventListener("click", remorphSelected);
@@ -6826,6 +7163,7 @@
     for (const key of ["voxelRes", "voxelSource", "voxelTarget", "voxelFidelity"]) {
       if (!els[key]) continue;
       els[key].addEventListener("change", () => {
+        paintVoxelSizeReadout();
         if (liveVoxelsOn && viewer && viewer.hasVoxels && viewer.hasVoxels()) generateVoxels({ silent: true });
         else markVoxelStale();
       });
@@ -6845,32 +7183,6 @@
         if (viewer && viewer.setVoxelOpacity) viewer.setVoxelOpacity(voxelOpacityValue());
       });
     }
-    if (els.generateMass) els.generateMass.addEventListener("click", () => generateSpatialMass());
-    if (els.regenMass) els.regenMass.addEventListener("click", () => generateSpatialMass());
-    if (els.regenVar) {
-      els.regenVar.addEventListener("click", () => generateSpatialMass({ newSeed: true }));
-    }
-    for (const key of ["fidelity", "massVariation", "solidWidth", "solidDepth", "spatialReach"]) {
-      if (!els[key]) continue;
-      els[key].addEventListener("change", () => {
-        const chunk = selectedChunk();
-        if (chunk && viewer && viewer.hasMass && viewer.hasMass(chunk.id)) generateSpatialMass();
-        markVoxelStale();
-      });
-    }
-    if (els.useHierarchy) {
-      els.useHierarchy.addEventListener("change", () => {
-        const chunk = selectedChunk();
-        if (chunk && viewer && viewer.hasMass && viewer.hasMass(chunk.id)) generateSpatialMass();
-        markVoxelStale();
-      });
-    }
-    if (els.solidOpacity) {
-      els.solidOpacity.addEventListener("input", () => {
-        if (viewer && viewer.setMassOpacity) viewer.setMassOpacity(solidOpacityValue());
-      });
-    }
-    if (els.clearMass) els.clearMass.addEventListener("click", clearSelectedMass);
     if (els.showBranches) els.showBranches.addEventListener("change", applyDisplayToggles);
     if (els.showPlane) els.showPlane.addEventListener("change", applyDisplayToggles);
     if (els.showWireframe) els.showWireframe.addEventListener("change", applyDisplayToggles);
@@ -6942,15 +7254,14 @@
           else overlay.style.cursor = "crosshair";
           return;
         }
-        if (drag.mode === "draw") draft = rectFromPoints(drag.start, pt);
-        else if (drag.mode === "resize") draft = resizeFromHandle(drag.origin, drag.handle, pt);
+        if (drag.mode === "draw") draft = squareFromPoints(drag.start, pt);
+        else if (drag.mode === "resize") draft = resizeSquareFromHandle(drag.origin, drag.handle, pt);
         else if (drag.mode === "move") {
-          draft = {
-            x: clamp(drag.origin.x + (pt.x - drag.start.x), 0, CUBE - drag.origin.w),
-            y: clamp(drag.origin.y + (pt.y - drag.start.y), 0, CUBE - drag.origin.h),
-            w: drag.origin.w,
-            h: drag.origin.h,
-          };
+          draft = clampSquareInSite(
+            drag.origin.x + (pt.x - drag.start.x),
+            drag.origin.y + (pt.y - drag.start.y),
+            drag.origin.w
+          );
         }
         updateSelectMode();
       });
@@ -6959,7 +7270,7 @@
         try {
           if (overlay.hasPointerCapture(event.pointerId)) overlay.releasePointerCapture(event.pointerId);
         } catch (err) {}
-        if (draft && (draft.w < 0.4 || draft.h < 0.4)) draft = null;
+        if (draft && draft.w < MIN_CHUNK_SIDE) draft = null;
         drag = null;
         updateSelectMode();
       });
@@ -6968,6 +7279,10 @@
     refreshChunkUi();
     updateSelectMode();
     paintViewButtons();
+    paintGenMode();
+    paintGallery();
+    paintVoxelSizeReadout();
+    paintWorkspaceReadout();
     refreshSaved3dList();
 
     return {
@@ -6983,7 +7298,7 @@
         refreshSaved3dList();
         if (!booted) {
           booted = true;
-          setStatus("Select a region of the full 20 \u00d7 20 2D simulation to place that exact geometry in 3D.");
+          setStatus("Select a square region of the full 20' × 20' 2D simulation. It scales uniformly to 20' × 20' when confirmed.");
         }
         drawPreview();
       },

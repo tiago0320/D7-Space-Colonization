@@ -1,7 +1,9 @@
 /**
  * Client-side loft / voxel export.
- * OBJ = triangulated mesh. 3DM = Rhino Brep / closed polysurface.
- * Coordinates stay in feet (20 × 20 × 20 workspace).
+ * OBJ = triangulated mesh. 3DM = Rhino Brep / closed polysurface, or a mesh
+ * when the source is a generated isosurface.
+ * Coordinates stay in feet. 1 unit = 1 ft. Workspace is 20' × 20' × 20'.
+ * The viewport cube is never written into the file.
  */
 (function (global) {
   const CUBE = 20;
@@ -59,14 +61,22 @@
     return { positions, faces };
   }
 
+  function unitHeader(kind) {
+    return [
+      "# D7-Space-Colonization",
+      `# ${kind || "Mesh"}`,
+      "# Coordinate units: feet",
+      "# 1 file unit = 1 foot",
+      "# Workspace: 20' W × 20' D × 20' H (8,000 cubic feet)",
+      "# OBJ has no native units. Import into Rhino with document units = Feet.",
+      "# Do not scale this file to a 0–1 cube.",
+    ];
+  }
+
   function geometryToOBJ(geometry, objectName) {
     const { positions, faces } = trianglesFromGeometry(geometry);
     if (!faces.length) return "";
-    const lines = [
-      "# D7-Space-Colonization",
-      "# Units: feet (1 unit = 1 ft)",
-      `o ${objectName || "Loft"}`,
-    ];
+    const lines = unitHeader("Generated solid mesh").concat([`o ${objectName || "Solid"}`]);
     for (let i = 0; i < positions.length; i += 3) {
       lines.push(`v ${fmt(positions[i])} ${fmt(positions[i + 1])} ${fmt(positions[i + 2])}`);
     }
@@ -169,11 +179,7 @@
 
   function voxelToOBJ(mesh, objectName) {
     if (!mesh || !mesh.quads || !mesh.quads.length) return "";
-    const lines = [
-      "# D7-Space-Colonization voxels",
-      "# Units: feet (1 unit = 1 ft)",
-      `o ${objectName || "Voxels"}`,
-    ];
+    const lines = unitHeader("Voxel mesh").concat([`o ${objectName || "Voxels"}`]);
     for (let i = 0; i < mesh.positions.length; i += 3) {
       lines.push(`v ${fmt(mesh.positions[i])} ${fmt(mesh.positions[i + 1])} ${fmt(mesh.positions[i + 2])}`);
     }
@@ -243,6 +249,7 @@
       const settings = doc.settings();
       const feet = rhino.UnitSystem && rhino.UnitSystem.Feet != null ? rhino.UnitSystem.Feet : 9;
       if (settings && settings.modelUnitSystem != null) settings.modelUnitSystem = feet;
+      else if (settings && typeof settings.setModelUnitSystem === "function") settings.setModelUnitSystem(feet);
     } catch (err) {}
   }
 
@@ -422,6 +429,52 @@
     return result;
   }
 
+  function addMeshObject(doc, mesh, attrs) {
+    const objects = doc.objects();
+    if (attrs && objects.addMesh) objects.addMesh(mesh, attrs);
+    else if (objects.addMesh) objects.addMesh(mesh);
+    else throw new Error("Mesh export failed");
+  }
+
+  async function exportGeometryMesh3dm(geometry, filename, layerName) {
+    const { positions, faces } = trianglesFromGeometry(geometry);
+    if (!faces.length) throw new Error("The generated mesh is empty.");
+    const rhino = await loadRhino();
+    const doc = new rhino.File3dm();
+    setFeet(rhino, doc);
+    const attrs = addLayer(rhino, doc, layerName || "MESH");
+    const mesh = new rhino.Mesh();
+    const verts = typeof mesh.vertices === "function" ? mesh.vertices() : mesh.vertices;
+    const vcount = positions.length / 3;
+    for (let i = 0; i < vcount; i++) {
+      verts.add(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+    }
+    const rhFaces = typeof mesh.faces === "function" ? mesh.faces() : mesh.faces;
+    for (let i = 0; i < faces.length; i += 3) {
+      if (rhFaces.addTriFace) rhFaces.addTriFace(faces[i], faces[i + 1], faces[i + 2]);
+      else rhFaces.add(faces[i], faces[i + 1], faces[i + 2]);
+    }
+    try {
+      const normals = typeof mesh.normals === "function" ? mesh.normals() : mesh.normals;
+      if (normals && normals.computeNormals) normals.computeNormals();
+    } catch (err) {}
+    addMeshObject(doc, mesh, attrs);
+    const bytes = (() => {
+      try {
+        return doc.toByteArray();
+      } catch (err) {
+        return doc.toByteArrayBuffer ? doc.toByteArrayBuffer() : null;
+      }
+    })();
+    try {
+      if (doc.delete) doc.delete();
+    } catch (err) {}
+    if (!bytes) throw new Error("Mesh export failed");
+    const copy = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes);
+    downloadBlob(filename, new Blob([copy], { type: "application/octet-stream" }));
+    return { added: 1, closed: 0, kind: "mesh" };
+  }
+
   function exportOBJ(text, filename) {
     if (!text) throw new Error("Nothing to export.");
     downloadBlob(filename, new Blob([text], { type: "text/plain" }));
@@ -437,6 +490,7 @@
     loftBrepsFromRuns,
     exportLoftPolysurface,
     exportVoxelPolysurface,
+    exportGeometryMesh3dm,
     exportOBJ,
     downloadBlob,
   };

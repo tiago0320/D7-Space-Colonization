@@ -533,14 +533,36 @@ label.ctrl.compact select {
 }
 
 .app.matrix-mode .hud,
-.app.space3d-mode .hud {
+.app.space3d-mode .hud,
+.app.grid3d-mode .hud {
   display: none;
 }
 
 .matrix-view.hidden,
-.space3d-view.hidden {
+.space3d-view.hidden,
+.grid3d-view.hidden {
   display: none !important;
   pointer-events: none !important;
+}
+
+.grid3d-view .grid-status {
+  white-space: normal;
+}
+
+.grid3d-view .check {
+  margin: 4px 0;
+}
+
+.grid3d-view label.ctrl select {
+  grid-column: 1 / -1;
+  width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--elevated);
+  border: 1px solid var(--line);
+  border-radius: 2px;
 }
 
 .matrix-view {
@@ -938,8 +960,18 @@ label.ctrl.save-sim-name input[type="text"] {
   border-bottom-color: var(--gold);
 }
 
-.space3d-edit-badge {
+.space3d-workspace-readout {
   margin-left: auto;
+  padding: 3px 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--muted, #b8b4ac);
+  white-space: nowrap;
+}
+
+.space3d-edit-badge {
+  margin-left: 8px;
   padding: 3px 8px;
   font-size: 10px;
   letter-spacing: 0.08em;
@@ -1220,5 +1252,94 @@ label.ctrl.save-sim-name input[type="text"] {
 
 .space3d-saved-unsaved {
   color: var(--gold);
+}
+
+.space3d-gen-gallery {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+  margin: 8px 0 10px;
+}
+
+.space3d-gen-card {
+  border: 1px solid var(--line, #3a3936);
+  background: #141412;
+  padding: 4px;
+  cursor: pointer;
+  min-height: 72px;
+}
+
+.space3d-gen-card.active {
+  border-color: var(--gold);
+}
+
+.space3d-gen-card img,
+.space3d-gen-card canvas {
+  display: block;
+  width: 100%;
+  height: 64px;
+  object-fit: cover;
+  background: #000;
+}
+
+.space3d-gen-card span {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  margin-top: 3px;
+  color: var(--muted, #9a968e);
+}
+
+.grid3d-viewport-bar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(17, 17, 17, 0.92);
+  border-bottom: 1px solid var(--line);
+  z-index: 3;
+  pointer-events: auto;
+}
+
+.grid3d-viewport-bar .grid3d-view-btn {
+  flex: 0 0 auto;
+  min-width: 2.6rem;
+  padding: 5px 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  border-radius: 2px;
+}
+
+.grid3d-viewport-bar .grid3d-view-btn.active {
+  border-color: var(--gold);
+  color: var(--text);
+  background: var(--elevated);
+}
+
+.grid3d-raster-panel {
+  margin: 8px 0 10px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.grid3d-raster-overlay {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  margin: 6px 0;
+  border: 1px solid var(--line);
+  background: #111;
+}
+
+input.hidden {
+  display: none !important;
 }
 
