@@ -1846,12 +1846,12 @@
     const selBox = new THREE.Group();
     selBox.add(selFill);
     selBox.add(selWire);
-    selBox.position.set(10, 7, 10);
-    selBox.scale.set(12, 14, 12);
+    selBox.position.set(CUBE * 0.5, CUBE * 0.5, CUBE * 0.5);
+    selBox.scale.set(CUBE, CUBE, CUBE);
     scene.add(selBox);
 
     const humanScaleMesh = makeHumanScaleMesh(THREE);
-    scene.add(humanScaleMesh);
+    selBox.add(humanScaleMesh);
     let showHumanScale = false;
     let humanInsetX = HUMAN_SCALE_INSET;
     let humanInsetZ = HUMAN_SCALE_INSET;
@@ -1960,6 +1960,7 @@
       const sy = clamp(Math.abs(selBox.scale.y), 3, CUBE);
       const sz = clamp(Math.abs(selBox.scale.z), 3, CUBE);
       selBox.scale.set(sx, sy, sz);
+      selBox.rotation.set(0, 0, 0);
       selBox.position.x = clamp(selBox.position.x, sx * 0.5, CUBE - sx * 0.5);
       selBox.position.y = clamp(selBox.position.y, sy * 0.5, CUBE - sy * 0.5);
       selBox.position.z = clamp(selBox.position.z, sz * 0.5, CUBE - sz * 0.5);
@@ -1982,21 +1983,31 @@
       };
     }
 
+    function snapSelectionToModule() {
+      selBox.rotation.set(0, 0, 0);
+      selBox.scale.set(CUBE, CUBE, CUBE);
+      selBox.position.set(CUBE * 0.5, CUBE * 0.5, CUBE * 0.5);
+      placeHumanScale();
+      if (hideOutside) applySceneClip();
+      if (typeof onSelectionChange === "function") onSelectionChange(selectionBoxBounds());
+      return selectionBoxBounds();
+    }
+
     function placeHumanScale() {
       if (!humanScaleMesh) return;
-      humanScaleMesh.scale.set(1, 1, 1);
+      const inv = 1 / CUBE;
+      humanScaleMesh.scale.set(inv, inv, inv);
       humanScaleMesh.rotation.set(0, 0, 0);
-      const b = selectionBoxBounds();
       const bb = humanScaleMesh.geometry && humanScaleMesh.geometry.boundingBox;
       const halfW = bb ? Math.max(0.08, (bb.max.x - bb.min.x) * 0.5) : 0.5;
       const halfD = bb ? Math.max(0.04, (bb.max.z - bb.min.z) * 0.5) : HUMAN_SCALE_DEPTH * 0.5;
       const minX = halfW + 0.06;
       const minZ = halfD + 0.06;
-      const maxX = Math.max(minX, b.maxx - b.minx - minX);
-      const maxZ = Math.max(minZ, b.maxz - b.minz - minZ);
-      const x = b.minx + clamp(humanInsetX, minX, maxX);
-      const z = b.minz + clamp(humanInsetZ, minZ, maxZ);
-      humanScaleMesh.position.set(x, b.miny, z);
+      const maxX = Math.max(minX, CUBE - minX);
+      const maxZ = Math.max(minZ, CUBE - minZ);
+      const xFt = clamp(humanInsetX, minX, maxX);
+      const zFt = clamp(humanInsetZ, minZ, maxZ);
+      humanScaleMesh.position.set(-0.5 + xFt * inv, -0.5, -0.5 + zFt * inv);
       humanScaleMesh.visible = !!showHumanScale;
     }
 
@@ -2007,14 +2018,35 @@
     }
 
     function getHumanScaleState() {
+      if (humanScaleMesh) humanScaleMesh.updateMatrixWorld(true);
+      const wp = humanScaleMesh ? humanScaleMesh.getWorldPosition(new THREE.Vector3()) : { x: 0, y: 0, z: 0 };
+      const b = selectionBoxBounds();
+      const boxH = Math.max(1e-9, b.maxy - b.miny);
       return {
         show: !!showHumanScale,
         insetX: humanInsetX,
         insetZ: humanInsetZ,
-        x: humanScaleMesh ? humanScaleMesh.position.x : 0,
-        y: humanScaleMesh ? humanScaleMesh.position.y : 0,
-        z: humanScaleMesh ? humanScaleMesh.position.z : 0,
+        x: wp.x,
+        y: wp.y,
+        z: wp.z,
         height: HUMAN_SCALE_H,
+        boxHeight: CUBE,
+        visualBoxHeight: boxH,
+        visualHumanHeight: HUMAN_SCALE_H * (boxH / CUBE),
+        ratio: HUMAN_SCALE_H / CUBE,
+      };
+    }
+
+    function validateHumanScale() {
+      const st = getHumanScaleState();
+      const ratio = st.visualHumanHeight / st.visualBoxHeight;
+      return {
+        boxArchitectural: CUBE,
+        humanArchitectural: HUMAN_SCALE_H,
+        visualBoxHeight: st.visualBoxHeight,
+        visualHumanHeight: st.visualHumanHeight,
+        ratio,
+        ok: Math.abs(ratio - HUMAN_SCALE_H / CUBE) < 0.01 && Math.abs(st.height - HUMAN_SCALE_H) < 1e-6,
       };
     }
 
@@ -3218,6 +3250,8 @@
       setShowHumanScale,
       getHumanScaleState,
       setHumanScaleState,
+      validateHumanScale,
+      snapSelectionToModule,
       setOnSelectionChange(fn) {
         onSelectionChange = fn;
       },
@@ -3530,7 +3564,7 @@
         if (!sim.branches.length) {
           setSpaceStatus("Grow branches, then Generate Geometry.");
         } else if (!clipped.segs.length) {
-          setSpaceStatus("Move the cyan box over grown branches.");
+          setSpaceStatus("Grow branches inside the 20' × 20' × 20' module.");
         } else {
           setSpaceStatus(
             "Chunk: " +
@@ -4557,6 +4591,7 @@
         let result;
         try {
           result = global.D7GridSpaces.generate(sim.nodes, sim.branches, box, geomOpts());
+          if (result && result.ok && viewer.snapSelectionToModule) viewer.snapSelectionToModule();
         } catch (err) {
           spaceBusy = false;
           paintButtons();
@@ -5584,6 +5619,9 @@
       },
       getHumanScaleState() {
         return viewer && viewer.getHumanScaleState ? viewer.getHumanScaleState() : null;
+      },
+      validateHumanScale() {
+        return viewer && viewer.validateHumanScale ? viewer.validateHumanScale() : null;
       },
       getSelectionBox() {
         return viewer && viewer.getSelectionBox ? viewer.getSelectionBox() : null;

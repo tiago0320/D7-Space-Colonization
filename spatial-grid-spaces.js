@@ -1785,15 +1785,91 @@
     };
   }
 
+  function fitGraphToCube(graph, cube) {
+    const size = Number(cube) > 0 ? Number(cube) : CUBE;
+    const nodes = graph && graph.nodes ? graph.nodes : [];
+    const segs = graph && graph.segs ? graph.segs : [];
+    if (!nodes.length && !segs.length) {
+      if (graph) graph.box = { minx: 0, maxx: size, miny: 0, maxy: size, minz: 0, maxz: size };
+      return graph;
+    }
+    let minx = Infinity;
+    let maxx = -Infinity;
+    let miny = Infinity;
+    let maxy = -Infinity;
+    let minz = Infinity;
+    let maxz = -Infinity;
+    function acc(x, y, z) {
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      if (x < minx) minx = x;
+      if (x > maxx) maxx = x;
+      if (y < miny) miny = y;
+      if (y > maxy) maxy = y;
+      if (z < minz) minz = z;
+      if (z > maxz) maxz = z;
+    }
+    for (let i = 0; i < nodes.length; i++) acc(nodes[i].x, nodes[i].y, nodes[i].z);
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      acc(s.ax, s.ay, s.az);
+      acc(s.bx, s.by, s.bz);
+    }
+    if (!Number.isFinite(minx)) {
+      graph.box = { minx: 0, maxx: size, miny: 0, maxy: size, minz: 0, maxz: size };
+      return graph;
+    }
+    const dx = Math.max(1e-6, maxx - minx);
+    const dy = Math.max(1e-6, maxy - miny);
+    const dz = Math.max(1e-6, maxz - minz);
+    const s = Math.min(size / dx, size / dy, size / dz);
+    const ox = (size - dx * s) * 0.5 - minx * s;
+    const oy = 0 - miny * s;
+    const oz = (size - dz * s) * 0.5 - minz * s;
+    function map(x, y, z) {
+      return { x: x * s + ox, y: y * s + oy, z: z * s + oz };
+    }
+    for (let i = 0; i < nodes.length; i++) {
+      const p = map(nodes[i].x, nodes[i].y, nodes[i].z);
+      nodes[i].x = p.x;
+      nodes[i].y = p.y;
+      nodes[i].z = p.z;
+    }
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      const a = map(seg.ax, seg.ay, seg.az);
+      const b = map(seg.bx, seg.by, seg.bz);
+      seg.ax = a.x;
+      seg.ay = a.y;
+      seg.az = a.z;
+      seg.bx = b.x;
+      seg.by = b.y;
+      seg.bz = b.z;
+      const lx = b.x - a.x;
+      const ly = b.y - a.y;
+      const lz = b.z - a.z;
+      const L = Math.hypot(lx, ly, lz);
+      seg.len = L;
+      if (L > 1e-9) {
+        seg.dx = lx / L;
+        seg.dy = ly / L;
+        seg.dz = lz / L;
+      }
+    }
+    graph.box = { minx: 0, maxx: size, miny: 0, maxy: size, minz: 0, maxz: size };
+    graph.fit = { scale: s, ox, oy, oz, cube: size };
+    return graph;
+  }
+
   function generate(nodes, branches, box, options) {
     const graph = clipGraph(nodes, branches, box);
     if (!graph.segs.length) {
       return {
         ok: false,
-        error: "No branches inside the selection box. Move or scale the cyan box over grown branches.",
+        error: "No branches inside the 20' × 20' × 20' module. Grow inside the cyan box, then Generate Geometry.",
         graph,
       };
     }
+    fitGraphToCube(graph, CUBE);
     return rebuild(graph, options);
   }
 
@@ -1842,6 +1918,7 @@
     CUBE,
     DEFAULTS,
     clipGraph,
+    fitGraphToCube,
     generate,
     rebuild,
     extractRuns,
