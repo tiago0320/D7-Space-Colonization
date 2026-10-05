@@ -1546,10 +1546,80 @@
     return g;
   }
 
+  const HUMAN_SCALE_H = 6;
+  const HUMAN_SCALE_DEPTH = 0.08;
+  const HUMAN_SCALE_INSET = 2;
+
+  function makeHumanScaleMesh(THREE) {
+    // Traced from a standing-person silhouette (hands in pockets). Units = feet.
+    const outline = [
+      [-0.609, 0], [-0.701, 0.023], [-0.678, 0.138], [-0.563, 0.276], [-0.621, 0.494],
+      [-0.586, 1.31], [-0.609, 2.736], [-0.667, 2.885], [-0.747, 2.885], [-0.736, 2.943],
+      [-0.77, 2.977], [-0.862, 3.31], [-0.931, 3.425], [-1, 3.701], [-0.92, 3.966],
+      [-0.862, 4.46], [-0.782, 4.747], [-0.736, 4.828], [-0.31, 4.966], [-0.161, 5.103],
+      [-0.138, 5.276], [-0.149, 5.345], [-0.241, 5.437], [-0.253, 5.517], [-0.218, 5.552],
+      [-0.241, 5.759], [-0.161, 5.862], [-0.103, 5.931], [-0.08, 5.977], [-0.023, 5.966],
+      [0.057, 6], [0.241, 5.943], [0.379, 5.782], [0.379, 5.437], [0.31, 5.356],
+      [0.276, 5.253], [0.287, 5.069], [0.379, 4.977], [0.805, 4.828], [0.828, 4.793],
+      [0.908, 4.402], [0.897, 4.333], [0.954, 4.08], [0.966, 3.862], [1, 3.782],
+      [1, 3.667], [0.943, 3.494], [0.736, 3.034], [0.69, 2.851], [0.644, 2.839],
+      [0.621, 2.782], [0.598, 2.414], [0.471, 1.839], [0.46, 1.517], [0.425, 1.425],
+      [0.379, 0.989], [0.402, 0.667], [0.333, 0.483], [0.379, 0.402], [0.379, 0.31],
+      [0.471, 0.207], [0.632, 0.149], [0.655, 0.057], [0.586, 0.011], [0.356, 0.011],
+      [0.011, 0.092], [0.034, 0.471], [0.011, 1.115], [0.046, 1.632], [0.023, 1.69],
+      [0.034, 2.046], [-0.023, 2.379], [-0.08, 2.207], [-0.115, 1.828], [-0.207, 1.391],
+      [-0.241, 0.448], [-0.287, 0.31], [-0.276, 0.057], [-0.345, 0.057], [-0.414, 0],
+      [-0.598, 0],
+    ];
+    let pts = outline.map((p) => [p[0], p[1]]);
+    for (let pass = 0; pass < 2; pass++) {
+      const n = pts.length;
+      const next = [];
+      for (let i = 0; i < n; i++) {
+        const pr = pts[(i + n - 1) % n];
+        const cu = pts[i];
+        const nx = pts[(i + 1) % n];
+        next.push([cu[0] * 0.5 + (pr[0] + nx[0]) * 0.25, cu[1] * 0.5 + (pr[1] + nx[1]) * 0.25]);
+      }
+      pts = next;
+    }
+    const shape = new THREE.Shape();
+    shape.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
+    shape.closePath();
+    const Extrude = THREE.ExtrudeBufferGeometry || THREE.ExtrudeGeometry;
+    const geom = new Extrude(shape, {
+      depth: HUMAN_SCALE_DEPTH,
+      bevelEnabled: false,
+      curveSegments: 20,
+      steps: 1,
+    });
+    geom.computeBoundingBox();
+    const box = geom.boundingBox;
+    const h = box.max.y - box.min.y;
+    geom.scale(1, HUMAN_SCALE_H / Math.max(1e-6, h), 1);
+    geom.computeBoundingBox();
+    const b2 = geom.boundingBox;
+    geom.translate(-(b2.min.x + b2.max.x) * 0.5, -b2.min.y, -(b2.min.z + b2.max.z) * 0.5);
+    geom.computeVertexNormals();
+    geom.computeBoundingBox();
+    geom.computeBoundingSphere();
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x9a9a9a,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.name = "humanScale";
+    mesh.frustumCulled = false;
+    mesh.visible = false;
+    mesh.matrixAutoUpdate = true;
+    return mesh;
+  }
+
   function createViewer(container) {
     const THREE = global.THREE;
     if (!THREE || !container) return null;
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
     renderer.setClearColor(0x000000, 1);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.domElement.tabIndex = 0;
@@ -1780,6 +1850,12 @@
     selBox.scale.set(12, 14, 12);
     scene.add(selBox);
 
+    const humanScaleMesh = makeHumanScaleMesh(THREE);
+    scene.add(humanScaleMesh);
+    let showHumanScale = false;
+    let humanInsetX = HUMAN_SCALE_INSET;
+    let humanInsetZ = HUMAN_SCALE_INSET;
+
     let gizmoMode = "translate";
     if (THREE.TransformControls) {
       gizmo = new THREE.TransformControls(activeCamera, renderer.domElement);
@@ -1888,6 +1964,7 @@
       selBox.position.y = clamp(selBox.position.y, sy * 0.5, CUBE - sy * 0.5);
       selBox.position.z = clamp(selBox.position.z, sz * 0.5, CUBE - sz * 0.5);
       if (hideOutside) applySceneClip();
+      placeHumanScale();
     }
     clampSelection();
 
@@ -1903,6 +1980,54 @@
         minz: selBox.position.z - hz,
         maxz: selBox.position.z + hz,
       };
+    }
+
+    function placeHumanScale() {
+      if (!humanScaleMesh) return;
+      humanScaleMesh.scale.set(1, 1, 1);
+      humanScaleMesh.rotation.set(0, 0, 0);
+      const b = selectionBoxBounds();
+      const bb = humanScaleMesh.geometry && humanScaleMesh.geometry.boundingBox;
+      const halfW = bb ? Math.max(0.08, (bb.max.x - bb.min.x) * 0.5) : 0.5;
+      const halfD = bb ? Math.max(0.04, (bb.max.z - bb.min.z) * 0.5) : HUMAN_SCALE_DEPTH * 0.5;
+      const minX = halfW + 0.06;
+      const minZ = halfD + 0.06;
+      const maxX = Math.max(minX, b.maxx - b.minx - minX);
+      const maxZ = Math.max(minZ, b.maxz - b.minz - minZ);
+      const x = b.minx + clamp(humanInsetX, minX, maxX);
+      const z = b.minz + clamp(humanInsetZ, minZ, maxZ);
+      humanScaleMesh.position.set(x, b.miny, z);
+      humanScaleMesh.visible = !!showHumanScale;
+    }
+
+    function setShowHumanScale(on) {
+      showHumanScale = !!on;
+      placeHumanScale();
+      return showHumanScale;
+    }
+
+    function getHumanScaleState() {
+      return {
+        show: !!showHumanScale,
+        insetX: humanInsetX,
+        insetZ: humanInsetZ,
+        x: humanScaleMesh ? humanScaleMesh.position.x : 0,
+        y: humanScaleMesh ? humanScaleMesh.position.y : 0,
+        z: humanScaleMesh ? humanScaleMesh.position.z : 0,
+        height: HUMAN_SCALE_H,
+      };
+    }
+
+    function setHumanScaleState(state) {
+      if (!state) return getHumanScaleState();
+      if (state.insetX != null) humanInsetX = Number(state.insetX);
+      if (state.insetZ != null) humanInsetZ = Number(state.insetZ);
+      if (state.show != null) showHumanScale = !!state.show;
+      else if (state.visible != null) showHumanScale = !!state.visible;
+      if (!Number.isFinite(humanInsetX)) humanInsetX = HUMAN_SCALE_INSET;
+      if (!Number.isFinite(humanInsetZ)) humanInsetZ = HUMAN_SCALE_INSET;
+      placeHumanScale();
+      return getHumanScaleState();
     }
 
     const spaceMat = new THREE.MeshLambertMaterial({
@@ -1935,8 +2060,31 @@
     let showMeshEdges = true;
     let showBranches = false;
     let geomActive = false;
-    let displayMode = "solids";
+    let displayMode = "geometry";
     let selectedElementId = null;
+    const compareMat = new THREE.MeshLambertMaterial({
+      color: 0xb4b4b4,
+      emissive: 0x101010,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.18,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    });
+    const compareEdgeMat = new THREE.LineBasicMaterial({
+      color: 0xd8d8d8,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const compareWireMat = new THREE.MeshBasicMaterial({
+      color: 0xcfcfcf,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+    });
 
     const skeletonGeom = new THREE.BufferGeometry();
     skeletonGeom.setAttribute("position", new THREE.Float32BufferAttribute([], 3));
@@ -2205,6 +2353,13 @@
     }
     applySelBoxVisible();
 
+    function normalizeDisplayMode(mode) {
+      const m = String(mode || "").toLowerCase();
+      if (m === "surface") return "surface";
+      if (m === "both") return "both";
+      return "geometry";
+    }
+
     function applySpatialVis() {
       if (!geomActive) {
         branches.visible = true;
@@ -2220,15 +2375,16 @@
       pickLines.visible = false;
       skeletonLines.visible = showBranches;
       const showForm = showSpaces;
-      const solidsOn = showForm && displayMode !== "surface";
-      const surfaceOn = showForm && displayMode === "surface";
+      const mode = normalizeDisplayMode(displayMode);
+      const solidsOn = showForm && (mode === "geometry" || mode === "both");
+      const surfaceOn = showForm && (mode === "surface" || mode === "both");
       geomGroup.visible = solidsOn;
       surfGroup.visible = surfaceOn;
       if (spaceMesh) spaceMesh.visible = false;
       if (spaceEdges) spaceEdges.visible = false;
       if (solidsOn) {
         geomGroup.traverse((obj) => {
-          if (obj.isLineSegments) obj.visible = showMeshEdges;
+          if (obj.isLineSegments) obj.visible = showMeshEdges || mode === "both";
         });
       }
       if (surfaceOn) {
@@ -2244,7 +2400,7 @@
     }
 
     function setDisplayMode(mode) {
-      displayMode = mode === "surface" ? "surface" : "solids";
+      displayMode = normalizeDisplayMode(mode);
       applySpatialVis();
       paintElementHighlight();
       return displayMode;
@@ -2289,7 +2445,7 @@
       ];
       if (hLines) mats.push(hLines.material);
       if (vLines) mats.push(vLines.material);
-      const solidMats = [spaceMat, spaceEdgeMat, selectedMat, selectedEdgeMat, ribbonMat];
+      const solidMats = [spaceMat, spaceEdgeMat, selectedMat, selectedEdgeMat, ribbonMat, compareMat, compareEdgeMat, compareWireMat, humanScaleMesh.material];
       for (let i = 0; i < solidMats.length; i++) {
         if (!solidMats[i]) continue;
         solidMats[i].clippingPlanes = [];
@@ -2409,7 +2565,8 @@
       applySceneClip();
     }
 
-    function paintGroupHighlight(group, idleMat) {
+    function paintGroupHighlight(group, idleMat, idleEdgeMat, forceEdges) {
+      const edgeIdle = idleEdgeMat || spaceEdgeMat;
       group.children.forEach((mesh) => {
         if (!mesh.isMesh) return;
         const on = mesh.userData.elementId === selectedElementId;
@@ -2417,15 +2574,16 @@
         mesh.material = on ? selectedMat : idleMat;
         mesh.children.forEach((ch) => {
           if (!ch.isLineSegments) return;
-          ch.material = on ? selectedEdgeMat : spaceEdgeMat;
-          ch.visible = showMeshEdges;
+          ch.material = on ? selectedEdgeMat : edgeIdle;
+          ch.visible = showMeshEdges || !!forceEdges;
         });
       });
     }
 
     function paintElementHighlight() {
-      paintGroupHighlight(geomGroup, spaceMat);
-      paintGroupHighlight(surfGroup, ribbonMat);
+      const both = normalizeDisplayMode(displayMode) === "both";
+      paintGroupHighlight(geomGroup, both ? compareWireMat : spaceMat, both ? compareEdgeMat : spaceEdgeMat, both);
+      paintGroupHighlight(surfGroup, ribbonMat, spaceEdgeMat, false);
       attachElemGizmo(selectedElementId);
     }
 
@@ -2492,7 +2650,7 @@
 
     function findElemMesh(id) {
       if (!id) return null;
-      const groups = displayMode === "surface" ? [surfGroup, geomGroup] : [geomGroup, surfGroup];
+      const groups = normalizeDisplayMode(displayMode) === "surface" ? [surfGroup, geomGroup] : [geomGroup, surfGroup];
       for (let g = 0; g < groups.length; g++) {
         const children = groups[g].children;
         for (let i = 0; i < children.length; i++) {
@@ -2672,7 +2830,7 @@
 
     function pickGeometry(clientX, clientY) {
       if (!geomActive || !showSpaces) return null;
-      const group = displayMode === "surface" ? surfGroup : geomGroup;
+      const group = normalizeDisplayMode(displayMode) === "surface" ? surfGroup : geomGroup;
       if (!group.children.length) return null;
       const rect = renderer.domElement.getBoundingClientRect();
       const pointer = new THREE.Vector2(
@@ -2837,6 +2995,155 @@
       raf = requestAnimationFrame(tick);
     }
 
+    function getSelectionState() {
+      return {
+        cx: selBox.position.x,
+        cy: selBox.position.y,
+        cz: selBox.position.z,
+        sx: selBox.scale.x,
+        sy: selBox.scale.y,
+        sz: selBox.scale.z,
+        rx: selBox.rotation.x,
+        ry: selBox.rotation.y,
+        rz: selBox.rotation.z,
+      };
+    }
+
+    function setSelectionBox(state) {
+      if (!state) return selectionBoxBounds();
+      if (state.cx != null && state.cy != null && state.cz != null) {
+        selBox.position.set(Number(state.cx), Number(state.cy), Number(state.cz));
+      } else if (state.minx != null) {
+        selBox.position.set(
+          (Number(state.minx) + Number(state.maxx)) * 0.5,
+          (Number(state.miny) + Number(state.maxy)) * 0.5,
+          (Number(state.minz) + Number(state.maxz)) * 0.5
+        );
+        selBox.scale.set(
+          Math.max(0.25, Number(state.maxx) - Number(state.minx)),
+          Math.max(0.25, Number(state.maxy) - Number(state.miny)),
+          Math.max(0.25, Number(state.maxz) - Number(state.minz))
+        );
+      }
+      if (state.sx != null && state.sy != null && state.sz != null) {
+        selBox.scale.set(Number(state.sx), Number(state.sy), Number(state.sz));
+      }
+      if (state.rx != null || state.ry != null || state.rz != null) {
+        selBox.rotation.set(Number(state.rx) || 0, Number(state.ry) || 0, Number(state.rz) || 0);
+      }
+      clampSelection();
+      applySelBoxVisible();
+      if (hideOutside) applySceneClip();
+      if (typeof onSelectionChange === "function") onSelectionChange(selectionBoxBounds());
+      return selectionBoxBounds();
+    }
+
+    function getCameraState() {
+      const cam = activeCamera;
+      const target = controls ? controls.target : workspaceCenter;
+      return {
+        viewMode,
+        position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
+        target: { x: target.x, y: target.y, z: target.z },
+        up: { x: cam.up.x, y: cam.up.y, z: cam.up.z },
+      };
+    }
+
+    function setCameraState(state) {
+      if (!state) return;
+      const mode = state.viewMode || "perspective";
+      applyViewMode(mode, { reset: false });
+      const cam = activeCamera;
+      if (state.up) cam.up.set(Number(state.up.x), Number(state.up.y), Number(state.up.z));
+      if (state.position) cam.position.set(Number(state.position.x), Number(state.position.y), Number(state.position.z));
+      if (state.target && controls) {
+        controls.target.set(Number(state.target.x), Number(state.target.y), Number(state.target.z));
+        cam.lookAt(controls.target);
+        controls.update();
+      }
+      syncControlsCamera();
+      if (gizmo) gizmo.camera = activeCamera;
+      if (rootGizmo) rootGizmo.camera = activeCamera;
+      if (elemGizmo) {
+        elemGizmo.camera = activeCamera;
+        lockElemGizmoWorld();
+      }
+    }
+
+    function captureThumbnail() {
+      const savedCam = getCameraState();
+      const hide = [cube, attractors, rootsGroup, hLines, vLines, snapPts, snapGhost, pickLines, branches, skeletonLines];
+      const prevVis = hide.map((obj) => (obj ? obj.visible : false));
+      const gizmoPrev = gizmo ? { vis: gizmo.visible, en: gizmo.enabled } : null;
+      const rootPrev = rootGizmo ? { vis: rootGizmo.visible, en: rootGizmo.enabled } : null;
+      const elemPrev = elemGizmo ? { vis: elemGizmo.visible, en: elemGizmo.enabled } : null;
+      try {
+        applyViewMode("isometric", { reset: true });
+        resize();
+        for (let i = 0; i < hide.length; i++) if (hide[i]) hide[i].visible = false;
+        if (gizmo) {
+          gizmo.visible = false;
+          gizmo.enabled = false;
+        }
+        if (rootGizmo) {
+          rootGizmo.visible = false;
+          rootGizmo.enabled = false;
+        }
+        if (elemGizmo) {
+          elemGizmo.visible = false;
+          elemGizmo.enabled = false;
+        }
+        renderer.setClearColor(0x000000, 1);
+        renderer.render(scene, activeCamera);
+        const src = renderer.domElement;
+        const canvas = document.createElement("canvas");
+        canvas.width = 240;
+        canvas.height = 160;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(0, 0, 240, 160);
+        const sw = src.width;
+        const sh = src.height;
+        if (sw && sh) {
+          const tr = 240 / 160;
+          const sr = sw / sh;
+          let sx = 0;
+          let sy = 0;
+          let cw = sw;
+          let ch = sh;
+          if (sr > tr) {
+            cw = sh * tr;
+            sx = (sw - cw) * 0.5;
+          } else {
+            ch = sw / tr;
+            sy = (sh - ch) * 0.5;
+          }
+          ctx.drawImage(src, sx, sy, cw, ch, 0, 0, 240, 160);
+        }
+        return canvas.toDataURL("image/png");
+      } catch (err) {
+        return "";
+      } finally {
+        for (let i = 0; i < hide.length; i++) if (hide[i]) hide[i].visible = prevVis[i];
+        if (gizmo && gizmoPrev) {
+          gizmo.visible = gizmoPrev.vis;
+          gizmo.enabled = gizmoPrev.en;
+        }
+        if (rootGizmo && rootPrev) {
+          rootGizmo.visible = rootPrev.vis;
+          rootGizmo.enabled = rootPrev.en;
+        }
+        if (elemGizmo && elemPrev) {
+          elemGizmo.visible = elemPrev.vis;
+          elemGizmo.enabled = elemPrev.en;
+        }
+        setCameraState(savedCam);
+        applySelBoxVisible();
+        applySpatialVis();
+        renderer.setClearColor(0x000000, 1);
+      }
+    }
+
     applyViewMode("perspective", { reset: true });
     resize();
 
@@ -2903,6 +3210,14 @@
         onElemGizmoEnd = fn;
       },
       getSelectionBox: selectionBoxBounds,
+      getSelectionState,
+      setSelectionBox,
+      getCameraState,
+      setCameraState,
+      captureThumbnail,
+      setShowHumanScale,
+      getHumanScaleState,
+      setHumanScaleState,
       setOnSelectionChange(fn) {
         onSelectionChange = fn;
       },
@@ -2980,11 +3295,27 @@
       junctionVal: document.getElementById("grid3dJunctionVal"),
       showBranches: document.getElementById("grid3dShowBranches"),
       showSpaces: document.getElementById("grid3dShowSpaces"),
-      displayMode: document.getElementById("grid3dDisplayMode"),
+      modeGeometry: document.getElementById("grid3dModeGeometry"),
+      modeSurface: document.getElementById("grid3dModeSurface"),
+      modeBoth: document.getElementById("grid3dModeBoth"),
       showSelBox: document.getElementById("grid3dShowSelBox"),
+      showHumanScale: document.getElementById("grid3dShowHumanScale"),
       hideOutside: document.getElementById("grid3dHideOutside"),
-      export3dm: document.getElementById("grid3dExport3dm"),
-      exportObj: document.getElementById("grid3dExportObj"),
+      exportGeom: document.getElementById("grid3dExportGeom"),
+      exportSurf: document.getElementById("grid3dExportSurf"),
+      exportBoth: document.getElementById("grid3dExportBoth"),
+      savedIterStatus: document.getElementById("grid3dSavedIterStatus"),
+      saveIter: document.getElementById("grid3dSaveIter"),
+      saveIterUpdate: document.getElementById("grid3dSaveIterUpdate"),
+      saveIterAs: document.getElementById("grid3dSaveIterAs"),
+      saveIterPanel: document.getElementById("grid3dSaveIterPanel"),
+      saveIterName: document.getElementById("grid3dSaveIterName"),
+      saveIterConfirm: document.getElementById("grid3dSaveIterConfirm"),
+      saveIterCancel: document.getElementById("grid3dSaveIterCancel"),
+      savedIterList: document.getElementById("grid3dSavedIterList"),
+      deleteIterDialog: document.getElementById("grid3dDeleteIterDialog"),
+      deleteIterCancel: document.getElementById("grid3dDeleteIterCancel"),
+      deleteIterConfirm: document.getElementById("grid3dDeleteIterConfirm"),
       elemEdit: document.getElementById("grid3dElemEdit"),
       elemStatus: document.getElementById("grid3dElemStatus"),
       elemWidth: document.getElementById("grid3dElemWidth"),
@@ -3037,6 +3368,15 @@
     let geomHist = [];
     let geomFuture = [];
     let geomHistLock = false;
+    let formMode = "geometry";
+    let openedIterationId = null;
+    let openedIterationName = "";
+    let iterationDirty = false;
+    let saveIterMode = "create";
+    let renameIterId = null;
+    let pendingDeleteIterId = null;
+    let savedIterRecords = [];
+    let iterationLoadLock = false;
     let geomUndoOpen = false;
     let geomFlexId = null;
     let geomFlexKey = null;
@@ -3167,8 +3507,11 @@
       }
       if (els.generateSpaces) els.generateSpaces.disabled = spaceBusy || !ready;
       if (els.resetGeom) els.resetGeom.disabled = spaceBusy || !spaceResult;
-      if (els.export3dm) els.export3dm.disabled = spaceBusy || !spaceResult;
-      if (els.exportObj) els.exportObj.disabled = spaceBusy || !spaceResult;
+      const canExport = !spaceBusy && !!spaceResult;
+      if (els.exportGeom) els.exportGeom.disabled = !canExport;
+      if (els.exportSurf) els.exportSurf.disabled = !canExport;
+      if (els.exportBoth) els.exportBoth.disabled = !canExport;
+      paintSavedIterButtons();
     }
 
     function setSpaceStatus(message, kind) {
@@ -3613,6 +3956,7 @@
     function mergeOverride(id, patch) {
       const prev = geomOverrides[id] ? Object.assign({}, geomOverrides[id]) : {};
       geomOverrides[id] = Object.assign(prev, patch);
+      markIterationDirty();
       return geomOverrides[id];
     }
 
@@ -3642,7 +3986,8 @@
       if (result.duplicateCount) msg += " · " + result.duplicateCount + (result.duplicateCount === 1 ? " copy" : " copies");
       if (result.didConstrain) msg += " · capped at selection";
       if (result.invalidCount) msg += " · " + result.invalidCount + " open";
-      if (els.displayMode && els.displayMode.value === "surface") msg += " · thin surfaces";
+      if (formMode === "surface") msg += " · surface";
+      else if (formMode === "both") msg += " · geometry + surface";
       return msg;
     }
 
@@ -3691,17 +4036,412 @@
       viewer.setSpatialActive(true);
       if (els.showBranches) viewer.setShowBranches(els.showBranches.checked);
       if (els.showSpaces) viewer.setShowSpaces(els.showSpaces.checked);
-      if (els.displayMode && viewer.setDisplayMode) viewer.setDisplayMode(els.displayMode.value);
+      if (viewer.setDisplayMode) viewer.setDisplayMode(formMode);
       if (selectedGeomId) viewer.setSelectedElement(selectedGeomId);
       paintElemPanel();
       paintButtons();
     }
 
     function isSurfaceMode() {
-      return (
-        (viewer && viewer.getDisplayMode && viewer.getDisplayMode() === "surface") ||
-        (els.displayMode && els.displayMode.value === "surface")
+      return formMode === "surface";
+    }
+
+    function clonePlain(value) {
+      if (value == null || typeof value !== "object") return value;
+      if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(value)) return Array.from(value);
+      if (Array.isArray(value)) {
+        const out = new Array(value.length);
+        for (let i = 0; i < value.length; i++) out[i] = clonePlain(value[i]);
+        return out;
+      }
+      const out = {};
+      for (const key in value) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) out[key] = clonePlain(value[key]);
+      }
+      return out;
+    }
+
+    function savedIterStore() {
+      return global.D7SavedGridIterations || null;
+    }
+
+    function markIterationDirty() {
+      if (iterationLoadLock) return;
+      iterationDirty = true;
+      paintSavedIterButtons();
+    }
+
+    function formatSavedIterDate(ts) {
+      const n = Number(ts);
+      if (!n) return "";
+      try {
+        return new Date(n).toLocaleString();
+      } catch (err) {
+        return "";
+      }
+    }
+
+    function setSavedIterStatus(message, kind) {
+      if (!els.savedIterStatus) return;
+      els.savedIterStatus.textContent = message;
+      els.savedIterStatus.classList.toggle("active", kind === "active");
+      els.savedIterStatus.classList.toggle("error", kind === "error");
+      els.savedIterStatus.classList.toggle("space3d-saved-unsaved", kind === "unsaved");
+    }
+
+    function paintFormModeButtons() {
+      const buttons = [els.modeGeometry, els.modeSurface, els.modeBoth];
+      for (let i = 0; i < buttons.length; i++) {
+        const btn = buttons[i];
+        if (!btn) continue;
+        const on = btn.dataset.mode === formMode;
+        btn.classList.toggle("active", on);
+        btn.classList.toggle("primary", on);
+        btn.classList.toggle("ghost", !on);
+      }
+    }
+
+    function applyFormMode(mode, opts) {
+      const next = mode === "surface" ? "surface" : mode === "both" ? "both" : "geometry";
+      formMode = next;
+      if (!opts || !opts.keepSelection) selectGeom(null);
+      if (viewer && viewer.setDisplayMode) viewer.setDisplayMode(formMode);
+      paintFormModeButtons();
+      if (spaceResult) setSpaceStatus(geomStatusText(spaceResult), "active");
+    }
+
+    function paintSavedIterButtons() {
+      const store = savedIterStore();
+      if (els.saveIter) els.saveIter.disabled = !store;
+      if (els.saveIterUpdate) els.saveIterUpdate.disabled = !store || !openedIterationId || !iterationDirty;
+      if (els.saveIterAs) els.saveIterAs.disabled = !store || !openedIterationId;
+      if (!store) {
+        setSavedIterStatus("Saved Iterations need IndexedDB in this browser.", "error");
+      } else if (openedIterationId && iterationDirty) {
+        setSavedIterStatus("Unsaved Changes · " + (openedIterationName || "Iteration"), "unsaved");
+      } else if (openedIterationId) {
+        setSavedIterStatus("Opened · " + (openedIterationName || "Iteration"), "active");
+      } else {
+        setSavedIterStatus(
+          "Save the current selection box, rectangular geometry, and developed surfaces. Iterations stay on this computer until you delete them."
+        );
+      }
+    }
+
+    function writeGlobalSlider(input, label, value) {
+      if (!input) return;
+      input.value = String(value);
+      if (label) label.textContent = Number(value).toFixed(2) + "'";
+    }
+
+    function captureWorkingSnapshot() {
+      const cloned = spaceResult ? clonePlain(spaceResult) : null;
+      return {
+        selectionBox: viewer && viewer.getSelectionState ? viewer.getSelectionState() : null,
+        displayMode: formMode,
+        showBranches: !!(els.showBranches && els.showBranches.checked),
+        showSpaces: !(els.showSpaces) || !!els.showSpaces.checked,
+        showSelBox: !(els.showSelBox) || !!els.showSelBox.checked,
+        showHumanScale: !!(els.showHumanScale && els.showHumanScale.checked),
+        humanScale: viewer && viewer.getHumanScaleState ? viewer.getHumanScaleState() : null,
+        hideOutside: !!(els.hideOutside && els.hideOutside.checked),
+        width: els.width ? Number(els.width.value) : 2,
+        thickness: els.thickness ? Number(els.thickness.value) : 2,
+        junction: els.junction ? Number(els.junction.value) : 2,
+        geomOverrides: clonePlain(geomOverrides),
+        nextDupId,
+        selectedGeomId,
+        spaceResult: cloned,
+        sourceGeometry: cloned && cloned.elements ? cloned.elements : [],
+        surfaceGeometry: cloned && cloned.surfaces ? cloned.surfaces : [],
+        camera: viewer && viewer.getCameraState ? viewer.getCameraState() : null,
+      };
+    }
+
+    function applyWorkingSnapshot(snapshot) {
+      if (!snapshot) return;
+      iterationLoadLock = true;
+      try {
+        ensureViewer();
+        if (snapshot.selectionBox && viewer && viewer.setSelectionBox) {
+          viewer.setSelectionBox(snapshot.selectionBox);
+        }
+        writeGlobalSlider(els.width, els.widthVal, snapshot.width != null ? snapshot.width : 2);
+        writeGlobalSlider(els.thickness, els.thicknessVal, snapshot.thickness != null ? snapshot.thickness : 2);
+        writeGlobalSlider(els.junction, els.junctionVal, snapshot.junction != null ? snapshot.junction : 2);
+        geomOverrides = clonePlain(snapshot.geomOverrides) || {};
+        nextDupId = snapshot.nextDupId || nextDupFromStore();
+        selectedGeomId = snapshot.selectedGeomId || null;
+        geomHist = [];
+        geomFuture = [];
+        if (els.showBranches) {
+          els.showBranches.checked = !!snapshot.showBranches;
+          if (viewer) viewer.setShowBranches(els.showBranches.checked);
+        }
+        if (els.showSpaces) {
+          els.showSpaces.checked = snapshot.showSpaces !== false;
+          if (viewer) viewer.setShowSpaces(els.showSpaces.checked);
+        }
+        if (els.showSelBox) {
+          els.showSelBox.checked = snapshot.showSelBox !== false;
+          if (viewer && viewer.setShowSelectionBox) viewer.setShowSelectionBox(els.showSelBox.checked);
+        }
+        if (els.showHumanScale) {
+          const hs = snapshot.humanScale || {};
+          const showHs = snapshot.showHumanScale != null ? !!snapshot.showHumanScale : !!hs.show;
+          els.showHumanScale.checked = showHs;
+          if (viewer && viewer.setHumanScaleState) {
+            viewer.setHumanScaleState({
+              show: showHs,
+              insetX: hs.insetX != null ? hs.insetX : HUMAN_SCALE_INSET,
+              insetZ: hs.insetZ != null ? hs.insetZ : HUMAN_SCALE_INSET,
+            });
+          } else if (viewer && viewer.setShowHumanScale) {
+            viewer.setShowHumanScale(showHs);
+          }
+        }
+        if (els.hideOutside) {
+          els.hideOutside.checked = !!snapshot.hideOutside;
+          if (viewer && viewer.setHideOutsideSelection) viewer.setHideOutsideSelection(els.hideOutside.checked);
+        }
+        applyFormMode(snapshot.displayMode || "geometry", { keepSelection: true });
+        const packed = clonePlain(snapshot.spaceResult);
+        if (packed && packed.ok) {
+          if ((!packed.elements || !packed.elements.length) && snapshot.sourceGeometry) {
+            packed.elements = clonePlain(snapshot.sourceGeometry);
+          }
+          if ((!packed.surfaces || !packed.surfaces.length) && snapshot.surfaceGeometry) {
+            packed.surfaces = clonePlain(snapshot.surfaceGeometry);
+          }
+          applyGeomResult(packed);
+        } else {
+          clearSpacePack();
+        }
+        if (selectedGeomId) selectGeom(selectedGeomId);
+        if (snapshot.camera && viewer && viewer.setCameraState) viewer.setCameraState(snapshot.camera);
+        paintSelection();
+        paintViewButtons();
+      } finally {
+        iterationLoadLock = false;
+      }
+    }
+
+    function closeSaveIterPanel() {
+      if (els.saveIterPanel) els.saveIterPanel.classList.add("hidden");
+      saveIterMode = "create";
+      renameIterId = null;
+    }
+
+    function openSaveIterPanel(mode, presetName) {
+      saveIterMode = mode || "create";
+      if (!els.saveIterPanel) return;
+      els.saveIterPanel.classList.remove("hidden");
+      if (els.saveIterName) {
+        els.saveIterName.value = presetName || "";
+        els.saveIterName.focus();
+        els.saveIterName.select();
+      }
+      if (els.saveIterConfirm) {
+        els.saveIterConfirm.textContent = mode === "rename" ? "Rename" : "Save";
+      }
+    }
+
+    function closeDeleteIterDialog() {
+      pendingDeleteIterId = null;
+      if (els.deleteIterDialog) els.deleteIterDialog.classList.add("hidden");
+    }
+
+    function openDeleteIterDialog(id) {
+      pendingDeleteIterId = id;
+      if (els.deleteIterDialog) els.deleteIterDialog.classList.remove("hidden");
+      if (els.deleteIterCancel) els.deleteIterCancel.focus();
+    }
+
+    function renderSavedIterList() {
+      const list = els.savedIterList;
+      if (!list) return;
+      list.innerHTML = "";
+      for (const record of savedIterRecords) {
+        const item = document.createElement("li");
+        if (record.id === openedIterationId) item.className = "active";
+        if (record.thumbnail) {
+          const img = document.createElement("img");
+          img.alt = "";
+          img.width = 72;
+          img.height = 72;
+          img.src = record.thumbnail;
+          item.appendChild(img);
+        }
+        const body = document.createElement("div");
+        body.className = "saved-sim-card-body";
+        const title = document.createElement("strong");
+        title.className = "saved-sim-card-title";
+        title.textContent = record.name || "Untitled";
+        const meta = document.createElement("div");
+        meta.className = "saved-sim-card-meta";
+        const created = formatSavedIterDate(record.createdAt);
+        const updated = formatSavedIterDate(record.updatedAt);
+        meta.innerHTML = created
+          ? "Created " + created + (updated && updated !== created ? "<br>Modified " + updated : "")
+          : "";
+        const actions = document.createElement("div");
+        actions.className = "saved-sim-card-actions";
+        const loadBtn = document.createElement("button");
+        loadBtn.type = "button";
+        loadBtn.textContent = "Load";
+        loadBtn.addEventListener("click", () => loadSavedIteration(record.id));
+        const dupBtn = document.createElement("button");
+        dupBtn.type = "button";
+        dupBtn.textContent = "Duplicate";
+        dupBtn.addEventListener("click", () => duplicateSavedIteration(record.id));
+        const renameBtn = document.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.textContent = "Rename";
+        renameBtn.addEventListener("click", () => {
+          renameIterId = record.id;
+          openSaveIterPanel("rename", record.name || "");
+        });
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", () => openDeleteIterDialog(record.id));
+        actions.appendChild(loadBtn);
+        actions.appendChild(dupBtn);
+        actions.appendChild(renameBtn);
+        actions.appendChild(delBtn);
+        body.appendChild(title);
+        body.appendChild(meta);
+        body.appendChild(actions);
+        item.appendChild(body);
+        list.appendChild(item);
+      }
+    }
+
+    async function refreshSavedIterList() {
+      const store = savedIterStore();
+      if (!store) {
+        setSavedIterStatus("Saved Iterations need IndexedDB in this browser.", "error");
+        return;
+      }
+      try {
+        savedIterRecords = await store.list();
+        renderSavedIterList();
+        paintSavedIterButtons();
+      } catch (err) {
+        setSavedIterStatus(err && err.message ? err.message : "Could not read saved iterations.", "error");
+      }
+    }
+
+    async function persistSavedIteration(record) {
+      const store = savedIterStore();
+      if (!store) throw new Error("Saved Iterations need IndexedDB in this browser.");
+      return store.put(record);
+    }
+
+    async function createSavedIteration(name) {
+      const store = savedIterStore();
+      if (!store) throw new Error("Saved Iterations need IndexedDB in this browser.");
+      ensureViewer();
+      const thumbnail = viewer && viewer.captureThumbnail ? viewer.captureThumbnail() : "";
+      const now = Date.now();
+      const record = {
+        id: store.createId(),
+        name: String(name || store.nextDefaultName(savedIterRecords)).trim() || store.nextDefaultName(savedIterRecords),
+        createdAt: now,
+        updatedAt: now,
+        thumbnail: thumbnail || "",
+        snapshot: captureWorkingSnapshot(),
+      };
+      await persistSavedIteration(record);
+      openedIterationId = record.id;
+      openedIterationName = record.name;
+      iterationDirty = false;
+      await refreshSavedIterList();
+      setSavedIterStatus("Saved · " + record.name, "active");
+    }
+
+    async function overwriteOpenedIteration() {
+      const store = savedIterStore();
+      if (!store || !openedIterationId) return;
+      ensureViewer();
+      const existing = await store.get(openedIterationId);
+      if (!existing) throw new Error("That saved iteration is no longer in this browser.");
+      const thumbnail = viewer && viewer.captureThumbnail ? viewer.captureThumbnail() : existing.thumbnail;
+      existing.updatedAt = Date.now();
+      existing.thumbnail = thumbnail || existing.thumbnail || "";
+      existing.snapshot = captureWorkingSnapshot();
+      await persistSavedIteration(existing);
+      openedIterationName = existing.name;
+      iterationDirty = false;
+      await refreshSavedIterList();
+      setSavedIterStatus("Saved changes · " + existing.name, "active");
+    }
+
+    async function loadSavedIteration(id) {
+      const store = savedIterStore();
+      if (!store) return;
+      const record = await store.get(id);
+      if (!record || !record.snapshot) {
+        setSavedIterStatus("Could not load that iteration.", "error");
+        return;
+      }
+      applyWorkingSnapshot(record.snapshot);
+      openedIterationId = record.id;
+      openedIterationName = record.name || "";
+      iterationDirty = false;
+      renderSavedIterList();
+      paintSavedIterButtons();
+      setSpaceStatus(
+        spaceResult
+          ? geomStatusText(spaceResult) + " · loaded " + (record.name || "iteration")
+          : "Loaded " + (record.name || "iteration") + " · no generated geometry in this save.",
+        "active"
       );
+    }
+
+    async function duplicateSavedIteration(id) {
+      const store = savedIterStore();
+      if (!store) return;
+      const record = await store.get(id);
+      if (!record) return;
+      const now = Date.now();
+      const copy = {
+        id: store.createId(),
+        name: store.duplicateName(record.name),
+        createdAt: now,
+        updatedAt: now,
+        thumbnail: record.thumbnail || "",
+        snapshot: clonePlain(record.snapshot),
+      };
+      await persistSavedIteration(copy);
+      await refreshSavedIterList();
+      setSavedIterStatus("Duplicated · " + copy.name, "active");
+    }
+
+    async function renameSavedIteration(id, name) {
+      const store = savedIterStore();
+      if (!store) return;
+      const record = await store.get(id);
+      if (!record) return;
+      record.name = String(name || "").trim() || record.name;
+      record.updatedAt = Date.now();
+      await persistSavedIteration(record);
+      if (openedIterationId === id) openedIterationName = record.name;
+      await refreshSavedIterList();
+      setSavedIterStatus("Renamed · " + record.name, "active");
+    }
+
+    async function deleteSavedIteration(id) {
+      const store = savedIterStore();
+      if (!store || !id) return;
+      await store.remove(id);
+      if (openedIterationId === id) {
+        openedIterationId = null;
+        openedIterationName = "";
+        iterationDirty = !!spaceResult;
+      }
+      await refreshSavedIterList();
+      setSavedIterStatus("Deleted iteration. Working geometry was not reset.");
     }
 
     function findElement(id) {
@@ -3790,6 +4530,7 @@
       try {
         const next = global.D7GridSpaces.rebuild(spaceResult.graph, geomOpts());
         applyGeomResult(next);
+        markIterationDirty();
         setSpaceStatus(geomStatusText(next), "active");
       } catch (err) {
         setSpaceStatus("Rebuild failed: " + (err && err.message ? err.message : String(err)), "error");
@@ -3834,6 +4575,7 @@
         geomHist = [];
         geomFuture = [];
         if (selectedGeomId && !findElement(selectedGeomId)) selectGeom(null);
+        markIterationDirty();
         setSpaceStatus(geomStatusText(result), "active");
         paintButtons();
       });
@@ -3954,6 +4696,8 @@
       if (els.showV) viewer.setShowVertical(els.showV.checked);
       if (els.showAttractors) viewer.setShowAttractors(els.showAttractors.checked);
       if (els.showRoots && viewer.setShowRoots) viewer.setShowRoots(els.showRoots.checked);
+      if (els.showSelBox && viewer.setShowSelectionBox) viewer.setShowSelectionBox(els.showSelBox.checked);
+      if (els.showHumanScale && viewer.setShowHumanScale) viewer.setShowHumanScale(els.showHumanScale.checked);
       viewer.setBoxGizmoLocked(editMode !== "idle");
       stage.addEventListener("pointerdown", (event) => {
         if (event.button !== 0) return;
@@ -4025,7 +4769,13 @@
       if (viewer.setOnSelectionEnd) {
         viewer.setOnSelectionEnd(() => {
           paintSelection();
-          if (spaceResult) runGenerateSpaces();
+          markIterationDirty();
+          if (spaceResult) {
+            setSpaceStatus(
+              "Selection box moved. Click Generate Geometry to rebuild from the new chunk. Saved iterations are unchanged until you Save Changes.",
+              "active"
+            );
+          }
         });
       }
       if (viewer.setOnRootGizmoChange) {
@@ -4225,19 +4975,25 @@
         if (viewer) viewer.setShowSpaces(els.showSpaces.checked);
       });
     }
-    if (els.displayMode) {
-      els.displayMode.addEventListener("change", () => {
-        const mode = els.displayMode.value === "surface" ? "surface" : "solids";
-        selectGeom(null);
-        if (viewer && viewer.setDisplayMode) viewer.setDisplayMode(mode);
-        if (spaceResult) {
-          setSpaceStatus(geomStatusText(spaceResult), "active");
-        }
-      });
-    }
+    [
+      [els.modeGeometry, "geometry"],
+      [els.modeSurface, "surface"],
+      [els.modeBoth, "both"],
+    ].forEach((pair) => {
+      const btn = pair[0];
+      const mode = pair[1];
+      if (!btn) return;
+      btn.addEventListener("click", () => applyFormMode(mode));
+    });
     if (els.showSelBox) {
       els.showSelBox.addEventListener("change", () => {
         if (viewer) viewer.setShowSelectionBox(els.showSelBox.checked);
+      });
+    }
+    if (els.showHumanScale) {
+      els.showHumanScale.addEventListener("change", () => {
+        if (viewer && viewer.setShowHumanScale) viewer.setShowHumanScale(els.showHumanScale.checked);
+        markIterationDirty();
       });
     }
     if (els.hideOutside) {
@@ -4257,6 +5013,7 @@
       });
     }
     function onGlobalGeom() {
+      if (iterationLoadLock) return;
       if (!spaceResult) return;
       rebuildGeometry();
     }
@@ -4377,11 +5134,10 @@
 
     function resetAllGeometry() {
       if (!spaceResult) return;
-      pushGeomHist();
-      geomOverrides = {};
-      nextDupId = 1;
-      selectGeom(null);
-      rebuildGeometry();
+      clearSpacePack();
+      markIterationDirty();
+      paintSelection();
+      setSpaceStatus("Working iteration cleared. Saved iterations were not deleted.", "active");
     }
     [
       ["elemWidth", "width"],
@@ -4435,77 +5191,116 @@
       els.elemClear.addEventListener("click", resetSelectedBox);
     }
     if (els.resetGeom) els.resetGeom.addEventListener("click", resetAllGeometry);
-    function surfaceExportResult(result) {
-      return {
-        ok: true,
-        graph: result.graph,
-        box: result.box,
-        guides: result.guides,
-        positions: result.surfacePositions,
-        indices: result.surfaceIndices,
-        elements: [
-          {
-            id: "surface",
-            kind: "surface",
-            closedBox: false,
-            meshClosed: false,
-            positions: result.surfacePositions,
-            indices: result.surfaceIndices,
-          },
-        ],
-      };
-    }
 
-    async function exportSpace(kind) {
+    async function exportIteration(which) {
       if (!spaceResult || !spaceResult.ok) {
         setSpaceStatus("Generate Geometry first.", "error");
         return;
       }
       const lib = global.D7SpatialExport;
-      if (!lib) {
+      if (!lib || !lib.exportGridSpace3dm) {
         setSpaceStatus("Exporter did not load.", "error");
         return;
       }
+      const mode = which === "surface" ? "surface" : which === "both" ? "both" : "geometry";
+      const hasGeom = !!(spaceResult.elements && spaceResult.elements.length);
+      const hasSurf =
+        !!(spaceResult.surfaces && spaceResult.surfaces.length) ||
+        !!(spaceResult.surfacePositions && spaceResult.surfacePositions.length);
+      if (mode === "geometry" && !hasGeom) {
+        setSpaceStatus("No rectangular geometry to export.", "error");
+        return;
+      }
+      if (mode === "surface" && !hasSurf) {
+        setSpaceStatus("No developed surface to export.", "error");
+        return;
+      }
       try {
-        const surfaceOn = (viewer && viewer.getDisplayMode && viewer.getDisplayMode() === "surface") || (els.displayMode && els.displayMode.value === "surface");
-        const payload = surfaceOn && spaceResult.surfacePositions ? surfaceExportResult(spaceResult) : spaceResult;
-        if (kind === "3dm") {
-          const fn = lib.exportGridSpace3dm || lib.exportGridSurfaces3dm;
-          if (!fn) {
-            setSpaceStatus("3DM export is not available.", "error");
-            return;
-          }
-          setSpaceStatus("Writing Rhino 3DM…");
-          const filename = surfaceOn ? "D7_Grid_Surface.3dm" : "D7_Grid_Rects.3dm";
-          const out = await fn(payload, filename);
-          const kindLabel = out && out.kind ? out.kind : surfaceOn ? "surface" : "solids";
-          setSpaceStatus(
-            "Exported " +
-              filename +
-              " · " +
-              kindLabel +
-              (out && out.closed ? " · " + out.closed + " closed Breps" : "") +
-              (out && out.meshCount ? " · " + out.meshCount + " closed meshes" : "") +
-              " · BRANCH_GUIDES · units = Feet",
-            "active"
-          );
-        } else {
-          setSpaceStatus("Writing OBJ mesh…");
-          const toObj = lib.gridSpaceToOBJ || lib.gridSurfacesToOBJ;
-          const filename = surfaceOn ? "D7_Grid_Surface.obj" : "D7_Grid_Rects.obj";
-          const text = toObj(payload, surfaceOn ? "LINE_SURFACE" : "RECT_SOLIDS");
-          lib.exportOBJ(text, filename);
-          setSpaceStatus(
-            "Exported " + filename + (surfaceOn ? " · thin branch surfaces." : " · closed rectangular meshes.") + " 1 OBJ unit = 1 foot.",
-            "active"
-          );
-        }
+        setSpaceStatus("Writing Rhino 3DM…");
+        const filename =
+          mode === "surface" ? "D7_Grid_Surface.3dm" : mode === "both" ? "D7_Grid_Both.3dm" : "D7_Grid_Geometry.3dm";
+        const out = await lib.exportGridSpace3dm(spaceResult, filename, { which: mode });
+        setSpaceStatus(
+          "Exported " +
+            filename +
+            " · Feet · BRANCH_GEOMETRY · DEVELOPED_SURFACE · SOURCE_BRANCHES · SELECTION_BOX" +
+            (out && out.closed ? " · " + out.closed + " closed Breps" : "") +
+            (out && out.meshCount ? " · " + out.meshCount + " geometry meshes" : "") +
+            (out && out.surfCount ? " · " + out.surfCount + " surfaces" : ""),
+          "active"
+        );
       } catch (err) {
         setSpaceStatus("Export failed: " + (err && err.message ? err.message : String(err)), "error");
       }
     }
-    if (els.export3dm) els.export3dm.addEventListener("click", () => exportSpace("3dm"));
-    if (els.exportObj) els.exportObj.addEventListener("click", () => exportSpace("obj"));
+    if (els.exportGeom) els.exportGeom.addEventListener("click", () => exportIteration("geometry"));
+    if (els.exportSurf) els.exportSurf.addEventListener("click", () => exportIteration("surface"));
+    if (els.exportBoth) els.exportBoth.addEventListener("click", () => exportIteration("both"));
+
+    if (els.saveIter) {
+      els.saveIter.addEventListener("click", () => {
+        const store = savedIterStore();
+        if (!store) {
+          setSavedIterStatus("Saved Iterations need IndexedDB in this browser.", "error");
+          return;
+        }
+        openSaveIterPanel("create", store.nextDefaultName(savedIterRecords));
+      });
+    }
+    if (els.saveIterUpdate) {
+      els.saveIterUpdate.addEventListener("click", () => {
+        overwriteOpenedIteration().catch((err) => {
+          setSavedIterStatus(err && err.message ? err.message : "Could not save changes.", "error");
+        });
+      });
+    }
+    if (els.saveIterAs) {
+      els.saveIterAs.addEventListener("click", () => {
+        const store = savedIterStore();
+        if (!store) return;
+        openSaveIterPanel("create", store.nextDefaultName(savedIterRecords));
+      });
+    }
+    if (els.saveIterCancel) els.saveIterCancel.addEventListener("click", closeSaveIterPanel);
+    if (els.saveIterConfirm) {
+      els.saveIterConfirm.addEventListener("click", () => {
+        const name = els.saveIterName ? els.saveIterName.value.trim() : "";
+        const store = savedIterStore();
+        if (!store) return;
+        const finish = async () => {
+          if (saveIterMode === "rename" && renameIterId) {
+            await renameSavedIteration(renameIterId, name || "Iteration");
+          } else {
+            await createSavedIteration(name || store.nextDefaultName(savedIterRecords));
+          }
+          closeSaveIterPanel();
+        };
+        finish().catch((err) => {
+          setSavedIterStatus(err && err.message ? err.message : "Could not save iteration.", "error");
+        });
+      });
+    }
+    if (els.saveIterName) {
+      els.saveIterName.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          if (els.saveIterConfirm) els.saveIterConfirm.click();
+        } else if (event.key === "Escape") {
+          closeSaveIterPanel();
+        }
+      });
+    }
+    if (els.deleteIterCancel) els.deleteIterCancel.addEventListener("click", closeDeleteIterDialog);
+    if (els.deleteIterConfirm) {
+      els.deleteIterConfirm.addEventListener("click", () => {
+        const id = pendingDeleteIterId;
+        closeDeleteIterDialog();
+        if (!id) return;
+        deleteSavedIteration(id).catch((err) => {
+          setSavedIterStatus(err && err.message ? err.message : "Could not delete iteration.", "error");
+        });
+      });
+    }
     if (els.orientation) {
       els.orientation.addEventListener("change", () => {
         orientation = els.orientation.value || "both";
@@ -4721,7 +5516,9 @@
     paintButtons();
     paintReadout();
     paintGridStats();
+    paintFormModeButtons();
     loadDefaultGrid();
+    refreshSavedIterList();
 
     const api = {
       show() {
@@ -4736,8 +5533,10 @@
         if (els.showRoots && v.setShowRoots) v.setShowRoots(els.showRoots.checked);
         if (els.showBranches) v.setShowBranches(els.showBranches.checked);
         if (els.showSpaces) v.setShowSpaces(els.showSpaces.checked);
-        if (els.displayMode && v.setDisplayMode) v.setDisplayMode(els.displayMode.value);
+        if (v.setDisplayMode) v.setDisplayMode(formMode);
+        paintFormModeButtons();
         if (els.showSelBox && v.setShowSelectionBox) v.setShowSelectionBox(els.showSelBox.checked);
+        if (els.showHumanScale && v.setShowHumanScale) v.setShowHumanScale(els.showHumanScale.checked);
         if (els.hideOutside && v.setHideOutsideSelection) v.setHideOutsideSelection(els.hideOutside.checked);
         if (spaceResult) applyGeomResult(spaceResult);
         v.setBoxGizmoLocked(editMode !== "idle");
@@ -4782,6 +5581,12 @@
         syncViewer();
         paintStatus();
         return true;
+      },
+      getHumanScaleState() {
+        return viewer && viewer.getHumanScaleState ? viewer.getHumanScaleState() : null;
+      },
+      getSelectionBox() {
+        return viewer && viewer.getSelectionBox ? viewer.getSelectionBox() : null;
       },
       pickGeometry(x, y) {
         return viewer && viewer.pickGeometry ? viewer.pickGeometry(x, y) : null;

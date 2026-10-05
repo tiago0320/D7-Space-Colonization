@@ -493,43 +493,145 @@
     downloadBlob(filename, new Blob([text], { type: "text/plain" }));
   }
 
-  function gridSpaceToOBJ(result, objectName) {
-    const elements = result && result.elements ? result.elements : [];
-    const lines = unitHeader("Connected rectangular solids. 1 unit = 1 foot.");
+  function normalizeExportWhich(which, objectName) {
+    const w = String(which || "").toLowerCase();
+    if (w === "surface") return "surface";
+    if (w === "both") return "both";
+    if (w === "geometry" || w === "solids") return "geometry";
+    const n = String(objectName || "");
+    if (n === "LINE_SURFACE" || n === "DEVELOPED_SURFACE" || n === "SPACE_MESH") return "surface";
+    return "geometry";
+  }
+
+  function appendMeshOBJ(lines, name, positions, indices, vertOffset) {
+    if (!positions || !indices || !indices.length) return vertOffset;
+    lines.push(`o ${name}`);
+    for (let i = 0; i < positions.length; i += 3) {
+      lines.push(`v ${fmt(positions[i])} ${fmt(positions[i + 1])} ${fmt(positions[i + 2])}`);
+    }
+    for (let i = 0; i < indices.length; i += 3) {
+      lines.push(`f ${indices[i] + 1 + vertOffset} ${indices[i + 1] + 1 + vertOffset} ${indices[i + 2] + 1 + vertOffset}`);
+    }
+    return vertOffset + positions.length / 3;
+  }
+
+  function appendPolylineOBJ(lines, name, pairs, vertOffset) {
+    if (!pairs || !pairs.length) return vertOffset;
+    lines.push(`o ${name}`);
+    for (let i = 0; i < pairs.length; i++) {
+      const g = pairs[i];
+      lines.push(`v ${fmt(g.ax)} ${fmt(g.ay)} ${fmt(g.az)}`);
+      lines.push(`v ${fmt(g.bx)} ${fmt(g.by)} ${fmt(g.bz)}`);
+      const a = vertOffset + i * 2 + 1;
+      lines.push(`l ${a} ${a + 1}`);
+    }
+    return vertOffset + pairs.length * 2;
+  }
+
+  function selectionBoxEdges(box) {
+    if (!box) return [];
+    const minx = Number(box.minx);
+    const maxx = Number(box.maxx);
+    const miny = Number(box.miny);
+    const maxy = Number(box.maxy);
+    const minz = Number(box.minz);
+    const maxz = Number(box.maxz);
+    if (![minx, maxx, miny, maxy, minz, maxz].every(Number.isFinite)) return [];
+    const c = [
+      [minx, miny, minz],
+      [maxx, miny, minz],
+      [maxx, maxy, minz],
+      [minx, maxy, minz],
+      [minx, miny, maxz],
+      [maxx, miny, maxz],
+      [maxx, maxy, maxz],
+      [minx, maxy, maxz],
+    ];
+    const e = [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+      [3, 0],
+      [4, 5],
+      [5, 6],
+      [6, 7],
+      [7, 4],
+      [0, 4],
+      [1, 5],
+      [2, 6],
+      [3, 7],
+    ];
+    const out = [];
+    for (let i = 0; i < e.length; i++) {
+      const a = c[e[i][0]];
+      const b = c[e[i][1]];
+      out.push({ ax: a[0], ay: a[1], az: a[2], bx: b[0], by: b[1], bz: b[2] });
+    }
+    return out;
+  }
+
+  function gridSpaceToOBJ(result, objectName, options) {
+    const opts = options && typeof options === "object" ? options : typeof objectName === "object" ? objectName : {};
+    const which = normalizeExportWhich(opts.which, typeof objectName === "string" ? objectName : "");
+    const includeGeom = which === "geometry" || which === "both";
+    const includeSurf = which === "surface" || which === "both";
+    const lines = unitHeader(
+      which === "both"
+        ? "Rectangular geometry and developed surfaces. 1 unit = 1 foot."
+        : which === "surface"
+          ? "Developed surfaces. 1 unit = 1 foot."
+          : "Connected rectangular solids. 1 unit = 1 foot."
+    );
     let vertOffset = 0;
     let wrote = false;
-    for (let e = 0; e < elements.length; e++) {
-      const el = elements[e];
-      if (!el.positions || !el.indices || !el.indices.length) continue;
+    if (includeGeom) {
+      const elements = result && result.elements ? result.elements : [];
+      for (let e = 0; e < elements.length; e++) {
+        const el = elements[e];
+        if (!el.positions || !el.indices || !el.indices.length) continue;
+        wrote = true;
+        const name =
+          "BRANCH_GEOMETRY_" +
+          (el.kind || "solid") +
+          "_" +
+          String(el.id || e + 1).replace(/[^A-Za-z0-9_:-]/g, "_");
+        vertOffset = appendMeshOBJ(lines, name, el.positions, el.indices, vertOffset);
+      }
+      if (!wrote && result && result.positions && result.indices && result.indices.length) {
+        wrote = true;
+        vertOffset = appendMeshOBJ(lines, "BRANCH_GEOMETRY", result.positions, result.indices, vertOffset);
+      }
+    }
+    if (includeSurf) {
+      const surfaces = result && result.surfaces ? result.surfaces : [];
+      for (let e = 0; e < surfaces.length; e++) {
+        const el = surfaces[e];
+        if (!el.positions || !el.indices || !el.indices.length) continue;
+        wrote = true;
+        const name = "DEVELOPED_SURFACE_" + String(el.id || e + 1).replace(/[^A-Za-z0-9_:-]/g, "_");
+        vertOffset = appendMeshOBJ(lines, name, el.positions, el.indices, vertOffset);
+      }
+      if (!surfaces.length && result && result.surfacePositions && result.surfaceIndices && result.surfaceIndices.length) {
+        wrote = true;
+        vertOffset = appendMeshOBJ(lines, "DEVELOPED_SURFACE", result.surfacePositions, result.surfaceIndices, vertOffset);
+      }
+    }
+    const guides = result && result.guides ? result.guides : [];
+    if (guides.length) {
       wrote = true;
-      const name = (objectName || "RECT_SOLIDS") + "_" + (el.kind || "solid") + "_" + String(el.id || e + 1).replace(/[^A-Za-z0-9_:-]/g, "_");
-      lines.push(`o ${name}`);
-      const pos = el.positions;
-      const idx = el.indices;
-      for (let i = 0; i < pos.length; i += 3) {
-        lines.push(`v ${fmt(pos[i])} ${fmt(pos[i + 1])} ${fmt(pos[i + 2])}`);
-      }
-      for (let i = 0; i < idx.length; i += 3) {
-        lines.push(`f ${idx[i] + 1 + vertOffset} ${idx[i + 1] + 1 + vertOffset} ${idx[i + 2] + 1 + vertOffset}`);
-      }
-      vertOffset += pos.length / 3;
+      vertOffset = appendPolylineOBJ(lines, "SOURCE_BRANCHES", guides, vertOffset);
     }
-    if (wrote) return lines.join("\n") + "\n";
-    if (!result || !result.positions || !result.indices || !result.indices.length) return "";
-    const pos = result.positions;
-    const idx = result.indices;
-    lines.push(`o ${objectName || "RECT_SOLIDS"}`);
-    for (let i = 0; i < pos.length; i += 3) {
-      lines.push(`v ${fmt(pos[i])} ${fmt(pos[i + 1])} ${fmt(pos[i + 2])}`);
+    const boxEdges = selectionBoxEdges(result && result.box);
+    if (boxEdges.length) {
+      wrote = true;
+      appendPolylineOBJ(lines, "SELECTION_BOX", boxEdges, vertOffset);
     }
-    for (let i = 0; i < idx.length; i += 3) {
-      lines.push(`f ${idx[i] + 1} ${idx[i + 1] + 1} ${idx[i + 2] + 1}`);
-    }
+    if (!wrote) return "";
     return lines.join("\n") + "\n";
   }
 
   function gridSurfacesToOBJ(result, objectName) {
-    return gridSpaceToOBJ(result, objectName || "SPACE_MESH");
+    return gridSpaceToOBJ(result, objectName || "DEVELOPED_SURFACE", { which: "surface" });
   }
 
   function fillRhinoMesh(rhino, positions, indices) {
@@ -587,73 +689,125 @@
     return [p.x, p.y, p.z];
   }
 
-  async function exportGridSpace3dm(result, filename) {
-    if (!result || !result.ok || !result.indices || !result.indices.length) {
+  function addRhinoCurve(rhino, objects, attrs, ax, ay, az, bx, by, bz) {
+    try {
+      const curve = new rhino.LineCurve([ax, ay, az], [bx, by, bz]);
+      if (attrs && objects.addCurve) objects.addCurve(curve, attrs);
+      else if (objects.addCurve) objects.addCurve(curve);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function addSolidElement(rhino, objects, geomAttrs, el) {
+    let brep = null;
+    if (el.closedBox && el.solidOrigin && el.solidAxisU && el.solidAxisW && el.solidAxisT) {
+      try {
+        brep = closedBrepFromEdges(rhino, vec3(el.solidOrigin), vec3(el.solidAxisU), vec3(el.solidAxisW), vec3(el.solidAxisT));
+      } catch (err) {
+        brep = null;
+      }
+    }
+    if (!brep && el.closedBox && !el.clipped && el.origin && el.axisU && el.axisW && el.axisT) {
+      try {
+        brep = closedBrepFromEdges(rhino, vec3(el.origin), vec3(el.axisU), vec3(el.axisW), vec3(el.axisT));
+      } catch (err) {
+        brep = null;
+      }
+    }
+    if (!brep && el.meshClosed && el.positions && el.indices) {
+      try {
+        brep = closedBrepFromMesh(rhino, el.positions, el.indices);
+      } catch (err) {
+        brep = null;
+      }
+    }
+    if (brep && brep.isValid) {
+      if (geomAttrs && objects.addBrep) objects.addBrep(brep, geomAttrs);
+      else if (objects.addBrep) objects.addBrep(brep);
+      return "brep";
+    }
+    if (el.positions && el.indices && el.indices.length) {
+      const mesh = fillRhinoMesh(rhino, el.positions, el.indices);
+      if (geomAttrs && objects.addMesh) objects.addMesh(mesh, geomAttrs);
+      else if (objects.addMesh) objects.addMesh(mesh);
+      return "mesh";
+    }
+    return "";
+  }
+
+  async function exportGridSpace3dm(result, filename, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const which = normalizeExportWhich(opts.which, "");
+    const includeGeom = which === "geometry" || which === "both";
+    const includeSurf = which === "surface" || which === "both";
+    if (!result || !result.ok) {
       throw new Error("Generate Geometry first.");
     }
+    const hasGeom =
+      !!(result.elements && result.elements.length) || !!(result.positions && result.indices && result.indices.length);
+    const hasSurf =
+      !!(result.surfaces && result.surfaces.length) ||
+      !!(result.surfacePositions && result.surfaceIndices && result.surfaceIndices.length);
+    if (includeGeom && !includeSurf && !hasGeom) throw new Error("No rectangular geometry to export.");
+    if (includeSurf && !includeGeom && !hasSurf) throw new Error("No developed surface to export.");
+    if (!includeGeom && !includeSurf) throw new Error("Nothing to export.");
+
     const rhino = await loadRhino();
     const doc = new rhino.File3dm();
     setFeet(rhino, doc);
     const objects = doc.objects();
 
-    const solidAttrs = addNamedLayer(rhino, doc, "RECT_SOLIDS");
-    const meshAttrs = addNamedLayer(rhino, doc, "RECT_MESHES");
-    const elements = result.elements || [];
+    const geomAttrs = addNamedLayer(rhino, doc, "BRANCH_GEOMETRY");
+    const surfAttrs = addNamedLayer(rhino, doc, "DEVELOPED_SURFACE");
+    const branchAttrs = addNamedLayer(rhino, doc, "SOURCE_BRANCHES");
+    const boxAttrs = addNamedLayer(rhino, doc, "SELECTION_BOX");
+
     let brepCount = 0;
     let meshCount = 0;
-    for (let i = 0; i < elements.length; i++) {
-      const el = elements[i];
-      let brep = null;
-      if (el.closedBox && el.solidOrigin && el.solidAxisU && el.solidAxisW && el.solidAxisT) {
-        try {
-          brep = closedBrepFromEdges(rhino, vec3(el.solidOrigin), vec3(el.solidAxisU), vec3(el.solidAxisW), vec3(el.solidAxisT));
-        } catch (err) {
-          brep = null;
-        }
+    let surfCount = 0;
+    if (includeGeom) {
+      const elements = result.elements || [];
+      for (let i = 0; i < elements.length; i++) {
+        const kind = addSolidElement(rhino, objects, geomAttrs, elements[i]);
+        if (kind === "brep") brepCount += 1;
+        else if (kind === "mesh") meshCount += 1;
       }
-      if (!brep && el.closedBox && !el.clipped && el.origin && el.axisU && el.axisW && el.axisT) {
-        try {
-          brep = closedBrepFromEdges(rhino, vec3(el.origin), vec3(el.axisU), vec3(el.axisW), vec3(el.axisT));
-        } catch (err) {
-          brep = null;
-        }
-      }
-      if (!brep && el.meshClosed && el.positions && el.indices) {
-        try {
-          brep = closedBrepFromMesh(rhino, el.positions, el.indices);
-        } catch (err) {
-          brep = null;
-        }
-      }
-      if (brep && brep.isValid) {
-        if (solidAttrs && objects.addBrep) objects.addBrep(brep, solidAttrs);
-        else if (objects.addBrep) objects.addBrep(brep);
-        brepCount += 1;
-        continue;
-      }
-      if (el.positions && el.indices && el.indices.length) {
-        const mesh = fillRhinoMesh(rhino, el.positions, el.indices);
-        if (meshAttrs && objects.addMesh) objects.addMesh(mesh, meshAttrs);
+      if (!brepCount && !meshCount && result.positions && result.indices && result.indices.length) {
+        const mesh = fillRhinoMesh(rhino, result.positions, result.indices);
+        if (geomAttrs && objects.addMesh) objects.addMesh(mesh, geomAttrs);
         else if (objects.addMesh) objects.addMesh(mesh);
-        meshCount += 1;
+        meshCount = 1;
       }
     }
-    if (!brepCount && !meshCount) {
-      const mesh = fillRhinoMesh(rhino, result.positions, result.indices);
-      if (meshAttrs && objects.addMesh) objects.addMesh(mesh, meshAttrs);
-      else if (objects.addMesh) objects.addMesh(mesh);
-      meshCount = 1;
+    if (includeSurf) {
+      const surfaces = result.surfaces || [];
+      for (let i = 0; i < surfaces.length; i++) {
+        const el = surfaces[i];
+        if (!el.positions || !el.indices || !el.indices.length) continue;
+        const mesh = fillRhinoMesh(rhino, el.positions, el.indices);
+        if (surfAttrs && objects.addMesh) objects.addMesh(mesh, surfAttrs);
+        else if (objects.addMesh) objects.addMesh(mesh);
+        surfCount += 1;
+      }
+      if (!surfCount && result.surfacePositions && result.surfaceIndices && result.surfaceIndices.length) {
+        const mesh = fillRhinoMesh(rhino, result.surfacePositions, result.surfaceIndices);
+        if (surfAttrs && objects.addMesh) objects.addMesh(mesh, surfAttrs);
+        else if (objects.addMesh) objects.addMesh(mesh);
+        surfCount = 1;
+      }
     }
 
-    const guideAttrs = addNamedLayer(rhino, doc, "BRANCH_GUIDES");
     const guides = result.guides || [];
     for (let i = 0; i < guides.length; i++) {
       const g = guides[i];
-      try {
-        const curve = new rhino.LineCurve([g.ax, g.ay, g.az], [g.bx, g.by, g.bz]);
-        if (guideAttrs && objects.addCurve) objects.addCurve(curve, guideAttrs);
-        else if (objects.addCurve) objects.addCurve(curve);
-      } catch (err) {}
+      addRhinoCurve(rhino, objects, branchAttrs, g.ax, g.ay, g.az, g.bx, g.by, g.bz);
+    }
+    const boxEdges = selectionBoxEdges(result.box);
+    for (let i = 0; i < boxEdges.length; i++) {
+      const g = boxEdges[i];
+      addRhinoCurve(rhino, objects, boxAttrs, g.ax, g.ay, g.az, g.bx, g.by, g.bz);
     }
 
     const bytes = (() => {
@@ -670,15 +824,17 @@
     const copy = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes);
     downloadBlob(filename, new Blob([copy], { type: "application/octet-stream" }));
     return {
-      added: brepCount + meshCount + guides.length,
+      added: brepCount + meshCount + surfCount + guides.length + boxEdges.length,
       closed: brepCount,
       meshCount,
-      kind: brepCount ? "closed brep" : "closed mesh",
+      surfCount,
+      which,
+      kind: which === "surface" ? "developed surface" : brepCount ? "closed brep" : "closed mesh",
     };
   }
 
   async function exportGridSurfaces3dm(result, filename) {
-    return exportGridSpace3dm(result, filename);
+    return exportGridSpace3dm(result, filename, { which: "surface" });
   }
 
   global.D7SpatialExport = {

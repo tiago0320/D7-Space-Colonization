@@ -1318,6 +1318,23 @@ label.ctrl.save-sim-name input[type="text"] {
   color: #f3e4b0;
 }
 
+.grid3d-form-mode {
+  margin: 6px 0 10px;
+}
+
+.grid3d-form-mode .grid3d-mode-btn {
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.grid3d-form-mode .grid3d-mode-btn.active {
+  border-color: #d7c27a;
+  color: #f3e4b0;
+  background: rgba(215, 194, 122, 0.12);
+}
+
 .grid3d-viewport-bar {
   flex-shrink: 0;
   display: flex;

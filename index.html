@@ -1001,7 +1001,7 @@
           </div>
           <div class="row">
             <button id="grid3dGenerateSpaces" class="primary" type="button">Generate Geometry</button>
-            <button id="grid3dResetGeom" class="ghost" type="button">Reset Geometry</button>
+            <button id="grid3dResetGeom" class="ghost" type="button">Reset Current</button>
           </div>
           <label class="ctrl">
             Width
@@ -1118,32 +1118,58 @@
           </div>
           <label class="check">
             <input id="grid3dShowBranches" type="checkbox" />
-            Show Original Branches
+            Show Branches
           </label>
           <label class="check">
             <input id="grid3dShowSpaces" type="checkbox" checked />
             Show Geometry
           </label>
-          <label class="ctrl" title="3D Rectangles are individual solids. Thin Surfaces follows each branch as a zero-thickness strip.">
-            Geometry Display
-            <select id="grid3dDisplayMode">
-              <option value="solids" selected>3D Rectangles</option>
-              <option value="surface">Thin Surfaces</option>
-            </select>
-          </label>
+          <p class="grid-status">GEOMETRY is the editable rectangular solids. SURFACE hides those boxes without deleting them. BOTH overlays transparent geometry on the developed surface.</p>
+          <div class="row grid3d-form-mode" id="grid3dFormModeRow" role="group" aria-label="Geometry or surface display">
+            <button type="button" class="ghost grid3d-mode-btn active" data-mode="geometry" id="grid3dModeGeometry">GEOMETRY</button>
+            <button type="button" class="ghost grid3d-mode-btn" data-mode="surface" id="grid3dModeSurface">SURFACE</button>
+            <button type="button" class="ghost grid3d-mode-btn" data-mode="both" id="grid3dModeBoth">BOTH</button>
+          </div>
           <label class="check">
             <input id="grid3dShowSelBox" type="checkbox" checked />
             Show Selection Box
           </label>
           <label class="check">
+            <input id="grid3dShowHumanScale" type="checkbox" />
+            Show Human Scale
+          </label>
+          <label class="check">
             <input id="grid3dHideOutside" type="checkbox" />
             Hide Outside Selection
           </label>
+          <div class="section-head">Saved Iterations</div>
+          <p id="grid3dSavedIterStatus" class="grid-status">Save the current selection box, rectangular geometry, and developed surfaces. Iterations stay on this computer until you delete them.</p>
           <div class="row">
-            <button id="grid3dExport3dm" class="ghost" type="button" disabled>Export Rhino .3DM</button>
+            <button id="grid3dSaveIter" class="ghost" type="button">Save Iteration</button>
           </div>
           <div class="row">
-            <button id="grid3dExportObj" class="ghost" type="button" disabled>Export OBJ</button>
+            <button id="grid3dSaveIterUpdate" class="ghost" type="button" disabled>Save Changes</button>
+            <button id="grid3dSaveIterAs" class="ghost" type="button" disabled>Save As New Iteration</button>
+          </div>
+          <div id="grid3dSaveIterPanel" class="save-sim-panel hidden">
+            <label class="ctrl save-sim-name">
+              Name
+              <input id="grid3dSaveIterName" type="text" maxlength="80" autocomplete="off" placeholder="Iteration 01" />
+            </label>
+            <div class="row">
+              <button id="grid3dSaveIterConfirm" class="primary" type="button">Save</button>
+              <button id="grid3dSaveIterCancel" class="ghost" type="button">Cancel</button>
+            </div>
+          </div>
+          <ul id="grid3dSavedIterList" class="saved-sim-list space3d-saved-list"></ul>
+          <div class="row">
+            <button id="grid3dExportGeom" class="ghost" type="button" disabled>Export Geometry</button>
+          </div>
+          <div class="row">
+            <button id="grid3dExportSurf" class="ghost" type="button" disabled>Export Surface</button>
+          </div>
+          <div class="row">
+            <button id="grid3dExportBoth" class="ghost" type="button" disabled>Export Both</button>
           </div>
         </aside>
         <div class="space3d-main">
@@ -1161,6 +1187,16 @@
           <div class="space3d-stage" id="grid3dStage"></div>
           <p class="view-hint" id="grid3dViewHint">Left-drag orbit · Right-drag pan · Scroll zoom</p>
         </div>
+        <div id="grid3dDeleteIterDialog" class="space3d-reset-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="grid3dDeleteIterTitle">
+          <div class="space3d-reset-dialog-card">
+            <h2 id="grid3dDeleteIterTitle">Delete this saved iteration?</h2>
+            <p>This permanently removes the saved iteration. Reset Current does not delete saved iterations. The working geometry stays until you load another iteration or reset it.</p>
+            <div class="row">
+              <button id="grid3dDeleteIterCancel" class="ghost" type="button">Cancel</button>
+              <button id="grid3dDeleteIterConfirm" class="ghost space3d-reset-confirm" type="button">Delete Iteration</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1175,6 +1211,7 @@
     <script src="saved-simulations-store.js"></script>
     <script src="saved-matrices-store.js"></script>
     <script src="saved-3d-variations-store.js"></script>
+    <script src="saved-grid-iterations-store.js"></script>
     <script src="descriptor-matrix.js"></script>
     <script src="spatial-loft.js"></script>
     <script src="spatial-generate.js"></script>
