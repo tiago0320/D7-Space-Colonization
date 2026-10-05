@@ -283,6 +283,163 @@
     return runs;
   }
 
+  function lineClosestPoint(p, d, q, e) {
+    const w0 = sub(p, q);
+    const a = dot(d, d);
+    const b = dot(d, e);
+    const c = dot(e, e);
+    const dp = dot(d, w0);
+    const ep = dot(e, w0);
+    const denom = a * c - b * b;
+    if (Math.abs(denom) < 1e-14) return null;
+    const t = (b * ep - c * dp) / denom;
+    return add(p, scale(d, t));
+  }
+
+  function limitMiter(corner, origin, maxL) {
+    if (!corner) return null;
+    const d = sub(corner, origin);
+    const L = len(d);
+    if (L <= maxL || L < 1e-12) return corner;
+    return add(origin, scale(d, maxL / L));
+  }
+
+  function nextStripLeft(d0, n0, d1) {
+    const T = cross(d0, n0);
+    let n = cross(T, d1);
+    if (len(n) < 1e-8) {
+      n = sub(n0, scale(d1, dot(n0, d1)));
+      if (len(n) < 1e-8) n = frameForDir(d1).W;
+    }
+    n = norm(n);
+    if (len(n) < 1e-8) return n0;
+    if (dot(n, n0) < -1e-6) n = scale(n, -1);
+    return n;
+  }
+
+  function extractSurfaceChains(graph) {
+    const segs = graph.segs || [];
+    const nodes = graph.nodes || [];
+    const adj = [];
+    for (let i = 0; i < nodes.length; i++) adj.push([]);
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      adj[s.a].push({ si: i, other: s.b });
+      adj[s.b].push({ si: i, other: s.a });
+    }
+    const used = new Array(segs.length).fill(false);
+    const throughUsed = new Array(nodes.length).fill(false);
+
+    function arriveDir(si, node) {
+      const s = segs[si];
+      return node === s.b ? v(s.dx, s.dy, s.dz) : v(-s.dx, -s.dy, -s.dz);
+    }
+    function leaveDir(si, node) {
+      const s = segs[si];
+      return node === s.a ? v(s.dx, s.dy, s.dz) : v(-s.dx, -s.dy, -s.dz);
+    }
+    function nextAlong(node, inSi) {
+      const n = nodes[node];
+      const links = adj[node];
+      if (!n || !links || !links.length) return null;
+      if (n.degree === 2 && links.length === 2) {
+        const nxt = links[0].si === inSi ? links[1] : links[0];
+        if (used[nxt.si]) return null;
+        return nxt;
+      }
+      if (throughUsed[node]) return null;
+      const arrive = arriveDir(inSi, node);
+      let best = null;
+      let bestDot = COLLINEAR_DOT;
+      for (let i = 0; i < links.length; i++) {
+        const ln = links[i];
+        if (ln.si === inSi || used[ln.si]) continue;
+        const d = dot(arrive, leaveDir(ln.si, node));
+        if (d > bestDot) {
+          bestDot = d;
+          best = ln;
+        }
+      }
+      if (best) throughUsed[node] = true;
+      return best;
+    }
+    function walk(si, towardNode) {
+      const path = [];
+      let cur = si;
+      let at = towardNode;
+      const seen = new Set();
+      while (true) {
+        if (seen.has(cur)) break;
+        seen.add(cur);
+        path.push(cur);
+        const nxt = nextAlong(at, cur);
+        if (!nxt) break;
+        cur = nxt.si;
+        at = nxt.other;
+      }
+      return path;
+    }
+    function farNode(si, nextSi) {
+      const s = segs[si];
+      if (nextSi == null) return s.a;
+      const n = segs[nextSi];
+      const shared = s.a === n.a || s.a === n.b ? s.a : s.b;
+      return shared === s.a ? s.b : s.a;
+    }
+    function otherNode(si, node) {
+      const s = segs[si];
+      return s.a === node ? s.b : s.a;
+    }
+
+    const chains = [];
+    for (let i = 0; i < segs.length; i++) {
+      if (used[i]) continue;
+      const towardA = walk(i, segs[i].a);
+      const towardB = walk(i, segs[i].b);
+      let ordered = towardA.slice(1).reverse().concat([i], towardB.slice(1));
+      const seenOrd = new Set();
+      const uniq = [];
+      for (let k = 0; k < ordered.length; k++) {
+        if (seenOrd.has(ordered[k])) continue;
+        seenOrd.add(ordered[k]);
+        uniq.push(ordered[k]);
+      }
+      ordered = uniq;
+      for (let k = 0; k < ordered.length; k++) used[ordered[k]] = true;
+      const first = ordered[0];
+      const nodeA = farNode(first, ordered.length > 1 ? ordered[1] : null);
+      let at = nodeA;
+      const nodeIds = [nodeA];
+      const points = [v(nodes[nodeA].x, nodes[nodeA].y, nodes[nodeA].z)];
+      for (let k = 0; k < ordered.length; k++) {
+        const nxt = otherNode(ordered[k], at);
+        nodeIds.push(nxt);
+        points.push(v(nodes[nxt].x, nodes[nxt].y, nodes[nxt].z));
+        at = nxt;
+      }
+      let closed = false;
+      if (points.length >= 3) {
+        if (nodeIds[0] === nodeIds[nodeIds.length - 1]) {
+          closed = true;
+          nodeIds.pop();
+          points.pop();
+        } else {
+          let allDeg2 = true;
+          for (let k = 0; k < nodeIds.length; k++) {
+            if (!nodes[nodeIds[k]] || nodes[nodeIds[k]].degree !== 2) {
+              allDeg2 = false;
+              break;
+            }
+          }
+          if (allDeg2 && nodeIds.length >= 3) closed = true;
+        }
+      }
+      if (points.length < 2) continue;
+      chains.push({ segs: ordered, nodeIds, points, closed });
+    }
+    return chains;
+  }
+
   function planeDist(p, nx, ny, nz, d) {
     return nx * p.x + ny * p.y + nz * p.z - d;
   }
@@ -577,6 +734,22 @@
       out[i] = (dx * U.x + dy * U.y + dz * U.z) / sx;
       out[i + 1] = (dx * W.x + dy * W.y + dz * W.z) / sy;
       out[i + 2] = (dx * T.x + dy * T.y + dz * T.z) / sz;
+    }
+    return out;
+  }
+
+  function localToWorldPositions(pos, center, U, W, T, hu, hw, ht) {
+    const sx = Math.max(1e-9, hu * 2);
+    const sy = Math.max(1e-9, hw * 2);
+    const sz = Math.max(1e-9, ht * 2);
+    const out = new Float32Array(pos.length);
+    for (let i = 0; i < pos.length; i += 3) {
+      const lx = pos[i] * sx;
+      const ly = pos[i + 1] * sy;
+      const lz = pos[i + 2] * sz;
+      out[i] = center.x + U.x * lx + W.x * ly + T.x * lz;
+      out[i + 1] = center.y + U.y * lx + W.y * ly + T.y * lz;
+      out[i + 2] = center.z + U.z * lx + W.z * ly + T.z * lz;
     }
     return out;
   }
@@ -1210,29 +1383,232 @@
     return cur;
   }
 
-  function surfaceFromBranches(graph, width, box) {
-    const hw = Math.max(DIM_MIN * 0.5, Number(width) * 0.5);
+  function chainStableId(chain) {
+    const pts = chain.points || [];
+    const keys = [];
+    for (let i = 0; i < pts.length; i++) {
+      keys.push(round2(pts[i].x) + "," + round2(pts[i].y) + "," + round2(pts[i].z));
+    }
+    return "f:" + keys.join("|");
+  }
+
+  function frameFromPositions(pos) {
+    const n = Math.floor((pos && pos.length ? pos.length : 0) / 3);
+    if (n < 1) return { center: v(0, 0, 0), U: v(1, 0, 0), W: v(0, 1, 0), T: v(0, 0, 1) };
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (let i = 0; i < n; i++) {
+      cx += pos[i * 3];
+      cy += pos[i * 3 + 1];
+      cz += pos[i * 3 + 2];
+    }
+    const center = v(cx / n, cy / n, cz / n);
+    let T = v(0, 1, 0);
+    let U = v(1, 0, 0);
+    if (n >= 3) {
+      const a = v(pos[0], pos[1], pos[2]);
+      const b = v(pos[3], pos[4], pos[5]);
+      const c = v(pos[6], pos[7], pos[8]);
+      const tn = cross(sub(b, a), sub(c, a));
+      if (len(tn) > 1e-10) T = norm(tn);
+      U = sub(b, a);
+      U = sub(U, scale(T, dot(U, T)));
+      if (len(U) < 1e-8) U = frameForDir(T).W;
+      else U = norm(U);
+    }
+    let W = cross(T, U);
+    if (len(W) < 1e-8) W = frameForDir(U).W;
+    else W = norm(W);
+    T = norm(cross(U, W));
+    let minU = Infinity;
+    let maxU = -Infinity;
+    let minW = Infinity;
+    let maxW = -Infinity;
+    let minT = Infinity;
+    let maxT = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const dx = pos[i * 3] - center.x;
+      const dy = pos[i * 3 + 1] - center.y;
+      const dz = pos[i * 3 + 2] - center.z;
+      const u = dx * U.x + dy * U.y + dz * U.z;
+      const w = dx * W.x + dy * W.y + dz * W.z;
+      const t = dx * T.x + dy * T.y + dz * T.z;
+      if (u < minU) minU = u;
+      if (u > maxU) maxU = u;
+      if (w < minW) minW = w;
+      if (w > maxW) maxW = w;
+      if (t < minT) minT = t;
+      if (t > maxT) maxT = t;
+    }
+    const mid = add(
+      center,
+      add(scale(U, (minU + maxU) * 0.5), add(scale(W, (minW + maxW) * 0.5), scale(T, (minT + maxT) * 0.5)))
+    );
+    return {
+      center: mid,
+      U,
+      W,
+      T,
+      hu: Math.max(DIM_MIN * 0.5, (maxU - minU) * 0.5),
+      hw: Math.max(DIM_MIN * 0.5, (maxW - minW) * 0.5),
+      ht: Math.max(DIM_MIN * 0.5, (maxT - minT) * 0.5),
+    };
+  }
+
+  function buildStripElement(id, positions, indices, ov, stripW) {
+    if (!positions || positions.length < 9 || !indices || indices.length < 3) return null;
+    const frame = frameFromPositions(positions);
+    const posed = applyOverridePose(ov, frame, frame.center, frame.hu, frame.hw, frame.ht);
+    const localPositions = worldToLocalPositions(positions, frame.center, frame.U, frame.W, frame.T, frame.hu, frame.hw, frame.ht);
+    const euler = eulerDegFromFrame(posed.U, posed.W, posed.T);
+    const worldPos = localToWorldPositions(localPositions, posed.center, posed.U, posed.W, posed.T, posed.hu, posed.hw, posed.ht);
+    const shownW = ov && ov.width != null ? dim(ov.width, stripW) : stripW;
+    return {
+      id,
+      kind: "surface",
+      center: posed.center,
+      U: posed.U,
+      W: posed.W,
+      T: posed.T,
+      hu: posed.hu,
+      hw: posed.hw,
+      ht: posed.ht,
+      width: shownW,
+      thickness: posed.ht * 2,
+      length: posed.hu * 2,
+      rx: euler.rx,
+      ry: euler.ry,
+      rz: euler.rz,
+      clipped: true,
+      source: { strip: true, runIndex: 0 },
+      positions: worldPos,
+      indices: indices.slice(),
+      localPositions,
+      localIndices: indices.slice(),
+      triangleCount: indices.length / 3,
+    };
+  }
+
+  function fuseStrips(strips) {
     const mesh = new MeshBuilder();
-    const runs = graph.runs && graph.runs.length ? graph.runs : extractRuns(graph);
-    for (let i = 0; i < runs.length; i++) {
-      const r = runs[i];
-      const clipped = clipSegToBox(r.ax, r.ay, r.az, r.bx, r.by, r.bz, box);
-      if (!clipped) continue;
-      const A = v(clipped.ax, clipped.ay, clipped.az);
-      const B = v(clipped.bx, clipped.by, clipped.bz);
-      const D = sub(B, A);
-      if (len(D) < 1e-4) continue;
-      const fr = frameForDir(D);
-      const W = fr.W;
-      const n = fr.T;
-      const poly = clipPolyToBox(
-        [add(A, scale(W, -hw)), add(B, scale(W, -hw)), add(B, scale(W, hw)), add(A, scale(W, hw))],
-        box
-      );
-      if (poly.length < 3) continue;
-      mesh.addPoly(poly, n, false);
+    for (let i = 0; i < (strips || []).length; i++) {
+      const el = strips[i];
+      const pos = el.positions;
+      const idx = el.indices || el.localIndices;
+      if (!pos || !idx) continue;
+      const map = [];
+      for (let k = 0; k < pos.length; k += 3) {
+        map.push(mesh.vert(v(pos[k], pos[k + 1], pos[k + 2]), false));
+      }
+      for (let k = 0; k < idx.length; k++) mesh.indices.push(map[idx[k]]);
     }
     return { positions: mesh.positions.slice(), indices: mesh.indices.slice() };
+  }
+
+  function surfaceFromBranches(graph, width, box, overrides) {
+    const ovs = overrides || {};
+    const nodes = graph.nodes || [];
+    const chains = extractSurfaceChains(graph);
+    const strips = [];
+
+    function endInset(nodeId, segLen, hw) {
+      const n = nodes[nodeId];
+      if (!n || n.degree < 3) return 0;
+      return Math.min(hw, Math.max(0, segLen * 0.45));
+    }
+
+    for (let c = 0; c < chains.length; c++) {
+      const chain = chains[c];
+      const id = chainStableId(chain);
+      const ov = ovs[id] || {};
+      if (ov.deleted) continue;
+      const stripW = ov.width != null ? dim(ov.width, width) : width;
+      const hw = Math.max(DIM_MIN * 0.5, Number(stripW) * 0.5);
+      const maxMiter = hw * 3;
+      const mesh = new MeshBuilder();
+      const pts = chain.points;
+      const ids = chain.nodeIds;
+      const nPts = pts.length;
+      if (nPts < 2) continue;
+      const closed = !!chain.closed && nPts >= 3;
+      const nSeg = closed ? nPts : nPts - 1;
+      const dirs = [];
+      const seglens = [];
+      for (let i = 0; i < nSeg; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % nPts];
+        const d = sub(b, a);
+        const L = len(d);
+        seglens.push(L);
+        dirs.push(L < 1e-8 ? v(1, 0, 0) : scale(d, 1 / L));
+      }
+      const leftN = [];
+      leftN[0] = frameForDir(dirs[0]).W;
+      for (let i = 1; i < nSeg; i++) {
+        leftN[i] = nextStripLeft(dirs[i - 1], leftN[i - 1], dirs[i]);
+      }
+      if (closed) {
+        leftN[0] = nextStripLeft(dirs[nSeg - 1], leftN[nSeg - 1], dirs[0]);
+        for (let i = 1; i < nSeg; i++) {
+          leftN[i] = nextStripLeft(dirs[i - 1], leftN[i - 1], dirs[i]);
+        }
+      }
+
+      function offsetAt(i) {
+        const P = pts[i];
+        if (!closed && i === 0) {
+          const n = leftN[0];
+          const Q = add(P, scale(dirs[0], endInset(ids[0], seglens[0], hw)));
+          return { L: add(Q, scale(n, hw)), R: add(Q, scale(n, -hw)) };
+        }
+        if (!closed && i === nPts - 1) {
+          const si = nSeg - 1;
+          const n = leftN[si];
+          const Q = add(P, scale(dirs[si], -endInset(ids[i], seglens[si], hw)));
+          return { L: add(Q, scale(n, hw)), R: add(Q, scale(n, -hw)) };
+        }
+        const i0 = closed ? (i - 1 + nSeg) % nSeg : i - 1;
+        const i1 = closed ? i % nSeg : i;
+        const d0 = dirs[i0];
+        const d1 = dirs[i1];
+        const n0 = leftN[i0];
+        const n1 = leftN[i1];
+        if (dot(d0, d1) > COLLINEAR_DOT) {
+          return { L: add(P, scale(n0, hw)), R: add(P, scale(n0, -hw)) };
+        }
+        let Lpt = lineClosestPoint(add(P, scale(n0, hw)), d0, add(P, scale(n1, hw)), d1);
+        let Rpt = lineClosestPoint(add(P, scale(n0, -hw)), d0, add(P, scale(n1, -hw)), d1);
+        if (!Lpt) Lpt = add(P, scale(n0, hw));
+        if (!Rpt) Rpt = add(P, scale(n0, -hw));
+        Lpt = limitMiter(Lpt, P, maxMiter);
+        Rpt = limitMiter(Rpt, P, maxMiter);
+        return { L: Lpt, R: Rpt };
+      }
+
+      function addClippedQuad(a, b, c, d) {
+        const n = cross(sub(b, a), sub(d, a));
+        if (len(n) < 1e-10) return;
+        const poly = clipPolyToBox([a, b, c, d], box);
+        if (poly.length < 3) return;
+        mesh.addPoly(poly, n, true);
+      }
+
+      const offs = [];
+      for (let i = 0; i < nPts; i++) offs.push(offsetAt(i));
+      const last = closed ? nPts : nPts - 1;
+      for (let i = 0; i < last; i++) {
+        const a = offs[i];
+        const b = offs[(i + 1) % nPts];
+        addClippedQuad(a.L, b.L, b.R, a.R);
+      }
+      const el = buildStripElement(id, mesh.positions.slice(), mesh.indices.slice(), ov, stripW);
+      if (!el) continue;
+      el.source.runIndex = strips.length;
+      strips.push(el);
+    }
+    const fused = fuseStrips(strips);
+    return { positions: fused.positions, indices: fused.indices, strips };
   }
 
   function applyOverridePose(ov, frame, center, hu, hw, ht) {
@@ -1376,7 +1752,8 @@
       for (let k = 0; k < idx.length; k++) mesh.indices.push(map[idx[k]]);
     }
 
-    const surf = surfaceFromBranches(graph, opts.width, box);
+    const surf = surfaceFromBranches(graph, opts.width, box, overrides);
+    const surfaces = surf.strips || [];
 
     return {
       ok: true,
@@ -1389,6 +1766,7 @@
       },
       overrides,
       elements,
+      surfaces,
       elementCount: elements.length,
       segmentCount: elements.filter((e) => e.kind === "segment").length,
       runCount: boxes.length,

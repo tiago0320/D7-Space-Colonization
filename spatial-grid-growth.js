@@ -1928,6 +1928,9 @@
     });
     let spaceMesh = null;
     let spaceEdges = null;
+    const surfGroup = new THREE.Group();
+    surfGroup.visible = false;
+    scene.add(surfGroup);
     let showSpaces = true;
     let showMeshEdges = true;
     let showBranches = false;
@@ -2208,6 +2211,7 @@
         pickLines.visible = !!(pickGeom.attributes.position && pickGeom.attributes.position.count > 0);
         skeletonLines.visible = false;
         geomGroup.visible = false;
+        surfGroup.visible = false;
         if (spaceMesh) spaceMesh.visible = false;
         if (spaceEdges) spaceEdges.visible = false;
         return;
@@ -2219,10 +2223,16 @@
       const solidsOn = showForm && displayMode !== "surface";
       const surfaceOn = showForm && displayMode === "surface";
       geomGroup.visible = solidsOn;
-      if (spaceMesh) spaceMesh.visible = surfaceOn;
-      if (spaceEdges) spaceEdges.visible = surfaceOn && showMeshEdges;
+      surfGroup.visible = surfaceOn;
+      if (spaceMesh) spaceMesh.visible = false;
+      if (spaceEdges) spaceEdges.visible = false;
       if (solidsOn) {
         geomGroup.traverse((obj) => {
+          if (obj.isLineSegments) obj.visible = showMeshEdges;
+        });
+      }
+      if (surfaceOn) {
+        surfGroup.traverse((obj) => {
           if (obj.isLineSegments) obj.visible = showMeshEdges;
         });
       }
@@ -2235,13 +2245,8 @@
 
     function setDisplayMode(mode) {
       displayMode = mode === "surface" ? "surface" : "solids";
-      if (displayMode === "surface") {
-        selectedElementId = null;
-        detachElemGizmo();
-      } else {
-        paintElementHighlight();
-      }
       applySpatialVis();
+      paintElementHighlight();
       return displayMode;
     }
 
@@ -2303,19 +2308,6 @@
       applySceneClip();
     }
 
-    function disposeGeomGroup() {
-      detachElemGizmo();
-      while (geomGroup.children.length) {
-        const ch = geomGroup.children[0];
-        geomGroup.remove(ch);
-        ch.traverse((obj) => {
-          if (obj.geometry && obj.geometry !== pickBoxGeom && obj.geometry !== pickEdgeGeom) {
-            obj.geometry.dispose();
-          }
-        });
-      }
-    }
-
     function applyElementPose(mesh, el) {
       mesh.position.set(el.center.x, el.center.y, el.center.z);
       const U = new THREE.Vector3(el.U.x, el.U.y, el.U.z).normalize();
@@ -2327,42 +2319,73 @@
       mesh.scale.set(Math.max(0.05, el.hu * 2), Math.max(0.05, el.hw * 2), Math.max(0.05, el.ht * 2));
     }
 
+    function addPickedMesh(group, el, mat) {
+      const isSurf = el.kind === "surface";
+      let boxGeom = pickBoxGeom;
+      let edgeGeom = pickEdgeGeom;
+      const useCustom = isSurf
+        ? !!(el.positions && el.positions.length)
+        : !!(el.clipped && el.localPositions && el.localPositions.length);
+      if (useCustom) {
+        boxGeom = new THREE.BufferGeometry();
+        let posArr;
+        if (isSurf) {
+          posArr = new Float32Array(el.positions.length);
+          const cx = el.center.x;
+          const cy = el.center.y;
+          const cz = el.center.z;
+          for (let k = 0; k < el.positions.length; k += 3) {
+            posArr[k] = el.positions[k] - cx;
+            posArr[k + 1] = el.positions[k + 1] - cy;
+            posArr[k + 2] = el.positions[k + 2] - cz;
+          }
+        } else {
+          posArr = new Float32Array(el.localPositions);
+        }
+        boxGeom.setAttribute("position", new THREE.BufferAttribute(posArr, 3));
+        const idx = isSurf ? el.indices || el.localIndices : el.localIndices || el.indices;
+        let maxIndex = 0;
+        for (let k = 0; k < idx.length; k++) if (idx[k] > maxIndex) maxIndex = idx[k];
+        boxGeom.setIndex(new THREE.BufferAttribute(maxIndex > 65535 ? new Uint32Array(idx) : new Uint16Array(idx), 1));
+        boxGeom.computeVertexNormals();
+        boxGeom.computeBoundingBox();
+        boxGeom.computeBoundingSphere();
+        edgeGeom = new THREE.EdgesGeometry(boxGeom);
+      }
+      const mesh = new THREE.Mesh(boxGeom, mat);
+      mesh.userData.elementId = el.id;
+      mesh.userData.kind = el.kind;
+      mesh.userData.clipped = !!el.clipped;
+      mesh.userData.customGeom = boxGeom !== pickBoxGeom;
+      mesh.frustumCulled = false;
+      if (isSurf) {
+        mesh.position.set(el.center.x, el.center.y, el.center.z);
+        mesh.quaternion.set(0, 0, 0, 1);
+        mesh.scale.set(1, 1, 1);
+      } else {
+        applyElementPose(mesh, el);
+      }
+      const edges = new THREE.LineSegments(edgeGeom, spaceEdgeMat);
+      edges.userData.elementId = el.id;
+      mesh.add(edges);
+      group.add(mesh);
+      return mesh;
+    }
+
     function setSpacesMesh(result) {
       const keepId = selectedElementId;
       disposeSpaceMesh();
       const elements = result && result.elements ? result.elements : [];
       for (let i = 0; i < elements.length; i++) {
-        const el = elements[i];
-        let boxGeom = pickBoxGeom;
-        let edgeGeom = pickEdgeGeom;
-        if (el.clipped && el.localPositions && el.localPositions.length) {
-          boxGeom = new THREE.BufferGeometry();
-          const posArr = new Float32Array(el.localPositions);
-          boxGeom.setAttribute("position", new THREE.BufferAttribute(posArr, 3));
-          const idx = el.localIndices || el.indices;
-          let maxIndex = 0;
-          for (let k = 0; k < idx.length; k++) if (idx[k] > maxIndex) maxIndex = idx[k];
-          boxGeom.setIndex(new THREE.BufferAttribute(maxIndex > 65535 ? new Uint32Array(idx) : new Uint16Array(idx), 1));
-          boxGeom.computeVertexNormals();
-          boxGeom.computeBoundingBox();
-          boxGeom.computeBoundingSphere();
-          edgeGeom = new THREE.EdgesGeometry(boxGeom);
-        }
-        const mesh = new THREE.Mesh(boxGeom, spaceMat);
-        mesh.userData.elementId = el.id;
-        mesh.userData.kind = el.kind;
-        mesh.userData.clipped = !!el.clipped;
-        mesh.userData.customGeom = boxGeom !== pickBoxGeom;
-        mesh.frustumCulled = false;
-        applyElementPose(mesh, el);
-        const edges = new THREE.LineSegments(edgeGeom, spaceEdgeMat);
-        edges.userData.elementId = el.id;
-        mesh.add(edges);
-        geomGroup.add(mesh);
+        addPickedMesh(geomGroup, elements[i], spaceMat);
+      }
+      const surfaces = result && result.surfaces ? result.surfaces : [];
+      for (let i = 0; i < surfaces.length; i++) {
+        addPickedMesh(surfGroup, surfaces[i], ribbonMat);
       }
       const surfPos = result && result.surfacePositions;
       const surfIdx = result && result.surfaceIndices;
-      if (surfPos && surfPos.length && surfIdx && surfIdx.length) {
+      if ((!surfaces.length) && surfPos && surfPos.length && surfIdx && surfIdx.length) {
         const geom = new THREE.BufferGeometry();
         geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(surfPos), 3));
         let maxIndex = 0;
@@ -2381,29 +2404,47 @@
         scene.add(spaceEdges);
       }
       selectedElementId = keepId;
-      if (displayMode === "surface") {
-        selectedElementId = null;
-        detachElemGizmo();
-      } else {
-        paintElementHighlight();
-      }
+      paintElementHighlight();
       applySpatialVis();
       applySceneClip();
     }
 
-    function paintElementHighlight() {
-      geomGroup.children.forEach((mesh) => {
+    function paintGroupHighlight(group, idleMat) {
+      group.children.forEach((mesh) => {
         if (!mesh.isMesh) return;
         const on = mesh.userData.elementId === selectedElementId;
         mesh.visible = true;
-        mesh.material = on ? selectedMat : spaceMat;
+        mesh.material = on ? selectedMat : idleMat;
         mesh.children.forEach((ch) => {
           if (!ch.isLineSegments) return;
           ch.material = on ? selectedEdgeMat : spaceEdgeMat;
           ch.visible = showMeshEdges;
         });
       });
+    }
+
+    function paintElementHighlight() {
+      paintGroupHighlight(geomGroup, spaceMat);
+      paintGroupHighlight(surfGroup, ribbonMat);
       attachElemGizmo(selectedElementId);
+    }
+
+    function disposeGroupMeshes(group) {
+      while (group.children.length) {
+        const ch = group.children[0];
+        group.remove(ch);
+        ch.traverse((obj) => {
+          if (obj.geometry && obj.geometry !== pickBoxGeom && obj.geometry !== pickEdgeGeom) {
+            obj.geometry.dispose();
+          }
+        });
+      }
+    }
+
+    function disposeGeomGroup() {
+      detachElemGizmo();
+      disposeGroupMeshes(geomGroup);
+      disposeGroupMeshes(surfGroup);
     }
 
     function disposeSpaceMesh() {
@@ -2451,9 +2492,13 @@
 
     function findElemMesh(id) {
       if (!id) return null;
-      for (let i = 0; i < geomGroup.children.length; i++) {
-        const mesh = geomGroup.children[i];
-        if (mesh.isMesh && mesh.userData.elementId === id) return mesh;
+      const groups = displayMode === "surface" ? [surfGroup, geomGroup] : [geomGroup, surfGroup];
+      for (let g = 0; g < groups.length; g++) {
+        const children = groups[g].children;
+        for (let i = 0; i < children.length; i++) {
+          const mesh = children[i];
+          if (mesh.isMesh && mesh.userData.elementId === id) return mesh;
+        }
       }
       return null;
     }
@@ -2626,7 +2671,9 @@
     }
 
     function pickGeometry(clientX, clientY) {
-      if (!geomActive || !showSpaces || displayMode === "surface" || !geomGroup.children.length) return null;
+      if (!geomActive || !showSpaces) return null;
+      const group = displayMode === "surface" ? surfGroup : geomGroup;
+      if (!group.children.length) return null;
       const rect = renderer.domElement.getBoundingClientRect();
       const pointer = new THREE.Vector2(
         ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
@@ -2636,7 +2683,7 @@
       raycaster.setFromCamera(pointer, activeCamera);
       let bestId = null;
       let bestT = Infinity;
-      const children = geomGroup.children;
+      const children = group.children;
       for (let i = 0; i < children.length; i++) {
         const mesh = children[i];
         if (!mesh || !mesh.isMesh) continue;
@@ -3645,17 +3692,24 @@
       if (els.showBranches) viewer.setShowBranches(els.showBranches.checked);
       if (els.showSpaces) viewer.setShowSpaces(els.showSpaces.checked);
       if (els.displayMode && viewer.setDisplayMode) viewer.setDisplayMode(els.displayMode.value);
-      if (selectedGeomId && (!viewer.getDisplayMode || viewer.getDisplayMode() !== "surface")) {
-        viewer.setSelectedElement(selectedGeomId);
-      }
+      if (selectedGeomId) viewer.setSelectedElement(selectedGeomId);
       paintElemPanel();
       paintButtons();
     }
 
+    function isSurfaceMode() {
+      return (
+        (viewer && viewer.getDisplayMode && viewer.getDisplayMode() === "surface") ||
+        (els.displayMode && els.displayMode.value === "surface")
+      );
+    }
+
     function findElement(id) {
-      if (!spaceResult || !spaceResult.elements) return null;
-      for (let i = 0; i < spaceResult.elements.length; i++) {
-        if (spaceResult.elements[i].id === id) return spaceResult.elements[i];
+      if (!spaceResult || !id) return null;
+      const list = isSurfaceMode() ? spaceResult.surfaces : spaceResult.elements;
+      if (!list) return null;
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].id === id) return list[i];
       }
       return null;
     }
@@ -3675,20 +3729,29 @@
         els.elemRotate.classList.toggle("primary", !!(el && rotOn));
         els.elemRotate.classList.toggle("ghost", !(el && rotOn));
       }
+      const head = els.elemEdit && els.elemEdit.querySelector(".section-head");
+      if (head) head.textContent = el && el.kind === "surface" ? "Selected Surface" : "Selected Box";
+      if (els.elemDup) els.elemDup.classList.toggle("hidden", !!(el && el.kind === "surface"));
+      if (els.elemDel) els.elemDel.textContent = el && el.kind === "surface" ? "Delete Surface" : "Delete Box";
+      if (els.elemClear) els.elemClear.textContent = el && el.kind === "surface" ? "Reset Selected Surface" : "Reset Selected Box";
       if (!el) return;
       applyingGeom = true;
+      const isSurf = el.kind === "surface";
       if (els.elemWidthWrap) els.elemWidthWrap.classList.remove("hidden");
-      if (els.elemThickWrap) els.elemThickWrap.classList.remove("hidden");
+      if (els.elemThickWrap) els.elemThickWrap.classList.toggle("hidden", isSurf);
       if (els.elemLenWrap) els.elemLenWrap.classList.remove("hidden");
       const label =
         el.kind === "duplicate"
           ? "Copy"
-          : el.kind === "junction"
-            ? "Junction"
-            : "Bar " + (el.source && el.source.runIndex != null ? el.source.runIndex + 1 : "");
+          : el.kind === "surface"
+            ? "Strip " + (el.source && el.source.runIndex != null ? el.source.runIndex + 1 : "")
+            : el.kind === "junction"
+              ? "Junction"
+              : "Bar " + (el.source && el.source.runIndex != null ? el.source.runIndex + 1 : "");
       if (els.elemStatus) {
-        els.elemStatus.textContent =
-          label + " · " + Number(el.length).toFixed(2) + "' × " + Number(el.width).toFixed(2) + "' × " + Number(el.thickness).toFixed(2) + "'";
+        els.elemStatus.textContent = isSurf
+          ? label + " · " + Number(el.length).toFixed(2) + "' × " + Number(el.width).toFixed(2) + "'"
+          : label + " · " + Number(el.length).toFixed(2) + "' × " + Number(el.width).toFixed(2) + "' × " + Number(el.thickness).toFixed(2) + "'";
       }
       const flex = geomFlexKey;
       if (!flex || flex === "width") {
@@ -4165,7 +4228,7 @@
     if (els.displayMode) {
       els.displayMode.addEventListener("change", () => {
         const mode = els.displayMode.value === "surface" ? "surface" : "solids";
-        if (mode === "surface") selectGeom(null);
+        selectGeom(null);
         if (viewer && viewer.setDisplayMode) viewer.setDisplayMode(mode);
         if (spaceResult) {
           setSpaceStatus(geomStatusText(spaceResult), "active");
@@ -4214,6 +4277,7 @@
       if (dim !== "width" && dim !== "thickness" && dim !== "length") return;
       const el = findElement(selectedGeomId);
       if (!el) return;
+      if (dim === "thickness" && el.kind === "surface") return;
       if (!geomUndoOpen) {
         pushGeomHist();
         geomUndoOpen = true;
@@ -4270,7 +4334,7 @@
 
     function duplicateSelected() {
       const el = findElement(selectedGeomId);
-      if (!el) return;
+      if (!el || el.kind === "surface") return;
       pushGeomHist();
       const id = "d:" + nextDupId++;
       const pose = capturePose(el);
@@ -4718,6 +4782,9 @@
         syncViewer();
         paintStatus();
         return true;
+      },
+      pickGeometry(x, y) {
+        return viewer && viewer.pickGeometry ? viewer.pickGeometry(x, y) : null;
       },
       growSteps(n) {
         if (!sim.grid) return 0;

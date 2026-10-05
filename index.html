@@ -993,7 +993,7 @@
             <button id="grid3dReset" class="ghost" type="button">Reset Simulation</button>
           </div>
           <div class="section-head">Rectangular Geometry</div>
-          <p class="grid-status">Place the cyan box on grown branches, then generate axis-aligned cube solids. Paths stay on a square module, turns become 90° steps, and touching cells merge into one box. Width is the module; thickness is the other side; junction size fattens forks. Boxes that cross the cyan selection are trimmed and capped so each solid stays closed. Thin Surfaces draws a zero-thickness strip along each branch; Width is the strip width.</p>
+          <p class="grid-status">Place the cyan box on grown branches, then generate axis-aligned cube solids. Paths stay on a square module, turns become 90° steps, and touching cells merge into one box. Width is the module; thickness is the other side; junction size fattens forks. Boxes that cross the cyan selection are trimmed and capped so each solid stays closed. Thin Surfaces draws a connected zero-thickness strip along the branches, mitered at turns and welded at forks; Width is the strip width. Click a strip to select it.</p>
           <p id="grid3dSpaceStatus" class="grid-status">Grow branches, then Generate Geometry.</p>
           <div class="row">
             <button id="grid3dBoxMove" class="ghost" type="button">Move Box</button>
