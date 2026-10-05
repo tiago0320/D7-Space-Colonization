@@ -1007,6 +1007,102 @@
     return best;
   }
 
+  function rayAabbInterval(ox, oy, oz, dx, dy, dz, min, max) {
+    let t0 = 0;
+    let t1 = 1e6;
+    function slab(o, d, a, b) {
+      if (Math.abs(d) < 1e-10) return o >= a && o <= b;
+      let tA = (a - o) / d;
+      let tB = (b - o) / d;
+      if (tA > tB) {
+        const t = tA;
+        tA = tB;
+        tB = t;
+      }
+      t0 = Math.max(t0, tA);
+      t1 = Math.min(t1, tB);
+      return t0 <= t1;
+    }
+    if (!slab(ox, dx, min, max) || !slab(oy, dy, min, max) || !slab(oz, dz, min, max)) return null;
+    return { t0, t1 };
+  }
+
+  function pointToRaySq(px, py, pz, origin, dir) {
+    const vx = px - origin.x;
+    const vy = py - origin.y;
+    const vz = pz - origin.z;
+    const t = Math.max(0, vx * dir.x + vy * dir.y + vz * dir.z);
+    const qx = origin.x + dir.x * t - px;
+    const qy = origin.y + dir.y * t - py;
+    const qz = origin.z + dir.z * t - pz;
+    return qx * qx + qy * qy + qz * qz;
+  }
+
+  function nearestGridNodeToRay(grid, origin, dir, maxDist) {
+    if (!grid || !grid.nodes.length || !origin || !dir) return -1;
+    const hit = rayAabbInterval(origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, 0, CUBE);
+    if (!hit) return -1;
+    const limit = maxDist != null ? maxDist : 1.35;
+    const maxSq = limit * limit;
+    let best = -1;
+    let bestSq = maxSq;
+    const step = 0.4;
+    const seen = new Set();
+    for (let t = hit.t0; t <= hit.t1 + 1e-6; t += step) {
+      const x = origin.x + dir.x * t;
+      const y = origin.y + dir.y * t;
+      const z = origin.z + dir.z * t;
+      const gid = nearestGridNodeId(grid, x, y, z, true);
+      if (gid < 0 || seen.has(gid)) continue;
+      seen.add(gid);
+      const n = grid.nodes[gid];
+      const dSq = pointToRaySq(n.x, n.y, n.z, origin, dir);
+      if (dSq < bestSq) {
+        bestSq = dSq;
+        best = gid;
+      }
+    }
+    return best;
+  }
+
+  function nearbyGridNodes(grid, x, y, z, radius, limit) {
+    if (!grid || !grid.nodes.length) return [];
+    const index = grid.index || buildGridIndex(grid);
+    const cell = index.cell;
+    const r = radius != null ? radius : 2.2;
+    const cap = limit != null ? limit : 48;
+    const cx = Math.floor(x / cell);
+    const cy = Math.floor(y / cell);
+    const cz = Math.floor(z / cell);
+    const reach = Math.max(1, Math.ceil(r / cell));
+    const rSq = r * r;
+    const hits = [];
+    for (let dz = -reach; dz <= reach; dz++) {
+      for (let dy = -reach; dy <= reach; dy++) {
+        for (let dx = -reach; dx <= reach; dx++) {
+          const bucket = index.map.get(cx + dx + "," + (cy + dy) + "," + (cz + dz));
+          if (!bucket) continue;
+          for (let i = 0; i < bucket.length; i++) {
+            const id = bucket[i];
+            if (!(grid.adj[id] && grid.adj[id].length)) continue;
+            const n = grid.nodes[id];
+            const dSq = (n.x - x) * (n.x - x) + (n.y - y) * (n.y - y) + (n.z - z) * (n.z - z);
+            if (dSq <= rSq) hits.push({ id, dSq, x: n.x, y: n.y, z: n.z });
+          }
+        }
+      }
+    }
+    hits.sort((a, b) => a.dSq - b.dSq);
+    const out = [];
+    const seen = new Set();
+    for (let i = 0; i < hits.length && out.length < cap; i++) {
+      if (seen.has(hits[i].id)) continue;
+      seen.add(hits[i].id);
+      out.push(hits[i]);
+    }
+    return out;
+  }
+
   function createSim(options) {
     const seed = (options.seed >>> 0) || 1;
     return {
@@ -1064,6 +1160,23 @@
     if (gid < 0) return null;
     if (sim.gridToSim.has(gid)) return null;
     return occupyGridNode(sim, gid, null, true);
+  }
+
+  function moveRootNode(sim, nodeId, gridId) {
+    const root = sim.nodeById.get(nodeId);
+    if (!root || !root.isRoot || !sim.grid) return null;
+    if (gridId < 0 || !sim.grid.nodes[gridId]) return null;
+    if (root.gridId === gridId) return root;
+    const occ = sim.gridToSim.get(gridId);
+    if (occ != null && occ !== root.id) return null;
+    if (root.gridId != null) sim.gridToSim.delete(root.gridId);
+    const g = sim.grid.nodes[gridId];
+    root.gridId = gridId;
+    root.x = g.x;
+    root.y = g.y;
+    root.z = g.z;
+    sim.gridToSim.set(gridId, root.id);
+    return root;
   }
 
   function defaultRootPosition(grid) {
@@ -1285,8 +1398,10 @@
     return grew > 0;
   }
 
-  function resetGrowth(sim) {
-    const rootNodes = sim.roots.map((id) => sim.nodeById.get(id)).filter(Boolean);
+  function resetGrowth(sim, specs) {
+    const rootNodes = specs && specs.length
+      ? specs
+      : sim.roots.map((id) => sim.nodeById.get(id)).filter(Boolean);
     sim.nodes = [];
     sim.nodeById = new Map();
     sim.branches = [];
@@ -1298,16 +1413,24 @@
     sim.usedEdges = new Set();
     sim.roots = [];
     const kept = [];
+    let maxIndex = 0;
     for (let i = 0; i < rootNodes.length; i++) {
       const old = rootNodes[i];
-      const gid = old.gridId != null ? old.gridId : nearestGridNodeId(sim.grid, old.x, old.y, old.z, true);
+      if (!old) continue;
+      let gid = old.gridId != null ? old.gridId : -1;
+      if (gid < 0 || !sim.grid || !sim.grid.nodes[gid]) {
+        gid = nearestGridNodeId(sim.grid, old.x, old.y, old.z, true);
+      }
+      if (gid < 0 || sim.gridToSim.has(gid)) continue;
       const node = occupyGridNode(sim, gid, null, true);
       if (!node) continue;
-      node.rootIndex = old.rootIndex;
+      if (old.rootIndex) node.rootIndex = old.rootIndex;
+      if (old.uid != null) node.uid = old.uid;
+      maxIndex = Math.max(maxIndex, node.rootIndex || 0);
       kept.push(node.id);
     }
     sim.roots = kept;
-    sim.nextRootIndex = kept.length + 1;
+    sim.nextRootIndex = maxIndex + 1;
     if (sim.alive && sim.alive.length === sim.attractors.length) sim.alive.fill(1);
     killNearNetwork(sim);
   }
@@ -1353,10 +1476,15 @@
       influence: sim.influence,
       kill: sim.kill,
       iteration: sim.iteration,
-      roots: sim.roots.map((id) => {
-        const n = sim.nodeById.get(id);
-        return n ? { id: n.id, x: n.x, y: n.y, z: n.z, rootIndex: n.rootIndex, gridId: n.gridId } : null;
-      }).filter(Boolean),
+      roots: (sim.rootDrafts && sim.rootDrafts.length ? sim.rootDrafts : sim.roots.map((id) => sim.nodeById.get(id)).filter(Boolean)).map((n) => ({
+        id: n.simId != null ? n.simId : n.id,
+        uid: n.uid != null ? n.uid : n.id,
+        x: n.x,
+        y: n.y,
+        z: n.z,
+        rootIndex: n.rootIndex,
+        gridId: n.gridId,
+      })),
       nodes: sim.nodes.map((n) => ({
         id: n.id,
         x: n.x,
@@ -1423,7 +1551,10 @@
     if (!THREE || !container) return null;
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setClearColor(0x000000, 1);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.domElement.tabIndex = 0;
+    renderer.domElement.setAttribute("aria-label", "3D Grid Growth viewport");
+    renderer.domElement.style.outline = "none";
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -1509,6 +1640,7 @@
       controls.screenSpacePanning = true;
       controls.minDistance = 8;
       controls.maxDistance = 90;
+      if (controls.enableKeys != null) controls.enableKeys = false;
       if (THREE.MOUSE) {
         controls.mouseButtons = {
           LEFT: THREE.MOUSE.ROTATE,
@@ -1517,6 +1649,20 @@
         };
       }
     }
+
+    let gizmo = null;
+    let rootGizmo = null;
+    let elemGizmo = null;
+    let elemGizmoTarget = null;
+    let elemGizmoMode = "translate";
+    let elemLastGood = null;
+    let onElemGizmoChange = null;
+    let onElemGizmoEnd = null;
+    const elemPivot = new THREE.Object3D();
+    elemPivot.matrixAutoUpdate = true;
+    scene.add(elemPivot);
+    const elemRotStart = new THREE.Quaternion();
+    const elemQuatIdentity = new THREE.Quaternion();
 
     function flushOrbitDeltas() {
       if (!controls) return;
@@ -1574,6 +1720,12 @@
       }
       applyOrbitPolicy(mode);
       syncControlsCamera();
+      if (gizmo) gizmo.camera = activeCamera;
+      if (rootGizmo) rootGizmo.camera = activeCamera;
+      if (elemGizmo) {
+        elemGizmo.camera = activeCamera;
+        lockElemGizmoWorld();
+      }
     }
 
     const cube = new THREE.LineSegments(
@@ -1581,6 +1733,251 @@
       new THREE.LineBasicMaterial({ color: 0x8a8a8a, transparent: true, opacity: 0.45 })
     );
     scene.add(cube);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.62));
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x6a6a6a, 0.38));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.82);
+    keyLight.position.set(18, 28, 14);
+    scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.45);
+    fillLight.position.set(-16, 10, -18);
+    scene.add(fillLight);
+    const rimLight = new THREE.DirectionalLight(0xffffff, 0.28);
+    rimLight.position.set(0, -12, 8);
+    scene.add(rimLight);
+
+    renderer.localClippingEnabled = true;
+    const cutPlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), CUBE * 0.5);
+    const selClipPlanes = [
+      new THREE.Plane(),
+      new THREE.Plane(),
+      new THREE.Plane(),
+      new THREE.Plane(),
+      new THREE.Plane(),
+      new THREE.Plane(),
+    ];
+    let hideOutside = false;
+
+    const selGeom = new THREE.BoxGeometry(1, 1, 1);
+    const selFill = new THREE.Mesh(
+      selGeom,
+      new THREE.MeshBasicMaterial({
+        color: 0x7ec8e3,
+        transparent: true,
+        opacity: 0.07,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      })
+    );
+    const selWire = new THREE.LineSegments(
+      new THREE.EdgesGeometry(selGeom),
+      new THREE.LineBasicMaterial({ color: 0x7ec8e3, transparent: true, opacity: 0.9 })
+    );
+    const selBox = new THREE.Group();
+    selBox.add(selFill);
+    selBox.add(selWire);
+    selBox.position.set(10, 7, 10);
+    selBox.scale.set(12, 14, 12);
+    scene.add(selBox);
+
+    let gizmoMode = "translate";
+    if (THREE.TransformControls) {
+      gizmo = new THREE.TransformControls(activeCamera, renderer.domElement);
+      gizmo.setMode("translate");
+      gizmo.setSize(0.55);
+      gizmo.attach(selBox);
+      gizmo.addEventListener("dragging-changed", (event) => {
+        if (controls) controls.enabled = !event.value;
+        if (!event.value && typeof onSelectionEnd === "function") onSelectionEnd();
+      });
+      gizmo.addEventListener("objectChange", () => {
+        clampSelection();
+        if (typeof onSelectionChange === "function") onSelectionChange();
+      });
+      scene.add(gizmo);
+    }
+
+    const rootHandle = new THREE.Object3D();
+    scene.add(rootHandle);
+    if (THREE.TransformControls) {
+      rootGizmo = new THREE.TransformControls(activeCamera, renderer.domElement);
+      rootGizmo.setMode("translate");
+      rootGizmo.setSize(0.72);
+      if (rootGizmo.setSpace) rootGizmo.setSpace("world");
+      rootGizmo.enabled = false;
+      rootGizmo.visible = false;
+      rootGizmo.attach(rootHandle);
+      rootGizmo.addEventListener("dragging-changed", (event) => {
+        if (controls) {
+          if (event.value) controls.enabled = false;
+          else {
+            applyOrbitPolicy(viewMode);
+            controls.enabled = true;
+          }
+        }
+        if (!event.value && typeof onRootGizmoEnd === "function") {
+          onRootGizmoEnd({
+            x: rootHandle.position.x,
+            y: rootHandle.position.y,
+            z: rootHandle.position.z,
+          });
+        }
+      });
+      rootGizmo.addEventListener("objectChange", () => {
+        if (typeof onRootGizmoChange === "function") {
+          onRootGizmoChange({
+            x: rootHandle.position.x,
+            y: rootHandle.position.y,
+            z: rootHandle.position.z,
+          });
+        }
+      });
+      scene.add(rootGizmo);
+    }
+
+    if (THREE.TransformControls) {
+      elemGizmo = new THREE.TransformControls(activeCamera, renderer.domElement);
+      elemGizmo.setMode("translate");
+      elemGizmo.setSize(0.7);
+      if (elemGizmo.setSpace) elemGizmo.setSpace("world");
+      elemGizmo.enabled = false;
+      elemGizmo.visible = false;
+      elemGizmo.attach(elemPivot);
+      elemGizmo.addEventListener("dragging-changed", (event) => {
+        if (controls) {
+          if (event.value) controls.enabled = false;
+          else {
+            applyOrbitPolicy(viewMode);
+            controls.enabled = true;
+          }
+        }
+        lockElemGizmoWorld();
+        if (event.value && elemGizmoTarget) {
+          if (elemGizmo.setMode) elemGizmo.setMode(elemGizmoMode === "rotate" ? "rotate" : "translate");
+          beginElemGizmoDrag();
+        }
+        if (!event.value && typeof onElemGizmoEnd === "function" && elemGizmoTarget) {
+          applyPivotToMesh();
+          onElemGizmoEnd(readElemPose(elemGizmoTarget), elemGizmoMode);
+        }
+      });
+      elemGizmo.addEventListener("objectChange", () => {
+        if (!elemGizmoTarget) return;
+        lockElemGizmoWorld();
+        const rejected = applyPivotToMesh();
+        if (typeof onElemGizmoChange === "function") {
+          onElemGizmoChange(readElemPose(elemGizmoTarget), rejected, elemGizmoMode);
+        }
+      });
+      scene.add(elemGizmo);
+    }
+
+    let onSelectionChange = null;
+    let onSelectionEnd = null;
+    let onRootGizmoChange = null;
+    let onRootGizmoEnd = null;
+    let showSelBox = true;
+    let boxGizmoLocked = false;
+    let showRoots = true;
+    function clampSelection() {
+      const sx = clamp(Math.abs(selBox.scale.x), 3, CUBE);
+      const sy = clamp(Math.abs(selBox.scale.y), 3, CUBE);
+      const sz = clamp(Math.abs(selBox.scale.z), 3, CUBE);
+      selBox.scale.set(sx, sy, sz);
+      selBox.position.x = clamp(selBox.position.x, sx * 0.5, CUBE - sx * 0.5);
+      selBox.position.y = clamp(selBox.position.y, sy * 0.5, CUBE - sy * 0.5);
+      selBox.position.z = clamp(selBox.position.z, sz * 0.5, CUBE - sz * 0.5);
+      if (hideOutside) applySceneClip();
+    }
+    clampSelection();
+
+    function selectionBoxBounds() {
+      const hx = Math.abs(selBox.scale.x) * 0.5;
+      const hy = Math.abs(selBox.scale.y) * 0.5;
+      const hz = Math.abs(selBox.scale.z) * 0.5;
+      return {
+        minx: selBox.position.x - hx,
+        maxx: selBox.position.x + hx,
+        miny: selBox.position.y - hy,
+        maxy: selBox.position.y + hy,
+        minz: selBox.position.z - hz,
+        maxz: selBox.position.z + hz,
+      };
+    }
+
+    const spaceMat = new THREE.MeshLambertMaterial({
+      color: 0xf4f4f4,
+      emissive: 0x2a2a2a,
+      side: THREE.FrontSide,
+      transparent: false,
+      opacity: 1,
+      depthWrite: true,
+    });
+    const spaceEdgeMat = new THREE.LineBasicMaterial({
+      color: 0x1a1a1a,
+      transparent: true,
+      opacity: 0.72,
+    });
+    const ribbonMat = new THREE.MeshLambertMaterial({
+      color: 0xf4f4f4,
+      emissive: 0x2a2a2a,
+      side: THREE.DoubleSide,
+      transparent: false,
+      opacity: 1,
+      depthWrite: true,
+    });
+    let spaceMesh = null;
+    let spaceEdges = null;
+    let showSpaces = true;
+    let showMeshEdges = true;
+    let showBranches = false;
+    let geomActive = false;
+    let displayMode = "solids";
+    let selectedElementId = null;
+
+    const skeletonGeom = new THREE.BufferGeometry();
+    skeletonGeom.setAttribute("position", new THREE.Float32BufferAttribute([], 3));
+    const skeletonMat = new THREE.LineBasicMaterial({
+      color: 0xff3344,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+    });
+    const skeletonLines = new THREE.LineSegments(skeletonGeom, skeletonMat);
+    skeletonLines.visible = false;
+    skeletonLines.renderOrder = 8;
+    scene.add(skeletonLines);
+
+    const geomGroup = new THREE.Group();
+    geomGroup.visible = false;
+    scene.add(geomGroup);
+    const pickBoxGeom = new THREE.BoxGeometry(1, 1, 1);
+    const pickEdgeGeom = new THREE.EdgesGeometry(pickBoxGeom);
+    const selectedMat = new THREE.MeshLambertMaterial({
+      color: 0xf0e6c8,
+      emissive: 0x5a4a18,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.98,
+      depthWrite: true,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    const selectedEdgeMat = new THREE.LineBasicMaterial({
+      color: 0xffcc44,
+      transparent: true,
+      opacity: 1,
+      depthTest: false,
+    });
+
+    const pickGeom = new THREE.BufferGeometry();
+    pickGeom.setAttribute("position", new THREE.Float32BufferAttribute([], 3));
+    const pickLines = new THREE.LineSegments(
+      pickGeom,
+      new THREE.LineBasicMaterial({ color: 0x9ad8ee, transparent: true, opacity: 0.95 })
+    );
+    scene.add(pickLines);
 
     let hLines = null;
     let vLines = null;
@@ -1615,9 +2012,34 @@
     const rootsGroup = new THREE.Group();
     scene.add(rootsGroup);
     const SphereGeom = THREE.SphereBufferGeometry || THREE.SphereGeometry;
-    const rootGeom = new SphereGeom(0.16, 10, 8);
-    const rootMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const rootSelMat = new THREE.MeshBasicMaterial({ color: 0xd4c48a });
+    const rootGeom = new SphereGeom(0.22, 12, 10);
+    const rootMat = new THREE.MeshBasicMaterial({ color: 0xe8c200 });
+    const rootSelMat = new THREE.MeshBasicMaterial({ color: 0xfff4a8 });
+    const ghostMat = new THREE.MeshBasicMaterial({
+      color: 0xf0c400,
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false,
+    });
+    const snapGhost = new THREE.Mesh(rootGeom, ghostMat);
+    snapGhost.visible = false;
+    snapGhost.scale.setScalar(1.25);
+    scene.add(snapGhost);
+    const snapPtsGeom = new THREE.BufferGeometry();
+    snapPtsGeom.setAttribute("position", new THREE.Float32BufferAttribute([], 3));
+    const snapPts = new THREE.Points(
+      snapPtsGeom,
+      new THREE.PointsMaterial({
+        color: 0xf0c400,
+        size: 0.11,
+        sizeAttenuation: true,
+        depthWrite: false,
+        transparent: true,
+        opacity: 0.9,
+      })
+    );
+    snapPts.visible = false;
+    scene.add(snapPts);
 
     let raf = 0;
     let running = false;
@@ -1686,6 +2108,7 @@
         vLines.visible = showV;
         scene.add(vLines);
       }
+      applySceneClip();
     }
 
     function setShowHorizontal(on) {
@@ -1737,6 +2160,583 @@
       branchGeom.attributes.position.needsUpdate = true;
       branchGeom.setDrawRange(0, count * 2);
       branchGeom.computeBoundingSphere();
+      applySpatialVis();
+    }
+
+    function setShowBranches(on) {
+      showBranches = !!on;
+      applySpatialVis();
+    }
+
+    function setSelectionPreview(segs) {
+      const list = segs || [];
+      const pos = new Float32Array(list.length * 6);
+      for (let i = 0; i < list.length; i++) {
+        const s = list[i];
+        const o = i * 6;
+        pos[o] = s.ax;
+        pos[o + 1] = s.ay;
+        pos[o + 2] = s.az;
+        pos[o + 3] = s.bx;
+        pos[o + 4] = s.by;
+        pos[o + 5] = s.bz;
+      }
+      pickGeom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      pickGeom.computeBoundingSphere();
+      applySpatialVis();
+    }
+
+    function applySelBoxVisible() {
+      selFill.visible = showSelBox;
+      selWire.visible = showSelBox;
+      if (gizmo) {
+        const elemOn = !!(elemGizmo && elemGizmo.enabled);
+        gizmo.visible = showSelBox && !boxGizmoLocked && !elemOn;
+        gizmo.enabled = showSelBox && !boxGizmoLocked && !elemOn;
+      }
+    }
+
+    function setShowSelectionBox(on) {
+      showSelBox = !!on;
+      applySelBoxVisible();
+    }
+    applySelBoxVisible();
+
+    function applySpatialVis() {
+      if (!geomActive) {
+        branches.visible = true;
+        pickLines.visible = !!(pickGeom.attributes.position && pickGeom.attributes.position.count > 0);
+        skeletonLines.visible = false;
+        geomGroup.visible = false;
+        if (spaceMesh) spaceMesh.visible = false;
+        if (spaceEdges) spaceEdges.visible = false;
+        return;
+      }
+      branches.visible = false;
+      pickLines.visible = false;
+      skeletonLines.visible = showBranches;
+      const showForm = showSpaces;
+      const solidsOn = showForm && displayMode !== "surface";
+      const surfaceOn = showForm && displayMode === "surface";
+      geomGroup.visible = solidsOn;
+      if (spaceMesh) spaceMesh.visible = surfaceOn;
+      if (spaceEdges) spaceEdges.visible = surfaceOn && showMeshEdges;
+      if (solidsOn) {
+        geomGroup.traverse((obj) => {
+          if (obj.isLineSegments) obj.visible = showMeshEdges;
+        });
+      }
+    }
+
+    function setShowSpaces(on) {
+      showSpaces = !!on;
+      applySpatialVis();
+    }
+
+    function setDisplayMode(mode) {
+      displayMode = mode === "surface" ? "surface" : "solids";
+      if (displayMode === "surface") {
+        selectedElementId = null;
+        detachElemGizmo();
+      } else {
+        paintElementHighlight();
+      }
+      applySpatialVis();
+      return displayMode;
+    }
+
+    function getDisplayMode() {
+      return displayMode;
+    }
+
+    function setShowMeshEdges(on) {
+      showMeshEdges = on == null ? true : !!on;
+      applySpatialVis();
+    }
+
+    function setCutaway() {}
+
+    function syncSelClipPlanes() {
+      const b = selectionBoxBounds();
+      // r128 clips the negative half-space (vClipPosition = -mvPosition), so
+      // normals must point inward: keep n·x + c >= 0 inside the AABB.
+      selClipPlanes[0].setFromNormalAndCoplanarPoint(new THREE.Vector3(1, 0, 0), new THREE.Vector3(b.minx, 0, 0));
+      selClipPlanes[1].setFromNormalAndCoplanarPoint(new THREE.Vector3(-1, 0, 0), new THREE.Vector3(b.maxx, 0, 0));
+      selClipPlanes[2].setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, b.miny, 0));
+      selClipPlanes[3].setFromNormalAndCoplanarPoint(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, b.maxy, 0));
+      selClipPlanes[4].setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, b.minz));
+      selClipPlanes[5].setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 0, b.maxz));
+    }
+
+    function applySceneClip() {
+      syncSelClipPlanes();
+      const planes = hideOutside ? selClipPlanes : [];
+      const mats = [
+        cube.material,
+        branches.material,
+        attractors.material,
+        pickLines.material,
+        rootMat,
+        rootSelMat,
+        ghostMat,
+        snapPts.material,
+        skeletonMat,
+      ];
+      if (hLines) mats.push(hLines.material);
+      if (vLines) mats.push(vLines.material);
+      const solidMats = [spaceMat, spaceEdgeMat, selectedMat, selectedEdgeMat, ribbonMat];
+      for (let i = 0; i < solidMats.length; i++) {
+        if (!solidMats[i]) continue;
+        solidMats[i].clippingPlanes = [];
+        solidMats[i].needsUpdate = true;
+      }
+      for (let i = 0; i < mats.length; i++) {
+        const m = mats[i];
+        if (!m) continue;
+        m.clippingPlanes = planes;
+        m.needsUpdate = true;
+      }
+    }
+
+    function setHideOutsideSelection(on) {
+      hideOutside = !!on;
+      applySceneClip();
+    }
+
+    function disposeGeomGroup() {
+      detachElemGizmo();
+      while (geomGroup.children.length) {
+        const ch = geomGroup.children[0];
+        geomGroup.remove(ch);
+        ch.traverse((obj) => {
+          if (obj.geometry && obj.geometry !== pickBoxGeom && obj.geometry !== pickEdgeGeom) {
+            obj.geometry.dispose();
+          }
+        });
+      }
+    }
+
+    function applyElementPose(mesh, el) {
+      mesh.position.set(el.center.x, el.center.y, el.center.z);
+      const U = new THREE.Vector3(el.U.x, el.U.y, el.U.z).normalize();
+      const W = new THREE.Vector3(el.W.x, el.W.y, el.W.z).normalize();
+      const T = new THREE.Vector3(el.T.x, el.T.y, el.T.z).normalize();
+      const m = new THREE.Matrix4();
+      m.makeBasis(U, W, T);
+      mesh.quaternion.setFromRotationMatrix(m);
+      mesh.scale.set(Math.max(0.05, el.hu * 2), Math.max(0.05, el.hw * 2), Math.max(0.05, el.ht * 2));
+    }
+
+    function setSpacesMesh(result) {
+      const keepId = selectedElementId;
+      disposeSpaceMesh();
+      const elements = result && result.elements ? result.elements : [];
+      for (let i = 0; i < elements.length; i++) {
+        const el = elements[i];
+        let boxGeom = pickBoxGeom;
+        let edgeGeom = pickEdgeGeom;
+        if (el.clipped && el.localPositions && el.localPositions.length) {
+          boxGeom = new THREE.BufferGeometry();
+          const posArr = new Float32Array(el.localPositions);
+          boxGeom.setAttribute("position", new THREE.BufferAttribute(posArr, 3));
+          const idx = el.localIndices || el.indices;
+          let maxIndex = 0;
+          for (let k = 0; k < idx.length; k++) if (idx[k] > maxIndex) maxIndex = idx[k];
+          boxGeom.setIndex(new THREE.BufferAttribute(maxIndex > 65535 ? new Uint32Array(idx) : new Uint16Array(idx), 1));
+          boxGeom.computeVertexNormals();
+          boxGeom.computeBoundingBox();
+          boxGeom.computeBoundingSphere();
+          edgeGeom = new THREE.EdgesGeometry(boxGeom);
+        }
+        const mesh = new THREE.Mesh(boxGeom, spaceMat);
+        mesh.userData.elementId = el.id;
+        mesh.userData.kind = el.kind;
+        mesh.userData.clipped = !!el.clipped;
+        mesh.userData.customGeom = boxGeom !== pickBoxGeom;
+        mesh.frustumCulled = false;
+        applyElementPose(mesh, el);
+        const edges = new THREE.LineSegments(edgeGeom, spaceEdgeMat);
+        edges.userData.elementId = el.id;
+        mesh.add(edges);
+        geomGroup.add(mesh);
+      }
+      const surfPos = result && result.surfacePositions;
+      const surfIdx = result && result.surfaceIndices;
+      if (surfPos && surfPos.length && surfIdx && surfIdx.length) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(surfPos), 3));
+        let maxIndex = 0;
+        for (let i = 0; i < surfIdx.length; i++) if (surfIdx[i] > maxIndex) maxIndex = surfIdx[i];
+        const idxArr = maxIndex > 65535 ? new Uint32Array(surfIdx) : new Uint16Array(surfIdx);
+        geom.setIndex(new THREE.BufferAttribute(idxArr, 1));
+        geom.computeVertexNormals();
+        geom.computeBoundingSphere();
+        geom.computeBoundingBox();
+        spaceMesh = new THREE.Mesh(geom, ribbonMat);
+        spaceMesh.frustumCulled = true;
+        spaceMesh.visible = false;
+        scene.add(spaceMesh);
+        spaceEdges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 20), spaceEdgeMat);
+        spaceEdges.visible = false;
+        scene.add(spaceEdges);
+      }
+      selectedElementId = keepId;
+      if (displayMode === "surface") {
+        selectedElementId = null;
+        detachElemGizmo();
+      } else {
+        paintElementHighlight();
+      }
+      applySpatialVis();
+      applySceneClip();
+    }
+
+    function paintElementHighlight() {
+      geomGroup.children.forEach((mesh) => {
+        if (!mesh.isMesh) return;
+        const on = mesh.userData.elementId === selectedElementId;
+        mesh.visible = true;
+        mesh.material = on ? selectedMat : spaceMat;
+        mesh.children.forEach((ch) => {
+          if (!ch.isLineSegments) return;
+          ch.material = on ? selectedEdgeMat : spaceEdgeMat;
+          ch.visible = showMeshEdges;
+        });
+      });
+      attachElemGizmo(selectedElementId);
+    }
+
+    function disposeSpaceMesh() {
+      disposeGeomGroup();
+      if (spaceMesh) {
+        scene.remove(spaceMesh);
+        spaceMesh.geometry.dispose();
+        spaceMesh = null;
+      }
+      if (spaceEdges) {
+        scene.remove(spaceEdges);
+        spaceEdges.geometry.dispose();
+        spaceEdges = null;
+      }
+    }
+
+    function setSkeleton(segs) {
+      const list = segs || [];
+      const pos = new Float32Array(list.length * 6);
+      for (let i = 0; i < list.length; i++) {
+        const s = list[i];
+        const o = i * 6;
+        pos[o] = s.ax;
+        pos[o + 1] = s.ay;
+        pos[o + 2] = s.az;
+        pos[o + 3] = s.bx;
+        pos[o + 4] = s.by;
+        pos[o + 5] = s.bz;
+      }
+      skeletonGeom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      skeletonGeom.computeBoundingSphere();
+      applySpatialVis();
+    }
+
+    function setSpatialActive(on) {
+      geomActive = !!on;
+      if (!geomActive) {
+        skeletonLines.visible = false;
+        geomGroup.visible = false;
+        selectedElementId = null;
+        detachElemGizmo();
+      }
+      applySpatialVis();
+    }
+
+    function findElemMesh(id) {
+      if (!id) return null;
+      for (let i = 0; i < geomGroup.children.length; i++) {
+        const mesh = geomGroup.children[i];
+        if (mesh.isMesh && mesh.userData.elementId === id) return mesh;
+      }
+      return null;
+    }
+
+    function eulerFromMesh(mesh) {
+      if (!mesh) return { rx: 0, ry: 0, rz: 0 };
+      const U = new THREE.Vector3(1, 0, 0).applyQuaternion(mesh.quaternion);
+      const W = new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.quaternion);
+      const T = new THREE.Vector3(0, 0, 1).applyQuaternion(mesh.quaternion);
+      if (global.D7GridSpaces && global.D7GridSpaces.eulerDegFromFrame) {
+        return global.D7GridSpaces.eulerDegFromFrame(U, W, T);
+      }
+      const rad = 180 / Math.PI;
+      return {
+        rx: mesh.rotation.x * rad,
+        ry: mesh.rotation.y * rad,
+        rz: mesh.rotation.z * rad,
+      };
+    }
+
+    function readElemPose(mesh) {
+      if (!mesh) return null;
+      const eul = eulerFromMesh(mesh);
+      return {
+        cx: mesh.position.x,
+        cy: mesh.position.y,
+        cz: mesh.position.z,
+        rx: eul.rx,
+        ry: eul.ry,
+        rz: eul.rz,
+        length: Math.abs(mesh.scale.x),
+        width: Math.abs(mesh.scale.y),
+        thickness: Math.abs(mesh.scale.z),
+      };
+    }
+
+    function elemWorldCorners(mesh) {
+      const pts = [];
+      const v3 = new THREE.Vector3();
+      for (let sx = -0.5; sx <= 0.5; sx += 1) {
+        for (let sy = -0.5; sy <= 0.5; sy += 1) {
+          for (let sz = -0.5; sz <= 0.5; sz += 1) {
+            v3.set(sx, sy, sz);
+            mesh.localToWorld(v3);
+            pts.push(v3.clone());
+          }
+        }
+      }
+      return pts;
+    }
+
+    function lockElemGizmoWorld() {
+      if (elemGizmo && elemGizmo.setSpace) elemGizmo.setSpace("world");
+    }
+
+    function placeElemPivot(mesh) {
+      if (!mesh) return;
+      elemPivot.position.copy(mesh.position);
+      elemPivot.quaternion.copy(elemQuatIdentity);
+      elemPivot.scale.set(1, 1, 1);
+      elemPivot.updateMatrixWorld(true);
+      elemRotStart.copy(mesh.quaternion);
+    }
+
+    function beginElemGizmoDrag() {
+      if (!elemGizmoTarget) return;
+      placeElemPivot(elemGizmoTarget);
+      elemLastGood = {
+        pos: elemGizmoTarget.position.clone(),
+        quat: elemGizmoTarget.quaternion.clone(),
+      };
+    }
+
+    function applyPivotToMesh() {
+      const mesh = elemGizmoTarget;
+      if (!mesh) return false;
+      mesh.position.copy(elemPivot.position);
+      if (elemGizmoMode === "rotate") {
+        mesh.quaternion.copy(elemPivot.quaternion).multiply(elemRotStart);
+      } else {
+        mesh.quaternion.copy(elemRotStart);
+        elemPivot.quaternion.copy(elemQuatIdentity);
+      }
+      mesh.updateMatrixWorld(true);
+      const rejected = constrainElemMesh(mesh);
+      elemPivot.position.copy(mesh.position);
+      if (elemGizmoMode !== "rotate") elemPivot.quaternion.copy(elemQuatIdentity);
+      elemPivot.updateMatrixWorld(true);
+      return rejected;
+    }
+
+    function constrainElemMesh(mesh) {
+      if (!mesh) return false;
+      elemLastGood = { pos: mesh.position.clone(), quat: mesh.quaternion.clone() };
+      return false;
+    }
+
+    function detachElemGizmo() {
+      if (!elemGizmo) return;
+      try {
+        elemGizmo.detach();
+      } catch (err) {}
+      elemGizmo.enabled = false;
+      elemGizmo.visible = false;
+      elemGizmoTarget = null;
+      applySelBoxVisible();
+    }
+
+    function attachElemGizmo(id) {
+      if (!elemGizmo) return;
+      const mesh = findElemMesh(id);
+      if (!mesh || !geomActive) {
+        detachElemGizmo();
+        return;
+      }
+      placeElemPivot(mesh);
+      lockElemGizmoWorld();
+      elemGizmo.attach(elemPivot);
+      elemGizmo.setMode(elemGizmoMode === "rotate" ? "rotate" : "translate");
+      elemGizmo.enabled = true;
+      elemGizmo.visible = true;
+      elemGizmoTarget = mesh;
+      elemLastGood = { pos: mesh.position.clone(), quat: mesh.quaternion.clone() };
+      applySelBoxVisible();
+    }
+
+    function setSelectedElement(id) {
+      selectedElementId = id || null;
+      paintElementHighlight();
+      return selectedElementId;
+    }
+
+    const _pickInv = new THREE.Matrix4();
+    const _pickOrigin = new THREE.Vector3();
+    const _pickDir = new THREE.Vector3();
+    const _pickEnd = new THREE.Vector3();
+
+    function rayHitOBB(ray, mesh) {
+      if (!mesh) return null;
+      mesh.updateWorldMatrix(true, false);
+      _pickInv.copy(mesh.matrixWorld).invert();
+      _pickOrigin.copy(ray.origin).applyMatrix4(_pickInv);
+      _pickEnd.copy(ray.origin).add(ray.direction).applyMatrix4(_pickInv);
+      _pickDir.subVectors(_pickEnd, _pickOrigin);
+      const pad = 0.498;
+      let tEnter = -Infinity;
+      let tExit = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const orig = i === 0 ? _pickOrigin.x : i === 1 ? _pickOrigin.y : _pickOrigin.z;
+        const dir = i === 0 ? _pickDir.x : i === 1 ? _pickDir.y : _pickDir.z;
+        if (Math.abs(dir) < 1e-12) {
+          if (orig < -pad || orig > pad) return null;
+          continue;
+        }
+        let tA = (-pad - orig) / dir;
+        let tB = (pad - orig) / dir;
+        if (tA > tB) {
+          const tmp = tA;
+          tA = tB;
+          tB = tmp;
+        }
+        if (tA > tEnter) tEnter = tA;
+        if (tB < tExit) tExit = tB;
+        if (tEnter > tExit) return null;
+      }
+      if (tExit < 0) return null;
+      if (tEnter < 0) tEnter = 0;
+      if (tEnter > tExit) return null;
+      return tEnter;
+    }
+
+    function pickGeometry(clientX, clientY) {
+      if (!geomActive || !showSpaces || displayMode === "surface" || !geomGroup.children.length) return null;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const pointer = new THREE.Vector2(
+        ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+        -((clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1
+      );
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(pointer, activeCamera);
+      let bestId = null;
+      let bestT = Infinity;
+      const children = geomGroup.children;
+      for (let i = 0; i < children.length; i++) {
+        const mesh = children[i];
+        if (!mesh || !mesh.isMesh) continue;
+        const id = mesh.userData && mesh.userData.elementId;
+        if (!id) continue;
+        const hits = raycaster.intersectObject(mesh, false);
+        if (!hits.length) continue;
+        const t = hits[0].distance;
+        if (t < bestT - 1e-5) {
+          bestT = t;
+          bestId = id;
+        }
+      }
+      return bestId;
+    }
+
+    function setGizmoMode(mode) {
+      gizmoMode = mode === "scale" ? "scale" : "translate";
+      if (gizmo) gizmo.setMode(gizmoMode);
+      return gizmoMode;
+    }
+
+    function toggleGizmoMode() {
+      return setGizmoMode(gizmoMode === "translate" ? "scale" : "translate");
+    }
+
+    function gizmoBusy() {
+      return (
+        !!(gizmo && (gizmo.dragging || gizmo.axis)) ||
+        !!(rootGizmo && (rootGizmo.dragging || rootGizmo.axis)) ||
+        !!(elemGizmo && (elemGizmo.dragging || elemGizmo.axis))
+      );
+    }
+
+    function rootGizmoBusy() {
+      return !!(rootGizmo && (rootGizmo.dragging || rootGizmo.axis));
+    }
+
+    function setBoxGizmoLocked(on) {
+      boxGizmoLocked = !!on;
+      applySelBoxVisible();
+    }
+
+    function setShowRoots(on) {
+      showRoots = !!on;
+      rootsGroup.visible = showRoots;
+      if (!showRoots) {
+        snapGhost.visible = false;
+        snapPts.visible = false;
+        if (rootGizmo) {
+          rootGizmo.visible = false;
+          rootGizmo.enabled = false;
+        }
+      }
+    }
+
+    function setPlacePreview(ghost, nearby) {
+      if (ghost) {
+        snapGhost.position.set(ghost.x, ghost.y, ghost.z);
+        ghostMat.color.set(ghost.occupied ? 0xff5555 : 0xf0c400);
+        snapGhost.visible = showRoots;
+      } else {
+        snapGhost.visible = false;
+      }
+      const list = nearby || [];
+      const pos = new Float32Array(list.length * 3);
+      for (let i = 0; i < list.length; i++) {
+        pos[i * 3] = list[i].x;
+        pos[i * 3 + 1] = list[i].y;
+        pos[i * 3 + 2] = list[i].z;
+      }
+      snapPtsGeom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      snapPtsGeom.computeBoundingSphere();
+      snapPts.visible = showRoots && list.length > 0;
+    }
+
+    function setRootGizmo(pos) {
+      if (!rootGizmo) return;
+      if (!pos || !showRoots) {
+        rootGizmo.enabled = false;
+        rootGizmo.visible = false;
+        return;
+      }
+      rootHandle.position.set(pos.x, pos.y, pos.z);
+      rootGizmo.enabled = true;
+      rootGizmo.visible = true;
+    }
+
+    function getPointerRay(clientX, clientY) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const pointer = new THREE.Vector2(
+        ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+        -((clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1
+      );
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(pointer, activeCamera);
+      return {
+        origin: raycaster.ray.origin.clone(),
+        dir: raycaster.ray.direction.clone(),
+      };
     }
 
     function setRoots(list, selectedId) {
@@ -1746,25 +2746,42 @@
       }
       for (let i = 0; i < list.length; i++) {
         const n = list[i];
-        const mesh = new THREE.Mesh(rootGeom, n.id === selectedId ? rootSelMat : rootMat);
+        const id = n.uid != null ? n.uid : n.id;
+        const selected = id === selectedId;
+        const mesh = new THREE.Mesh(rootGeom, selected ? rootSelMat : rootMat);
         mesh.position.set(n.x, n.y, n.z);
-        mesh.userData.rootId = n.id;
+        mesh.scale.setScalar(selected ? 1.18 : 1);
+        mesh.userData.rootId = id;
         rootsGroup.add(mesh);
       }
+      rootsGroup.visible = showRoots;
     }
 
     function pickRoot(clientX, clientY) {
-      if (!rootsGroup.children.length) return null;
+      if (!showRoots || !rootsGroup.children.length) return null;
       const rect = renderer.domElement.getBoundingClientRect();
       const pointer = new THREE.Vector2(
         ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
         -((clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1
       );
       const raycaster = new THREE.Raycaster();
+      raycaster.params.Points = raycaster.params.Points || {};
+      raycaster.params.Line = raycaster.params.Line || {};
       raycaster.setFromCamera(pointer, activeCamera);
       const hits = raycaster.intersectObjects(rootsGroup.children, false);
-      if (!hits.length) return null;
-      return hits[0].object.userData.rootId || null;
+      if (hits.length) return hits[0].object.userData.rootId || null;
+      const ray = raycaster.ray;
+      let best = null;
+      let bestSq = 0.42 * 0.42;
+      for (let i = 0; i < rootsGroup.children.length; i++) {
+        const mesh = rootsGroup.children[i];
+        const dSq = pointToRaySq(mesh.position.x, mesh.position.y, mesh.position.z, ray.origin, ray.direction);
+        if (dSq < bestSq) {
+          bestSq = dSq;
+          best = mesh.userData.rootId;
+        }
+      }
+      return best;
     }
 
     function tick() {
@@ -1802,8 +2819,69 @@
       setShowAttractors,
       setAttractors,
       setBranches,
+      setShowBranches,
+      setSelectionPreview,
+      setShowSpaces,
+      setDisplayMode,
+      getDisplayMode,
+      setShowMeshEdges,
+      setShowSelectionBox,
+      setHideOutsideSelection,
+      setCutaway,
+      setSpacesMesh,
+      setSkeleton,
+      setSpatialActive,
+      setSelectedElement,
+      pickGeometry,
+      setElemGizmoMode(mode) {
+        elemGizmoMode = mode === "rotate" ? "rotate" : "translate";
+        if (elemGizmo) {
+          elemGizmo.setMode(elemGizmoMode);
+          lockElemGizmoWorld();
+        }
+        const mesh = elemGizmoTarget || findElemMesh(selectedElementId);
+        if (mesh) placeElemPivot(mesh);
+        return elemGizmoMode;
+      },
+      getElemGizmoMode() {
+        return elemGizmoMode;
+      },
+      readSelectedPose() {
+        return readElemPose(elemGizmoTarget || findElemMesh(selectedElementId));
+      },
+      setOnElemGizmoChange(fn) {
+        onElemGizmoChange = fn;
+      },
+      setOnElemGizmoEnd(fn) {
+        onElemGizmoEnd = fn;
+      },
+      getSelectionBox: selectionBoxBounds,
+      setOnSelectionChange(fn) {
+        onSelectionChange = fn;
+      },
+      setOnSelectionEnd(fn) {
+        onSelectionEnd = fn;
+      },
+      toggleGizmoMode,
+      setGizmoMode,
+      gizmoBusy,
+      rootGizmoBusy,
+      getGizmoMode() {
+        return gizmoMode;
+      },
       setRoots,
       pickRoot,
+      setShowRoots,
+      setPlacePreview,
+      setRootGizmo,
+      setBoxGizmoLocked,
+      getPointerRay,
+      setOnRootGizmoChange(fn) {
+        onRootGizmoChange = fn;
+      },
+      setOnRootGizmoEnd(fn) {
+        onRootGizmoEnd = fn;
+      },
     };
   }
 
@@ -1830,6 +2908,8 @@
       speedVal: document.getElementById("grid3dSpeedVal"),
       generate: document.getElementById("grid3dGenerate"),
       addRoot: document.getElementById("grid3dAddRoot"),
+      moveRoot: document.getElementById("grid3dMoveRoot"),
+      showRoots: document.getElementById("grid3dShowRoots"),
       start: document.getElementById("grid3dStart"),
       pause: document.getElementById("grid3dPause"),
       reset: document.getElementById("grid3dReset"),
@@ -1841,11 +2921,58 @@
       rootList: document.getElementById("grid3dRootList"),
       readout: document.getElementById("grid3dReadout"),
       hint: document.getElementById("grid3dViewHint"),
+      spaceStatus: document.getElementById("grid3dSpaceStatus"),
+      generateSpaces: document.getElementById("grid3dGenerateSpaces"),
+      boxMove: document.getElementById("grid3dBoxMove"),
+      boxScale: document.getElementById("grid3dBoxScale"),
+      width: document.getElementById("grid3dWidth"),
+      widthVal: document.getElementById("grid3dWidthVal"),
+      thickness: document.getElementById("grid3dThickness"),
+      thicknessVal: document.getElementById("grid3dThicknessVal"),
+      junction: document.getElementById("grid3dJunction"),
+      junctionVal: document.getElementById("grid3dJunctionVal"),
+      showBranches: document.getElementById("grid3dShowBranches"),
+      showSpaces: document.getElementById("grid3dShowSpaces"),
+      displayMode: document.getElementById("grid3dDisplayMode"),
+      showSelBox: document.getElementById("grid3dShowSelBox"),
+      hideOutside: document.getElementById("grid3dHideOutside"),
+      export3dm: document.getElementById("grid3dExport3dm"),
+      exportObj: document.getElementById("grid3dExportObj"),
+      elemEdit: document.getElementById("grid3dElemEdit"),
+      elemStatus: document.getElementById("grid3dElemStatus"),
+      elemWidth: document.getElementById("grid3dElemWidth"),
+      elemWidthVal: document.getElementById("grid3dElemWidthVal"),
+      elemWidthWrap: document.getElementById("grid3dElemWidthWrap"),
+      elemThick: document.getElementById("grid3dElemThick"),
+      elemThickVal: document.getElementById("grid3dElemThickVal"),
+      elemThickWrap: document.getElementById("grid3dElemThickWrap"),
+      elemLen: document.getElementById("grid3dElemLen"),
+      elemLenVal: document.getElementById("grid3dElemLenVal"),
+      elemLenWrap: document.getElementById("grid3dElemLenWrap"),
+      elemX: document.getElementById("grid3dElemX"),
+      elemY: document.getElementById("grid3dElemY"),
+      elemZ: document.getElementById("grid3dElemZ"),
+      elemRx: document.getElementById("grid3dElemRx"),
+      elemRy: document.getElementById("grid3dElemRy"),
+      elemRz: document.getElementById("grid3dElemRz"),
+      elemMove: document.getElementById("grid3dElemMove"),
+      elemRotate: document.getElementById("grid3dElemRotate"),
+      elemDup: document.getElementById("grid3dElemDup"),
+      elemDel: document.getElementById("grid3dElemDel"),
+      elemClear: document.getElementById("grid3dElemClear"),
+      resetGeom: document.getElementById("grid3dResetGeom"),
     };
 
     let viewer = null;
     let sim = createSim({ seed: 20261003 });
     let selectedRootId = null;
+    let rootPlacements = [];
+    let nextPlacementUid = 1;
+    let editMode = "idle";
+    let networkOutdated = false;
+    let applyingFields = false;
+    let placeHover = null;
+    let ptrDown = null;
     let playing = false;
     let acc = 0;
     let lastTs = 0;
@@ -1854,6 +2981,18 @@
     let orientation = "both";
     let spacing = DEFAULT_SPACING;
     let gridError = null;
+    let spaceResult = null;
+    let spaceBusy = false;
+    let geomOverrides = {};
+    let selectedGeomId = null;
+    let applyingGeom = false;
+    let nextDupId = 1;
+    let geomHist = [];
+    let geomFuture = [];
+    let geomHistLock = false;
+    let geomUndoOpen = false;
+    let geomFlexId = null;
+    let geomFlexKey = null;
 
     function setStatus(message, kind) {
       if (!els.status) return;
@@ -1891,10 +3030,50 @@
         btn.classList.toggle("ghost", !on);
       });
       if (els.hint) {
-        els.hint.textContent = mode === "perspective"
-          ? "Left-drag orbit · Right-drag pan · Scroll zoom"
-          : "Rotation locked · Right-drag pan · Scroll zoom";
+        if (editMode === "place") {
+          els.hint.textContent = "Click a grid node to place a root · Esc cancel";
+        } else if (editMode === "move") {
+          els.hint.textContent = "Drag the yellow gizmo in X, Y, or Z · snaps to the grid · Esc done";
+        } else if (selectedGeomId) {
+          const boxMode = viewer && viewer.getElemGizmoMode && viewer.getElemGizmoMode() === "rotate" ? "Rotate" : "Move";
+          els.hint.textContent =
+            (mode === "perspective"
+              ? "Left-drag orbit · Right-drag pan · Scroll zoom"
+              : "Rotation locked · Right-drag pan · Scroll zoom") +
+            " · " +
+            boxMode +
+            " selected box · Esc deselect";
+        } else {
+          const move = viewer && viewer.getGizmoMode ? viewer.getGizmoMode() : "translate";
+          const gizmoHint = " · Box " + (move === "scale" ? "Scale" : "Move");
+          els.hint.textContent =
+            (mode === "perspective"
+              ? "Left-drag orbit · Right-drag pan · Scroll zoom"
+              : "Rotation locked · Right-drag pan · Scroll zoom") + gizmoHint;
+        }
       }
+      paintBoxMode();
+    }
+
+    function paintBoxMode() {
+      const mode = viewer && viewer.getGizmoMode ? viewer.getGizmoMode() : "translate";
+      function mark(btn, on) {
+        if (!btn) return;
+        btn.classList.toggle("active", on);
+        btn.classList.toggle("primary", on);
+        btn.classList.toggle("ghost", !on);
+      }
+      mark(els.boxMove, mode === "translate");
+      mark(els.boxScale, mode === "scale");
+    }
+
+    function setBoxMode(mode) {
+      if (editMode !== "idle") setEditMode("idle");
+      if (selectedGeomId) selectGeom(null);
+      if (!viewer) ensureViewer();
+      if (viewer && viewer.setGizmoMode) viewer.setGizmoMode(mode);
+      paintBoxMode();
+      paintViewButtons();
     }
 
     function paintReadout() {
@@ -1908,16 +3087,13 @@
     function paintRoots() {
       if (!els.rootList) return;
       els.rootList.innerHTML = "";
-      for (let i = 0; i < sim.roots.length; i++) {
-        const node = sim.nodeById.get(sim.roots[i]);
-        if (!node) continue;
+      for (let i = 0; i < rootPlacements.length; i++) {
+        const node = rootPlacements[i];
         const li = document.createElement("li");
-        if (node.id === selectedRootId) li.classList.add("selected");
+        if (node.uid === selectedRootId) li.classList.add("selected");
         li.textContent = `R${node.rootIndex} · ${node.x.toFixed(1)}, ${node.y.toFixed(1)}, ${node.z.toFixed(1)}`;
         li.addEventListener("click", () => {
-          selectedRootId = node.id;
-          paintRoots();
-          syncViewer();
+          selectRoot(node.uid, true);
         });
         els.rootList.appendChild(li);
       }
@@ -1930,7 +3106,51 @@
       if (els.pause) els.pause.disabled = !playing;
       if (els.generate) els.generate.disabled = !ready;
       if (els.variation) els.variation.disabled = !ready;
-      if (els.addRoot) els.addRoot.disabled = !ready;
+      if (els.addRoot) {
+        els.addRoot.disabled = !ready;
+        els.addRoot.classList.toggle("active", editMode === "place");
+        els.addRoot.classList.toggle("primary", editMode === "place");
+        els.addRoot.classList.toggle("ghost", editMode !== "place");
+      }
+      if (els.moveRoot) {
+        els.moveRoot.disabled = !ready;
+        els.moveRoot.classList.toggle("active", editMode === "move");
+        els.moveRoot.classList.toggle("primary", editMode === "move");
+        els.moveRoot.classList.toggle("ghost", editMode !== "move");
+      }
+      if (els.generateSpaces) els.generateSpaces.disabled = spaceBusy || !ready;
+      if (els.resetGeom) els.resetGeom.disabled = spaceBusy || !spaceResult;
+      if (els.export3dm) els.export3dm.disabled = spaceBusy || !spaceResult;
+      if (els.exportObj) els.exportObj.disabled = spaceBusy || !spaceResult;
+    }
+
+    function setSpaceStatus(message, kind) {
+      if (!els.spaceStatus) return;
+      els.spaceStatus.textContent = message;
+      els.spaceStatus.classList.toggle("active", kind === "active");
+      els.spaceStatus.classList.toggle("error", kind === "error");
+    }
+
+    function paintSelection() {
+      if (!viewer || !global.D7GridSpaces) return;
+      const box = viewer.getSelectionBox();
+      const clipped = global.D7GridSpaces.clipGraph(sim.nodes, sim.branches, box);
+      viewer.setSelectionPreview(clipped.segs);
+      if (!spaceResult && !spaceBusy) {
+        if (!sim.branches.length) {
+          setSpaceStatus("Grow branches, then Generate Geometry.");
+        } else if (!clipped.segs.length) {
+          setSpaceStatus("Move the cyan box over grown branches.");
+        } else {
+          setSpaceStatus(
+            "Chunk: " +
+              clipped.segs.length +
+              " segments · " +
+              clipped.nodes.length +
+              " nodes. Generate Geometry."
+          );
+        }
+      }
     }
 
     function aliveAttractors() {
@@ -1945,8 +3165,11 @@
       if (viewer) {
         viewer.setAttractors(aliveAttractors());
         viewer.setBranches(sim.branches, sim.nodeById);
-        const roots = sim.roots.map((id) => sim.nodeById.get(id)).filter(Boolean);
-        viewer.setRoots(roots, selectedRootId);
+        if (!(viewer.rootGizmoBusy && viewer.rootGizmoBusy())) {
+          viewer.setRoots(rootPlacements, selectedRootId);
+          updateRootGizmo();
+        }
+        paintSelection();
       }
       paintReadout();
       paintGridStats();
@@ -1960,6 +3183,14 @@
       }
       if (!sim.grid) {
         setStatus("Loading grid…");
+        return;
+      }
+      if (networkOutdated) {
+        setStatus(
+          "Roots changed. Previous branch network is outdated. Attractors kept. Start to grow from the new roots.",
+          "active"
+        );
+        paintGridStats();
         return;
       }
       const remain = aliveCount(sim);
@@ -1978,6 +3209,244 @@
         y: clamp(Number(els.rootY?.value ?? 0), 0, CUBE),
         z: clamp(Number(els.rootZ?.value ?? 10), 0, CUBE),
       };
+    }
+
+    function hasNetwork() {
+      return sim.branches.length > 0 || sim.iteration > 0;
+    }
+
+    function selectedPlacement() {
+      for (let i = 0; i < rootPlacements.length; i++) {
+        if (rootPlacements[i].uid === selectedRootId) return rootPlacements[i];
+      }
+      return null;
+    }
+
+    function usedGridIds(exceptUid) {
+      const used = new Set();
+      for (let i = 0; i < rootPlacements.length; i++) {
+        const p = rootPlacements[i];
+        if (exceptUid != null && p.uid === exceptUid) continue;
+        if (p.gridId != null) used.add(p.gridId);
+      }
+      return used;
+    }
+
+    function snapFreeAt(x, y, z, exceptUid) {
+      if (!sim.grid) return null;
+      const used = usedGridIds(exceptUid);
+      const nearby = nearbyGridNodes(sim.grid, x, y, z, 3.4, 90);
+      const gid0 = nearestGridNodeId(sim.grid, x, y, z, true);
+      if (gid0 >= 0) {
+        const n = sim.grid.nodes[gid0];
+        nearby.unshift({ id: gid0, dSq: 0, x: n.x, y: n.y, z: n.z });
+      }
+      const seen = new Set();
+      for (let i = 0; i < nearby.length; i++) {
+        const n = nearby[i];
+        if (seen.has(n.id)) continue;
+        seen.add(n.id);
+        if (used.has(n.id)) continue;
+        return { gridId: n.id, x: n.x, y: n.y, z: n.z };
+      }
+      return null;
+    }
+
+    function writeRootFields(p) {
+      if (!p) return;
+      applyingFields = true;
+      if (els.rootX) els.rootX.value = Number(p.x).toFixed(1);
+      if (els.rootY) els.rootY.value = Number(p.y).toFixed(1);
+      if (els.rootZ) els.rootZ.value = Number(p.z).toFixed(1);
+      applyingFields = false;
+    }
+
+    function syncPlacementsFromSim() {
+      rootPlacements = [];
+      for (let i = 0; i < sim.roots.length; i++) {
+        const n = sim.nodeById.get(sim.roots[i]);
+        if (!n) continue;
+        if (n.uid == null) n.uid = nextPlacementUid++;
+        rootPlacements.push({
+          uid: n.uid,
+          simId: n.id,
+          rootIndex: n.rootIndex,
+          x: n.x,
+          y: n.y,
+          z: n.z,
+          gridId: n.gridId,
+        });
+      }
+      sim.rootDrafts = rootPlacements;
+      let maxIndex = 0;
+      for (let i = 0; i < rootPlacements.length; i++) {
+        maxIndex = Math.max(maxIndex, rootPlacements[i].rootIndex || 0);
+      }
+      sim.nextRootIndex = maxIndex + 1;
+    }
+
+    function applyPlacementsToSim() {
+      resetGrowth(sim, rootPlacements);
+      syncPlacementsFromSim();
+      networkOutdated = false;
+      clearSpacePack();
+    }
+
+    function updateRootGizmo() {
+      if (!viewer || !viewer.setRootGizmo) return;
+      const p = selectedPlacement();
+      const show = !els.showRoots || els.showRoots.checked;
+      if (editMode === "move" && p && show) viewer.setRootGizmo(p);
+      else viewer.setRootGizmo(null);
+    }
+
+    function setEditMode(mode) {
+      const next = mode === "place" || mode === "move" ? mode : "idle";
+      if (next !== "idle" && !sim.grid) {
+        setStatus(gridError || "SVG grid is not loaded.", "error");
+        return;
+      }
+      if (next === "move" && !selectedPlacement()) {
+        setStatus("Select a root, then click Move Root — or click a yellow root in the viewport.", "error");
+        editMode = "idle";
+      } else {
+        editMode = next;
+      }
+      if (editMode !== "idle" && selectedGeomId) selectGeom(null);
+      stage.classList.toggle("root-place", editMode === "place");
+      stage.classList.toggle("root-move", editMode === "move");
+      if (viewer) {
+        viewer.setBoxGizmoLocked(editMode !== "idle");
+        if (editMode !== "place") {
+          placeHover = null;
+          viewer.setPlacePreview(null, []);
+        }
+        updateRootGizmo();
+      }
+      paintButtons();
+      paintViewButtons();
+    }
+
+    function selectRoot(uid, enterMove) {
+      selectedRootId = uid;
+      const p = selectedPlacement();
+      if (p) writeRootFields(p);
+      if (enterMove && uid) setEditMode("move");
+      paintRoots();
+      syncViewer();
+    }
+
+    function addRootAtSnap(x, y, z) {
+      const snap = snapFreeAt(x, y, z, null);
+      if (!snap) {
+        setStatus("No free grid node there. Pick another location.", "error");
+        return null;
+      }
+      if (hasNetwork()) {
+        pauseGrowth();
+        networkOutdated = true;
+        const p = {
+          uid: nextPlacementUid++,
+          simId: null,
+          rootIndex: sim.nextRootIndex++,
+          x: snap.x,
+          y: snap.y,
+          z: snap.z,
+          gridId: snap.gridId,
+        };
+        rootPlacements.push(p);
+        sim.rootDrafts = rootPlacements;
+        return p;
+      }
+      const node = occupyGridNode(sim, snap.gridId, null, true);
+      if (!node) {
+        setStatus("That grid node already has a root.", "error");
+        return null;
+      }
+      node.uid = nextPlacementUid++;
+      killNearNetwork(sim);
+      syncPlacementsFromSim();
+      for (let i = 0; i < rootPlacements.length; i++) {
+        if (rootPlacements[i].simId === node.id) return rootPlacements[i];
+      }
+      return rootPlacements[rootPlacements.length - 1] || null;
+    }
+
+    function moveSelectedTo(x, y, z) {
+      const p = selectedPlacement();
+      if (!p || !sim.grid) return null;
+      const snap = snapFreeAt(x, y, z, p.uid);
+      if (!snap) {
+        writeRootFields(p);
+        setStatus("No free grid node at those coordinates.", "error");
+        return null;
+      }
+      if (snap.gridId === p.gridId) {
+        writeRootFields(p);
+        return p;
+      }
+      if (hasNetwork()) {
+        pauseGrowth();
+        networkOutdated = true;
+        p.x = snap.x;
+        p.y = snap.y;
+        p.z = snap.z;
+        p.gridId = snap.gridId;
+        sim.rootDrafts = rootPlacements;
+        writeRootFields(p);
+        return p;
+      }
+      const moved = moveRootNode(sim, p.simId, snap.gridId);
+      if (!moved) {
+        writeRootFields(p);
+        setStatus("That grid node already has a root.", "error");
+        return null;
+      }
+      killNearNetwork(sim);
+      syncPlacementsFromSim();
+      selectedRootId = moved.uid;
+      const cur = selectedPlacement();
+      writeRootFields(cur);
+      return cur;
+    }
+
+    function removeSelectedRoot() {
+      const p = selectedPlacement();
+      if (!p) return;
+      if (hasNetwork()) {
+        pauseGrowth();
+        networkOutdated = true;
+        rootPlacements = rootPlacements.filter((r) => r.uid !== p.uid);
+        sim.rootDrafts = rootPlacements;
+      } else if (p.simId != null) {
+        deleteRoot(sim, p.simId);
+        syncPlacementsFromSim();
+      } else {
+        rootPlacements = rootPlacements.filter((r) => r.uid !== p.uid);
+        sim.rootDrafts = rootPlacements;
+      }
+      selectedRootId = rootPlacements[0] ? rootPlacements[0].uid : null;
+      if (selectedRootId) writeRootFields(selectedPlacement());
+      if (!selectedRootId && editMode === "move") setEditMode("idle");
+      paintRoots();
+      syncViewer();
+      paintStatus();
+    }
+
+    function updatePlaceHover(clientX, clientY) {
+      if (editMode !== "place" || !viewer || !sim.grid) return;
+      const ray = viewer.getPointerRay(clientX, clientY);
+      if (!ray) return;
+      const gid = nearestGridNodeToRay(sim.grid, ray.origin, ray.dir, 1.45);
+      if (gid < 0) {
+        placeHover = null;
+        viewer.setPlacePreview(null, []);
+        return;
+      }
+      const n = sim.grid.nodes[gid];
+      const occupied = usedGridIds(null).has(gid);
+      placeHover = { gridId: gid, x: n.x, y: n.y, z: n.z, occupied };
+      viewer.setPlacePreview(placeHover, nearbyGridNodes(sim.grid, n.x, n.y, n.z, 2.3, 42));
     }
 
     function readParamsIntoSim() {
@@ -2016,10 +3485,13 @@
         setStatus(gridError || "SVG grid is not loaded.", "error");
         return;
       }
+      if (!rootPlacements.length) {
+        setStatus("Add at least one root before growing.", "error");
+        return;
+      }
       readParamsIntoSim();
-      if (!sim.roots.length) {
-        const node = ensureDefaultRoot(sim);
-        selectedRootId = node ? node.id : null;
+      if (networkOutdated || !sim.roots.length) {
+        applyPlacementsToSim();
         paintRoots();
       }
       if (!sim.attractors.length) generateAttractors(sim);
@@ -2027,6 +3499,7 @@
         setStatus("No remaining attractors. Reset Simulation or New Variation.", "error");
         return;
       }
+      setEditMode("idle");
       sim.done = false;
       playing = true;
       acc = 0;
@@ -2046,9 +3519,268 @@
       paintStatus();
     }
 
+    function cloneOverrides() {
+      return JSON.parse(JSON.stringify(geomOverrides));
+    }
+
+    function nextDupFromStore() {
+      let max = 0;
+      for (const key in geomOverrides) {
+        if (!Object.prototype.hasOwnProperty.call(geomOverrides, key)) continue;
+        if (key.indexOf("d:") !== 0) continue;
+        const n = Number(key.slice(2));
+        if (n > max) max = n;
+      }
+      return max + 1;
+    }
+
+    function pushGeomHist() {
+      if (geomHistLock) return;
+      geomHist.push({ ov: cloneOverrides(), sel: selectedGeomId, dup: nextDupId });
+      if (geomHist.length > 60) geomHist.shift();
+      geomFuture = [];
+    }
+
+    function applyGeomHist(snap) {
+      geomHistLock = true;
+      geomOverrides = JSON.parse(JSON.stringify(snap.ov || {}));
+      nextDupId = snap.dup || nextDupFromStore();
+      selectedGeomId = snap.sel || null;
+      rebuildGeometry();
+      selectGeom(selectedGeomId);
+      geomHistLock = false;
+    }
+
+    function undoGeom() {
+      if (!geomHist.length || !spaceResult) return;
+      geomFuture.push({ ov: cloneOverrides(), sel: selectedGeomId, dup: nextDupId });
+      applyGeomHist(geomHist.pop());
+    }
+
+    function redoGeom() {
+      if (!geomFuture.length || !spaceResult) return;
+      geomHist.push({ ov: cloneOverrides(), sel: selectedGeomId, dup: nextDupId });
+      applyGeomHist(geomFuture.pop());
+    }
+
+    function mergeOverride(id, patch) {
+      const prev = geomOverrides[id] ? Object.assign({}, geomOverrides[id]) : {};
+      geomOverrides[id] = Object.assign(prev, patch);
+      return geomOverrides[id];
+    }
+
+    function capturePose(el) {
+      if (!el) return {};
+      return {
+        width: el.width,
+        thickness: el.thickness,
+        length: el.length,
+        cx: el.center.x,
+        cy: el.center.y,
+        cz: el.center.z,
+        rx: el.rx || 0,
+        ry: el.ry || 0,
+        rz: el.rz || 0,
+      };
+    }
+
+    function geomStatusText(result) {
+      if (!result || !result.ok) return "Grow branches, then Generate Geometry.";
+      let msg =
+        "Geometry · " +
+        result.segmentCount +
+        " bars · " +
+        result.junctionCount +
+        " forks";
+      if (result.duplicateCount) msg += " · " + result.duplicateCount + (result.duplicateCount === 1 ? " copy" : " copies");
+      if (result.didConstrain) msg += " · capped at selection";
+      if (result.invalidCount) msg += " · " + result.invalidCount + " open";
+      if (els.displayMode && els.displayMode.value === "surface") msg += " · thin surfaces";
+      return msg;
+    }
+
+    function clearSpacePack() {
+      spaceResult = null;
+      geomOverrides = {};
+      selectedGeomId = null;
+      nextDupId = 1;
+      geomHist = [];
+      geomFuture = [];
+      if (viewer) {
+        if (viewer.setSelectedElement) viewer.setSelectedElement(null);
+        if (viewer.setSpacesMesh) viewer.setSpacesMesh(null);
+        if (viewer.setSkeleton) viewer.setSkeleton([]);
+        if (viewer.setSpatialActive) viewer.setSpatialActive(false);
+      }
+      paintElemPanel();
+      paintButtons();
+    }
+
+    function geomOpts() {
+      return {
+        width: els.width ? Number(els.width.value) : 2,
+        thickness: els.thickness ? Number(els.thickness.value) : 2,
+        junction: els.junction ? Number(els.junction.value) : 2,
+        overrides: geomOverrides,
+        flexId: geomFlexId,
+        flexAxis: geomFlexKey === "width" ? "W" : geomFlexKey === "thickness" ? "T" : geomFlexKey === "length" ? "U" : null,
+      };
+    }
+
+    function applyGeomResult(result) {
+      spaceResult = result && result.ok ? result : null;
+      if (!viewer) return;
+      if (!spaceResult) {
+        viewer.setSpatialActive(false);
+        viewer.setSpacesMesh(null);
+        viewer.setSkeleton([]);
+        selectedGeomId = null;
+        paintElemPanel();
+        paintButtons();
+        return;
+      }
+      viewer.setSpacesMesh(spaceResult);
+      viewer.setSkeleton(spaceResult.guides || []);
+      viewer.setSpatialActive(true);
+      if (els.showBranches) viewer.setShowBranches(els.showBranches.checked);
+      if (els.showSpaces) viewer.setShowSpaces(els.showSpaces.checked);
+      if (els.displayMode && viewer.setDisplayMode) viewer.setDisplayMode(els.displayMode.value);
+      if (selectedGeomId && (!viewer.getDisplayMode || viewer.getDisplayMode() !== "surface")) {
+        viewer.setSelectedElement(selectedGeomId);
+      }
+      paintElemPanel();
+      paintButtons();
+    }
+
+    function findElement(id) {
+      if (!spaceResult || !spaceResult.elements) return null;
+      for (let i = 0; i < spaceResult.elements.length; i++) {
+        if (spaceResult.elements[i].id === id) return spaceResult.elements[i];
+      }
+      return null;
+    }
+
+    function paintElemPanel() {
+      const el = findElement(selectedGeomId);
+      if (els.elemEdit) els.elemEdit.classList.toggle("hidden", !el);
+      const moveOn = viewer && viewer.getElemGizmoMode && viewer.getElemGizmoMode() === "translate";
+      const rotOn = viewer && viewer.getElemGizmoMode && viewer.getElemGizmoMode() === "rotate";
+      if (els.elemMove) {
+        els.elemMove.classList.toggle("active", !!(el && moveOn));
+        els.elemMove.classList.toggle("primary", !!(el && moveOn));
+        els.elemMove.classList.toggle("ghost", !(el && moveOn));
+      }
+      if (els.elemRotate) {
+        els.elemRotate.classList.toggle("active", !!(el && rotOn));
+        els.elemRotate.classList.toggle("primary", !!(el && rotOn));
+        els.elemRotate.classList.toggle("ghost", !(el && rotOn));
+      }
+      if (!el) return;
+      applyingGeom = true;
+      if (els.elemWidthWrap) els.elemWidthWrap.classList.remove("hidden");
+      if (els.elemThickWrap) els.elemThickWrap.classList.remove("hidden");
+      if (els.elemLenWrap) els.elemLenWrap.classList.remove("hidden");
+      const label =
+        el.kind === "duplicate"
+          ? "Copy"
+          : el.kind === "junction"
+            ? "Junction"
+            : "Bar " + (el.source && el.source.runIndex != null ? el.source.runIndex + 1 : "");
+      if (els.elemStatus) {
+        els.elemStatus.textContent =
+          label + " · " + Number(el.length).toFixed(2) + "' × " + Number(el.width).toFixed(2) + "' × " + Number(el.thickness).toFixed(2) + "'";
+      }
+      const flex = geomFlexKey;
+      if (!flex || flex === "width") {
+        if (els.elemWidth) els.elemWidth.value = String(el.width);
+        if (els.elemWidthVal) els.elemWidthVal.textContent = Number(el.width).toFixed(2) + "'";
+      }
+      if (!flex || flex === "thickness") {
+        if (els.elemThick) els.elemThick.value = String(el.thickness);
+        if (els.elemThickVal) els.elemThickVal.textContent = Number(el.thickness).toFixed(2) + "'";
+      }
+      if (!flex || flex === "length") {
+        if (els.elemLen) els.elemLen.value = String(el.length);
+        if (els.elemLenVal) els.elemLenVal.textContent = Number(el.length).toFixed(2) + "'";
+      }
+      if (!flex) {
+        if (els.elemX) els.elemX.value = Number(el.center.x).toFixed(2);
+        if (els.elemY) els.elemY.value = Number(el.center.y).toFixed(2);
+        if (els.elemZ) els.elemZ.value = Number(el.center.z).toFixed(2);
+        if (els.elemRx) els.elemRx.value = Number(el.rx || 0).toFixed(1);
+        if (els.elemRy) els.elemRy.value = Number(el.ry || 0).toFixed(1);
+        if (els.elemRz) els.elemRz.value = Number(el.rz || 0).toFixed(1);
+      }
+      applyingGeom = false;
+    }
+
+    function selectGeom(id) {
+      selectedGeomId = id || null;
+      if (selectedGeomId && editMode !== "idle") setEditMode("idle");
+      if (viewer && viewer.setSelectedElement) viewer.setSelectedElement(selectedGeomId);
+      paintElemPanel();
+      paintViewButtons();
+    }
+
+    function rebuildGeometry() {
+      if (!spaceResult || !spaceResult.graph || !global.D7GridSpaces) return;
+      try {
+        const next = global.D7GridSpaces.rebuild(spaceResult.graph, geomOpts());
+        applyGeomResult(next);
+        setSpaceStatus(geomStatusText(next), "active");
+      } catch (err) {
+        setSpaceStatus("Rebuild failed: " + (err && err.message ? err.message : String(err)), "error");
+      }
+    }
+
+    function runGenerateSpaces() {
+      if (!global.D7GridSpaces) {
+        setSpaceStatus("Geometry generator did not load.", "error");
+        return;
+      }
+      if (!viewer) ensureViewer();
+      if (!sim.branches.length) {
+        setSpaceStatus("Grow a 3D branching network first.", "error");
+        return;
+      }
+      const box = viewer.getSelectionBox();
+      const token = (runGenerateSpaces._token = (runGenerateSpaces._token || 0) + 1);
+      spaceBusy = true;
+      paintButtons();
+      setSpaceStatus("Building rectangular solids…");
+      requestAnimationFrame(() => {
+        if (token !== runGenerateSpaces._token) return;
+        let result;
+        try {
+          result = global.D7GridSpaces.generate(sim.nodes, sim.branches, box, geomOpts());
+        } catch (err) {
+          spaceBusy = false;
+          paintButtons();
+          setSpaceStatus("Generate failed: " + (err && err.message ? err.message : String(err)), "error");
+          return;
+        }
+        spaceBusy = false;
+        if (!result || !result.ok) {
+          clearSpacePack();
+          setSpaceStatus((result && result.error) || "Could not build geometry from this chunk.", "error");
+          paintButtons();
+          return;
+        }
+        applyGeomResult(result);
+        nextDupId = nextDupFromStore();
+        geomHist = [];
+        geomFuture = [];
+        if (selectedGeomId && !findElement(selectedGeomId)) selectGeom(null);
+        setSpaceStatus(geomStatusText(result), "active");
+        paintButtons();
+      });
+    }
+
     function applyLoadedGrid(grid, keepRoots) {
       const rootTargets = keepRoots
-        ? sim.roots.map((id) => sim.nodeById.get(id)).filter(Boolean)
+        ? (rootPlacements.length
+            ? rootPlacements.slice()
+            : sim.roots.map((id) => sim.nodeById.get(id)).filter(Boolean))
         : [];
       sim.grid = grid;
       gridError = null;
@@ -2063,21 +3795,27 @@
       sim.nextNodeId = 1;
       sim.nextBranchId = 1;
       sim.nextRootIndex = 1;
+      networkOutdated = false;
       if (viewer) viewer.setGrid(grid);
       if (rootTargets.length) {
         for (let i = 0; i < rootTargets.length; i++) {
-          addRootAt(sim, rootTargets[i].x, rootTargets[i].y, rootTargets[i].z);
+          const node = addRootAt(sim, rootTargets[i].x, rootTargets[i].y, rootTargets[i].z);
+          if (!node) continue;
+          if (rootTargets[i].uid != null) node.uid = rootTargets[i].uid;
+          if (rootTargets[i].rootIndex) node.rootIndex = rootTargets[i].rootIndex;
         }
       }
       if (!sim.roots.length) {
         const def = defaultRootPosition(grid);
-        if (els.rootX) els.rootX.value = def.x.toFixed(1);
-        if (els.rootY) els.rootY.value = def.y.toFixed(1);
-        if (els.rootZ) els.rootZ.value = def.z.toFixed(1);
+        writeRootFields(def);
         ensureDefaultRoot(sim);
       }
-      selectedRootId = sim.roots[0] || null;
+      syncPlacementsFromSim();
+      selectedRootId = rootPlacements[0] ? rootPlacements[0].uid : null;
+      if (selectedRootId) writeRootFields(selectedPlacement());
       generateAttractors(sim);
+      setEditMode("idle");
+      clearSpacePack();
       paintRoots();
       paintButtons();
       syncViewer();
@@ -2152,14 +3890,144 @@
       if (els.showH) viewer.setShowHorizontal(els.showH.checked);
       if (els.showV) viewer.setShowVertical(els.showV.checked);
       if (els.showAttractors) viewer.setShowAttractors(els.showAttractors.checked);
+      if (els.showRoots && viewer.setShowRoots) viewer.setShowRoots(els.showRoots.checked);
+      viewer.setBoxGizmoLocked(editMode !== "idle");
       stage.addEventListener("pointerdown", (event) => {
         if (event.button !== 0) return;
+        const ae = document.activeElement;
+        if (ae && ae !== document.body && !stage.contains(ae) && typeof ae.blur === "function") ae.blur();
+        const canvas = stage.querySelector("canvas");
+        if (canvas && typeof canvas.focus === "function") canvas.focus({ preventScroll: true });
+        ptrDown = {
+          x: event.clientX,
+          y: event.clientY,
+          gizmo: !!(viewer.gizmoBusy && viewer.gizmoBusy()),
+        };
+      });
+      stage.addEventListener("pointermove", (event) => {
+        if (editMode === "place") updatePlaceHover(event.clientX, event.clientY);
+      });
+      stage.addEventListener("pointerup", (event) => {
+        if (event.button !== 0) return;
+        const start = ptrDown;
+        ptrDown = null;
+        if (!start) return;
+        if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 6) return;
+        if (start.gizmo) return;
+        if (editMode === "place") {
+          updatePlaceHover(event.clientX, event.clientY);
+          if (!placeHover || placeHover.occupied) {
+            setStatus("Pick a free grid node.", "error");
+            return;
+          }
+          const added = addRootAtSnap(placeHover.x, placeHover.y, placeHover.z);
+          if (!added) return;
+          selectedRootId = added.uid;
+          writeRootFields(added);
+          paintRoots();
+          syncViewer();
+          paintStatus();
+          setStatus(
+            networkOutdated
+              ? "Root added. Previous branch network is outdated. Attractors kept. Click another node or Start to grow."
+              : "Root R" + added.rootIndex + " placed. Click to add another, or Move Root.",
+            "active"
+          );
+          return;
+        }
+        if (spaceResult && editMode === "idle" && viewer.pickGeometry) {
+          const geomId = viewer.pickGeometry(event.clientX, event.clientY);
+          if (geomId) {
+            selectGeom(geomId);
+            return;
+          }
+          if (selectedGeomId) {
+            selectGeom(null);
+            return;
+          }
+        }
         const id = viewer.pickRoot(event.clientX, event.clientY);
         if (id == null) return;
-        selectedRootId = id;
-        paintRoots();
-        syncViewer();
+        selectRoot(id, true);
       });
+      stage.addEventListener("dblclick", () => {
+        if (editMode !== "idle") return;
+        viewer.toggleGizmoMode();
+        paintBoxMode();
+        paintViewButtons();
+      });
+      viewer.setOnSelectionChange(() => {
+        paintSelection();
+      });
+      if (viewer.setOnSelectionEnd) {
+        viewer.setOnSelectionEnd(() => {
+          paintSelection();
+          if (spaceResult) runGenerateSpaces();
+        });
+      }
+      if (viewer.setOnRootGizmoChange) {
+        viewer.setOnRootGizmoChange((pos) => {
+          if (hasNetwork()) {
+            pauseGrowth();
+            networkOutdated = true;
+          }
+          if (!sim.grid) return;
+          const snap = snapFreeAt(pos.x, pos.y, pos.z, selectedRootId);
+          if (snap) {
+            viewer.setPlacePreview(
+              { x: snap.x, y: snap.y, z: snap.z, occupied: false },
+              nearbyGridNodes(sim.grid, snap.x, snap.y, snap.z, 2.3, 36)
+            );
+            writeRootFields(snap);
+          }
+        });
+      }
+      if (viewer.setOnRootGizmoEnd) {
+        viewer.setOnRootGizmoEnd((pos) => {
+          if (viewer.setPlacePreview) viewer.setPlacePreview(null, []);
+          const moved = moveSelectedTo(pos.x, pos.y, pos.z);
+          paintRoots();
+          syncViewer();
+          paintStatus();
+          if (moved) {
+            setStatus(
+              networkOutdated
+                ? "Root moved. Previous branch network is outdated. Attractors kept. Start to grow from the new roots."
+                : "Root R" +
+                    moved.rootIndex +
+                    " · " +
+                    moved.x.toFixed(1) +
+                    ", " +
+                    moved.y.toFixed(1) +
+                    ", " +
+                    moved.z.toFixed(1),
+              "active"
+            );
+          }
+        });
+      }
+      if (viewer.setOnElemGizmoChange) {
+        viewer.setOnElemGizmoChange((pose, _rejected, mode) => {
+          if (!pose || applyingGeom) return;
+          applyingGeom = true;
+          if (els.elemX) els.elemX.value = Number(pose.cx).toFixed(2);
+          if (els.elemY) els.elemY.value = Number(pose.cy).toFixed(2);
+          if (els.elemZ) els.elemZ.value = Number(pose.cz).toFixed(2);
+          if (mode === "rotate") {
+            if (els.elemRx) els.elemRx.value = Number(pose.rx).toFixed(1);
+            if (els.elemRy) els.elemRy.value = Number(pose.ry).toFixed(1);
+            if (els.elemRz) els.elemRz.value = Number(pose.rz).toFixed(1);
+          }
+          applyingGeom = false;
+        });
+      }
+      if (viewer.setOnElemGizmoEnd) {
+        viewer.setOnElemGizmoEnd((pose, mode) => {
+          if (!selectedGeomId || !pose) return;
+          pushGeomHist();
+          commitElemPose(pose, mode);
+        });
+      }
       return viewer;
     }
 
@@ -2177,6 +4045,91 @@
     bindVal(els.kill, els.killVal, (v) => `${Number(v).toFixed(1)}'`);
     bindVal(els.speed, els.speedVal, (v) => `${Math.round(Number(v))}/s`);
     bindVal(els.spacing, els.spacingVal, (v) => `${Number(v).toFixed(1)}'`);
+    bindVal(els.width, els.widthVal, (v) => `${Number(v).toFixed(2)}'`);
+    bindVal(els.thickness, els.thicknessVal, (v) => `${Number(v).toFixed(2)}'`);
+    bindVal(els.junction, els.junctionVal, (v) => `${Number(v).toFixed(2)}'`);
+
+    const GRID_SLIDER_BOUNDS = [
+      { slider: "grid3dSpacing", min: "grid3dSpacingMin", max: "grid3dSpacingMax", hardMin: 0.5, hardMax: 20 },
+      { slider: "grid3dAttractorCount", min: "grid3dAttractorCountMin", max: "grid3dAttractorCountMax", hardMin: 1, hardMax: 20000 },
+      { slider: "grid3dInfluence", min: "grid3dInfluenceMin", max: "grid3dInfluenceMax", hardMin: 0.1, hardMax: 40 },
+      { slider: "grid3dKill", min: "grid3dKillMin", max: "grid3dKillMax", hardMin: 0.1, hardMax: 40 },
+      { slider: "grid3dSpeed", min: "grid3dSpeedMin", max: "grid3dSpeedMax", hardMin: 1, hardMax: 120 },
+      { slider: "grid3dWidth", min: "grid3dWidthMin", max: "grid3dWidthMax", hardMin: 0.05, hardMax: 40 },
+      { slider: "grid3dThickness", min: "grid3dThicknessMin", max: "grid3dThicknessMax", hardMin: 0.05, hardMax: 40 },
+      { slider: "grid3dJunction", min: "grid3dJunctionMin", max: "grid3dJunctionMax", hardMin: 0.05, hardMax: 40 },
+      { slider: "grid3dElemWidth", min: "grid3dElemWidthMin", max: "grid3dElemWidthMax", hardMin: 0.05, hardMax: 40 },
+      { slider: "grid3dElemThick", min: "grid3dElemThickMin", max: "grid3dElemThickMax", hardMin: 0.05, hardMax: 40 },
+      { slider: "grid3dElemLen", min: "grid3dElemLenMin", max: "grid3dElemLenMax", hardMin: 0.05, hardMax: 40 },
+    ];
+
+    function saveGridSliderBounds() {
+      const stored = {};
+      for (let i = 0; i < GRID_SLIDER_BOUNDS.length; i++) {
+        const item = GRID_SLIDER_BOUNDS[i];
+        const slider = document.getElementById(item.slider);
+        if (!slider) continue;
+        stored[item.slider] = { min: slider.min, max: slider.max };
+      }
+      try {
+        localStorage.setItem("d7-grid3d-slider-bounds", JSON.stringify(stored));
+      } catch (_) {
+        /* ignore quota */
+      }
+    }
+
+    function applyGridSliderBound(item, silent) {
+      const slider = document.getElementById(item.slider);
+      const minEl = document.getElementById(item.min);
+      const maxEl = document.getElementById(item.max);
+      if (!slider || !minEl || !maxEl) return;
+      const prev = Number(slider.value);
+      let min = Number(minEl.value);
+      let max = Number(maxEl.value);
+      if (!Number.isFinite(min)) min = Number(slider.min);
+      if (!Number.isFinite(max)) max = Number(slider.max);
+      min = Math.max(item.hardMin, min);
+      max = Math.min(item.hardMax, max);
+      if (max <= min) max = min + (Number(slider.step) || 0.05);
+      minEl.value = String(min);
+      maxEl.value = String(max);
+      slider.min = String(min);
+      slider.max = String(max);
+      let value = Number(slider.value);
+      if (value < min) value = min;
+      if (value > max) value = max;
+      slider.value = String(value);
+      saveGridSliderBounds();
+      if (value !== prev) slider.dispatchEvent(new Event("input", { bubbles: true }));
+      if (!silent && value !== prev) slider.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    function initGridSliderBounds() {
+      let stored = {};
+      try {
+        stored = JSON.parse(localStorage.getItem("d7-grid3d-slider-bounds") || "{}");
+      } catch (_) {
+        stored = {};
+      }
+      for (let i = 0; i < GRID_SLIDER_BOUNDS.length; i++) {
+        const item = GRID_SLIDER_BOUNDS[i];
+        const slider = document.getElementById(item.slider);
+        const minEl = document.getElementById(item.min);
+        const maxEl = document.getElementById(item.max);
+        if (!slider || !minEl || !maxEl) continue;
+        const saved = stored[item.slider];
+        if (saved) {
+          minEl.value = saved.min;
+          maxEl.value = saved.max;
+        } else {
+          minEl.value = slider.min;
+          maxEl.value = slider.max;
+        }
+        applyGridSliderBound(item, true);
+        minEl.addEventListener("change", () => applyGridSliderBound(item, false));
+        maxEl.addEventListener("change", () => applyGridSliderBound(item, false));
+      }
+    }
 
     if (els.showH) {
       els.showH.addEventListener("change", () => {
@@ -2193,6 +4146,302 @@
         if (viewer) viewer.setShowAttractors(els.showAttractors.checked);
       });
     }
+    if (els.showRoots) {
+      els.showRoots.addEventListener("change", () => {
+        if (viewer && viewer.setShowRoots) viewer.setShowRoots(els.showRoots.checked);
+        updateRootGizmo();
+      });
+    }
+    if (els.showBranches) {
+      els.showBranches.addEventListener("change", () => {
+        if (viewer) viewer.setShowBranches(els.showBranches.checked);
+      });
+    }
+    if (els.showSpaces) {
+      els.showSpaces.addEventListener("change", () => {
+        if (viewer) viewer.setShowSpaces(els.showSpaces.checked);
+      });
+    }
+    if (els.displayMode) {
+      els.displayMode.addEventListener("change", () => {
+        const mode = els.displayMode.value === "surface" ? "surface" : "solids";
+        if (mode === "surface") selectGeom(null);
+        if (viewer && viewer.setDisplayMode) viewer.setDisplayMode(mode);
+        if (spaceResult) {
+          setSpaceStatus(geomStatusText(spaceResult), "active");
+        }
+      });
+    }
+    if (els.showSelBox) {
+      els.showSelBox.addEventListener("change", () => {
+        if (viewer) viewer.setShowSelectionBox(els.showSelBox.checked);
+      });
+    }
+    if (els.hideOutside) {
+      els.hideOutside.addEventListener("change", () => {
+        if (viewer && viewer.setHideOutsideSelection) viewer.setHideOutsideSelection(els.hideOutside.checked);
+      });
+    }
+    if (els.boxMove) {
+      els.boxMove.addEventListener("click", () => setBoxMode("translate"));
+    }
+    if (els.boxScale) {
+      els.boxScale.addEventListener("click", () => setBoxMode("scale"));
+    }
+    if (els.generateSpaces) {
+      els.generateSpaces.addEventListener("click", () => {
+        runGenerateSpaces();
+      });
+    }
+    function onGlobalGeom() {
+      if (!spaceResult) return;
+      rebuildGeometry();
+    }
+    if (els.width) {
+      els.width.addEventListener("input", onGlobalGeom);
+      els.width.addEventListener("change", onGlobalGeom);
+    }
+    if (els.thickness) {
+      els.thickness.addEventListener("input", onGlobalGeom);
+      els.thickness.addEventListener("change", onGlobalGeom);
+    }
+    if (els.junction) {
+      els.junction.addEventListener("input", onGlobalGeom);
+      els.junction.addEventListener("change", onGlobalGeom);
+    }
+    function onElemGeom(dim) {
+      if (applyingGeom || !selectedGeomId) return;
+      if (dim !== "width" && dim !== "thickness" && dim !== "length") return;
+      const el = findElement(selectedGeomId);
+      if (!el) return;
+      if (!geomUndoOpen) {
+        pushGeomHist();
+        geomUndoOpen = true;
+      }
+      const input = dim === "width" ? els.elemWidth : dim === "thickness" ? els.elemThick : els.elemLen;
+      const patch = {};
+      patch[dim] = input ? Number(input.value) : el[dim];
+      geomFlexId = el.id;
+      geomFlexKey = dim;
+      mergeOverride(el.id, patch);
+      rebuildGeometry();
+      const next = findElement(el.id);
+      if (next) {
+        const actual = dim === "width" ? next.width : dim === "thickness" ? next.thickness : next.length;
+        const sync = {};
+        sync[dim] = actual;
+        mergeOverride(el.id, sync);
+      }
+      geomFlexId = null;
+      geomFlexKey = null;
+    }
+
+    function onElemTransform(kind) {
+      if (applyingGeom || !selectedGeomId) return;
+      const el = findElement(selectedGeomId);
+      if (!el) return;
+      pushGeomHist();
+      const patch = {};
+      if (kind !== "rotate") {
+        patch.cx = els.elemX ? Number(els.elemX.value) : el.center.x;
+        patch.cy = els.elemY ? Number(els.elemY.value) : el.center.y;
+        patch.cz = els.elemZ ? Number(els.elemZ.value) : el.center.z;
+      }
+      if (kind !== "position") {
+        patch.rx = els.elemRx ? Number(els.elemRx.value) : el.rx || 0;
+        patch.ry = els.elemRy ? Number(els.elemRy.value) : el.ry || 0;
+        patch.rz = els.elemRz ? Number(els.elemRz.value) : el.rz || 0;
+      }
+      mergeOverride(el.id, patch);
+      rebuildGeometry();
+    }
+
+    function commitElemPose(pose, mode) {
+      if (!selectedGeomId || !pose) return;
+      const patch = { cx: pose.cx, cy: pose.cy, cz: pose.cz };
+      if (mode === "rotate") {
+        patch.rx = pose.rx;
+        patch.ry = pose.ry;
+        patch.rz = pose.rz;
+      }
+      mergeOverride(selectedGeomId, patch);
+      rebuildGeometry();
+    }
+
+    function duplicateSelected() {
+      const el = findElement(selectedGeomId);
+      if (!el) return;
+      pushGeomHist();
+      const id = "d:" + nextDupId++;
+      const pose = capturePose(el);
+      pose.cx += 1;
+      pose.dup = true;
+      pose._reset = JSON.parse(JSON.stringify(pose));
+      geomOverrides[id] = pose;
+      rebuildGeometry();
+      selectGeom(id);
+    }
+
+    function deleteSelectedBox() {
+      if (!selectedGeomId) return;
+      const el = findElement(selectedGeomId);
+      if (!el) return;
+      pushGeomHist();
+      mergeOverride(selectedGeomId, { deleted: true });
+      const gone = selectedGeomId;
+      selectGeom(null);
+      rebuildGeometry();
+      if (findElement(gone)) selectGeom(gone);
+    }
+
+    function resetSelectedBox() {
+      if (!selectedGeomId) return;
+      const ov = geomOverrides[selectedGeomId];
+      pushGeomHist();
+      if (ov && ov.dup && ov._reset) {
+        geomOverrides[selectedGeomId] = JSON.parse(JSON.stringify(ov._reset));
+        geomOverrides[selectedGeomId].dup = true;
+        geomOverrides[selectedGeomId]._reset = JSON.parse(JSON.stringify(ov._reset));
+      } else if (ov && ov.dup) {
+        delete geomOverrides[selectedGeomId];
+        selectGeom(null);
+      } else {
+        delete geomOverrides[selectedGeomId];
+      }
+      rebuildGeometry();
+    }
+
+    function resetAllGeometry() {
+      if (!spaceResult) return;
+      pushGeomHist();
+      geomOverrides = {};
+      nextDupId = 1;
+      selectGeom(null);
+      rebuildGeometry();
+    }
+    [
+      ["elemWidth", "width"],
+      ["elemThick", "thickness"],
+      ["elemLen", "length"],
+    ].forEach((pair) => {
+      const input = els[pair[0]];
+      const dim = pair[1];
+      if (!input) return;
+      input.addEventListener("pointerdown", () => {
+        if (!geomUndoOpen) {
+          pushGeomHist();
+          geomUndoOpen = true;
+        }
+      });
+      input.addEventListener("input", () => onElemGeom(dim));
+      input.addEventListener("change", () => {
+        onElemGeom(dim);
+        geomUndoOpen = false;
+      });
+    });
+    ["elemX", "elemY", "elemZ"].forEach((key) => {
+      const input = els[key];
+      if (!input) return;
+      input.addEventListener("change", () => onElemTransform("position"));
+    });
+    ["elemRx", "elemRy", "elemRz"].forEach((key) => {
+      const input = els[key];
+      if (!input) return;
+      input.addEventListener("change", () => onElemTransform("rotate"));
+    });
+    if (els.elemMove) {
+      els.elemMove.addEventListener("click", () => {
+        if (!selectedGeomId || !viewer || !viewer.setElemGizmoMode) return;
+        viewer.setElemGizmoMode("translate");
+        paintElemPanel();
+        paintViewButtons();
+      });
+    }
+    if (els.elemRotate) {
+      els.elemRotate.addEventListener("click", () => {
+        if (!selectedGeomId || !viewer || !viewer.setElemGizmoMode) return;
+        viewer.setElemGizmoMode("rotate");
+        paintElemPanel();
+        paintViewButtons();
+      });
+    }
+    if (els.elemDup) els.elemDup.addEventListener("click", duplicateSelected);
+    if (els.elemDel) els.elemDel.addEventListener("click", deleteSelectedBox);
+    if (els.elemClear) {
+      els.elemClear.addEventListener("click", resetSelectedBox);
+    }
+    if (els.resetGeom) els.resetGeom.addEventListener("click", resetAllGeometry);
+    function surfaceExportResult(result) {
+      return {
+        ok: true,
+        graph: result.graph,
+        box: result.box,
+        guides: result.guides,
+        positions: result.surfacePositions,
+        indices: result.surfaceIndices,
+        elements: [
+          {
+            id: "surface",
+            kind: "surface",
+            closedBox: false,
+            meshClosed: false,
+            positions: result.surfacePositions,
+            indices: result.surfaceIndices,
+          },
+        ],
+      };
+    }
+
+    async function exportSpace(kind) {
+      if (!spaceResult || !spaceResult.ok) {
+        setSpaceStatus("Generate Geometry first.", "error");
+        return;
+      }
+      const lib = global.D7SpatialExport;
+      if (!lib) {
+        setSpaceStatus("Exporter did not load.", "error");
+        return;
+      }
+      try {
+        const surfaceOn = (viewer && viewer.getDisplayMode && viewer.getDisplayMode() === "surface") || (els.displayMode && els.displayMode.value === "surface");
+        const payload = surfaceOn && spaceResult.surfacePositions ? surfaceExportResult(spaceResult) : spaceResult;
+        if (kind === "3dm") {
+          const fn = lib.exportGridSpace3dm || lib.exportGridSurfaces3dm;
+          if (!fn) {
+            setSpaceStatus("3DM export is not available.", "error");
+            return;
+          }
+          setSpaceStatus("Writing Rhino 3DM…");
+          const filename = surfaceOn ? "D7_Grid_Surface.3dm" : "D7_Grid_Rects.3dm";
+          const out = await fn(payload, filename);
+          const kindLabel = out && out.kind ? out.kind : surfaceOn ? "surface" : "solids";
+          setSpaceStatus(
+            "Exported " +
+              filename +
+              " · " +
+              kindLabel +
+              (out && out.closed ? " · " + out.closed + " closed Breps" : "") +
+              (out && out.meshCount ? " · " + out.meshCount + " closed meshes" : "") +
+              " · BRANCH_GUIDES · units = Feet",
+            "active"
+          );
+        } else {
+          setSpaceStatus("Writing OBJ mesh…");
+          const toObj = lib.gridSpaceToOBJ || lib.gridSurfacesToOBJ;
+          const filename = surfaceOn ? "D7_Grid_Surface.obj" : "D7_Grid_Rects.obj";
+          const text = toObj(payload, surfaceOn ? "LINE_SURFACE" : "RECT_SOLIDS");
+          lib.exportOBJ(text, filename);
+          setSpaceStatus(
+            "Exported " + filename + (surfaceOn ? " · thin branch surfaces." : " · closed rectangular meshes.") + " 1 OBJ unit = 1 foot.",
+            "active"
+          );
+        }
+      } catch (err) {
+        setSpaceStatus("Export failed: " + (err && err.message ? err.message : String(err)), "error");
+      }
+    }
+    if (els.export3dm) els.export3dm.addEventListener("click", () => exportSpace("3dm"));
+    if (els.exportObj) els.exportObj.addEventListener("click", () => exportSpace("obj"));
     if (els.orientation) {
       els.orientation.addEventListener("change", () => {
         orientation = els.orientation.value || "both";
@@ -2224,43 +4473,138 @@
           setStatus(gridError || "SVG grid is not loaded.", "error");
           return;
         }
-        const p = readRootFields();
-        const node = addRootAt(sim, p.x, p.y, p.z);
-        if (!node) {
-          setStatus("That grid node already has a root.", "error");
+        if (editMode === "place") {
+          setEditMode("idle");
+          setStatus("Root placement off.");
           return;
         }
-        selectedRootId = node.id;
-        if (els.rootX) els.rootX.value = node.x.toFixed(1);
-        if (els.rootY) els.rootY.value = node.y.toFixed(1);
-        if (els.rootZ) els.rootZ.value = node.z.toFixed(1);
-        killNearNetwork(sim);
-        paintRoots();
-        syncViewer();
-        paintStatus();
+        setEditMode("place");
+        setStatus("Click a snap point on the 3D grid to add a root. Esc cancel.", "active");
+      });
+    }
+    if (els.moveRoot) {
+      els.moveRoot.addEventListener("click", () => {
+        if (!sim.grid) {
+          setStatus(gridError || "SVG grid is not loaded.", "error");
+          return;
+        }
+        if (editMode === "move") {
+          setEditMode("idle");
+          return;
+        }
+        if (!selectedPlacement()) {
+          setStatus("Select a root, then click Move Root — or click a yellow root in the viewport.", "error");
+          return;
+        }
+        setEditMode("move");
+        setStatus("Drag the gizmo in X, Y, and Z. The root snaps to the nearest grid node.", "active");
       });
     }
     if (els.deleteRoot) {
       els.deleteRoot.addEventListener("click", () => {
         if (!selectedRootId) return;
-        if (sim.roots.length <= 1 && sim.branches.length === 0) {
-          setStatus("Keep at least one root, or Reset Simulation first.", "error");
-          return;
-        }
-        deleteRoot(sim, selectedRootId);
-        selectedRootId = sim.roots[0] || null;
-        paintRoots();
-        syncViewer();
-        paintStatus();
+        removeSelectedRoot();
       });
     }
+    function onRootCoordinateChange() {
+      if (applyingFields) return;
+      if (!selectedPlacement()) return;
+      const p = readRootFields();
+      const moved = moveSelectedTo(p.x, p.y, p.z);
+      paintRoots();
+      syncViewer();
+      paintStatus();
+      if (moved) {
+        setStatus(
+          networkOutdated
+            ? "Root moved. Previous branch network is outdated. Attractors kept. Start to grow from the new roots."
+            : "Root R" +
+                moved.rootIndex +
+                " · " +
+                moved.x.toFixed(1) +
+                ", " +
+                moved.y.toFixed(1) +
+                ", " +
+                moved.z.toFixed(1),
+          "active"
+        );
+      }
+    }
+    [els.rootX, els.rootY, els.rootZ].forEach((input) => {
+      if (!input) return;
+      input.addEventListener("change", onRootCoordinateChange);
+    });
+    function isTextField(el) {
+      if (!el || el === document.body || el === document.documentElement) return false;
+      if (el.isContentEditable) return true;
+      const tag = String(el.tagName || "").toLowerCase();
+      if (tag === "textarea" || tag === "select") return true;
+      if (tag !== "input") return false;
+      const type = String(el.type || "text").toLowerCase();
+      return (
+        type === "text" ||
+        type === "number" ||
+        type === "search" ||
+        type === "password" ||
+        type === "email" ||
+        type === "url" ||
+        type === ""
+      );
+    }
+
+    window.addEventListener(
+      "keydown",
+      (event) => {
+        const view = document.getElementById("grid3dView");
+        if (!view || view.classList.contains("hidden")) return;
+        if (event.key === "Escape") {
+          if (editMode !== "idle") {
+            setEditMode("idle");
+            setStatus("Root editing off.");
+            event.preventDefault();
+          } else if (selectedGeomId) {
+            selectGeom(null);
+            event.preventDefault();
+          }
+          return;
+        }
+        const typing = isTextField(event.target) || isTextField(document.activeElement);
+        const wantUndo =
+          (event.ctrlKey || event.metaKey) &&
+          !event.altKey &&
+          (event.code === "KeyZ" || String(event.key).toLowerCase() === "z");
+        const wantDelete =
+          event.key === "Delete" || event.key === "Del" || event.code === "Delete";
+        const wantBackspace = event.key === "Backspace" || event.code === "Backspace";
+        if (wantUndo && !typing) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.shiftKey) redoGeom();
+          else undoGeom();
+          return;
+        }
+        if ((wantDelete || wantBackspace) && !typing && selectedGeomId) {
+          event.preventDefault();
+          event.stopPropagation();
+          deleteSelectedBox();
+          return;
+        }
+        if (wantDelete && !typing && selectedRootId) {
+          event.preventDefault();
+          event.stopPropagation();
+          removeSelectedRoot();
+        }
+      },
+      true
+    );
     if (els.start) els.start.addEventListener("click", startGrowth);
     if (els.pause) els.pause.addEventListener("click", pauseGrowth);
     if (els.reset) {
       els.reset.addEventListener("click", () => {
         pauseGrowth();
-        resetGrowth(sim);
-        selectedRootId = sim.roots[0] || null;
+        applyPlacementsToSim();
+        selectedRootId = rootPlacements[0] ? rootPlacements[0].uid : null;
+        if (selectedRootId) writeRootFields(selectedPlacement());
         paintRoots();
         syncViewer();
         paintStatus();
@@ -2276,9 +4620,10 @@
         pauseGrowth();
         sim.seed = hash32(sim.seed + 7919) || 1;
         readParamsIntoSim();
-        resetGrowth(sim);
+        applyPlacementsToSim();
         generateAttractors(sim);
-        selectedRootId = sim.roots[0] || null;
+        selectedRootId = rootPlacements[0] ? rootPlacements[0].uid : null;
+        if (selectedRootId) writeRootFields(selectedPlacement());
         paintRoots();
         syncViewer();
         paintStatus();
@@ -2299,6 +4644,7 @@
         sim.attractorTarget = Number(els.attractorCount.value);
       });
     }
+    initGridSliderBounds();
 
     document.querySelectorAll("#grid3dViewBar .grid3d-view-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -2313,7 +4659,7 @@
     paintGridStats();
     loadDefaultGrid();
 
-    return {
+    const api = {
       show() {
         const v = ensureViewer();
         if (!v) return;
@@ -2323,6 +4669,15 @@
         if (els.showH) v.setShowHorizontal(els.showH.checked);
         if (els.showV) v.setShowVertical(els.showV.checked);
         if (els.showAttractors) v.setShowAttractors(els.showAttractors.checked);
+        if (els.showRoots && v.setShowRoots) v.setShowRoots(els.showRoots.checked);
+        if (els.showBranches) v.setShowBranches(els.showBranches.checked);
+        if (els.showSpaces) v.setShowSpaces(els.showSpaces.checked);
+        if (els.displayMode && v.setDisplayMode) v.setDisplayMode(els.displayMode.value);
+        if (els.showSelBox && v.setShowSelectionBox) v.setShowSelectionBox(els.showSelBox.checked);
+        if (els.hideOutside && v.setHideOutsideSelection) v.setHideOutsideSelection(els.hideOutside.checked);
+        if (spaceResult) applyGeomResult(spaceResult);
+        v.setBoxGizmoLocked(editMode !== "idle");
+        updateRootGizmo();
         syncViewer();
         paintViewButtons();
       },
@@ -2334,9 +4689,62 @@
         if (viewer) viewer.resize();
       },
       getSnapshot() {
+        sim.rootDrafts = rootPlacements;
         return snapshot(sim);
       },
+      applySnapshot(data) {
+        if (!data || !sim.grid) return false;
+        pauseGrowth();
+        if (data.seed) sim.seed = data.seed >>> 0;
+        if (data.attractorCount != null) sim.attractorTarget = data.attractorCount;
+        if (data.influence != null) sim.influence = data.influence;
+        if (data.kill != null) sim.kill = data.kill;
+        if (data.roots && data.roots.length) {
+          resetGrowth(sim, data.roots);
+          for (let i = 0; i < sim.roots.length && i < data.roots.length; i++) {
+            const n = sim.nodeById.get(sim.roots[i]);
+            if (n && data.roots[i].uid != null) n.uid = data.roots[i].uid;
+          }
+          syncPlacementsFromSim();
+        }
+        if (data.attractors && data.attractors.length) {
+          sim.attractors = data.attractors.map((a) => ({ x: a.x, y: a.y, z: a.z }));
+          sim.alive = data.attractors.map((a) => (a.alive === false ? 0 : 1));
+        }
+        networkOutdated = false;
+        selectedRootId = rootPlacements[0] ? rootPlacements[0].uid : null;
+        if (selectedRootId) writeRootFields(selectedPlacement());
+        paintRoots();
+        syncViewer();
+        paintStatus();
+        return true;
+      },
+      growSteps(n) {
+        if (!sim.grid) return 0;
+        readParamsIntoSim();
+        if (networkOutdated) applyPlacementsToSim();
+        if (!sim.roots.length) {
+          if (rootPlacements.length) applyPlacementsToSim();
+          else {
+            ensureDefaultRoot(sim);
+            syncPlacementsFromSim();
+          }
+        }
+        if (!sim.attractors.length) generateAttractors(sim);
+        const max = Math.max(1, Math.min(400, n || 120));
+        let steps = 0;
+        for (let i = 0; i < max; i++) {
+          if (!growStep(sim)) break;
+          steps += 1;
+        }
+        syncViewer();
+        paintStatus();
+        paintButtons();
+        return steps;
+      },
     };
+    global.D7GridGrowth.instance = api;
+    return api;
   }
 
   global.D7GridGrowth = {

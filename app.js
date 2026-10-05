@@ -5874,7 +5874,7 @@
       closePolygonDraft();
       return;
     }
-    if (event.key === "Delete" || event.key === "Backspace") {
+    if (appPage === "studio" && (event.key === "Delete" || event.key === "Backspace")) {
       if (selectedObstacleId != null) {
         event.preventDefault();
         deleteSelectedObstacle();

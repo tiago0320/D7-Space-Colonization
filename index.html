@@ -888,26 +888,56 @@
             Grid Layer Spacing
             <span class="value" id="grid3dSpacingVal">2.0'</span>
             <input id="grid3dSpacing" type="range" min="1" max="10" step="1" value="2" />
+            <span class="range-bounds">
+              <input id="grid3dSpacingMin" type="number" value="1" step="1" aria-label="Grid Layer Spacing minimum" />
+              <span>min</span>
+              <input id="grid3dSpacingMax" type="number" value="10" step="1" aria-label="Grid Layer Spacing maximum" />
+              <span>max</span>
+            </span>
           </label>
           <label class="ctrl" title="Attractors placed on unique 3D grid nodes.">
             Attractor Count
             <span class="value" id="grid3dAttractorCountVal">400</span>
             <input id="grid3dAttractorCount" type="range" min="50" max="2000" step="10" value="400" />
+            <span class="range-bounds">
+              <input id="grid3dAttractorCountMin" type="number" value="50" step="10" aria-label="Attractor Count minimum" />
+              <span>min</span>
+              <input id="grid3dAttractorCountMax" type="number" value="2000" step="10" aria-label="Attractor Count maximum" />
+              <span>max</span>
+            </span>
           </label>
           <label class="ctrl" title="How far an attractor can pull a growing node, in feet.">
             Influence Distance
             <span class="value" id="grid3dInfluenceVal">4.0'</span>
             <input id="grid3dInfluence" type="range" min="1" max="12" step="0.5" value="4" />
+            <span class="range-bounds">
+              <input id="grid3dInfluenceMin" type="number" value="1" step="0.5" aria-label="Influence Distance minimum" />
+              <span>min</span>
+              <input id="grid3dInfluenceMax" type="number" value="12" step="0.5" aria-label="Influence Distance maximum" />
+              <span>max</span>
+            </span>
           </label>
           <label class="ctrl" title="Attractors this close to the network are consumed, in feet.">
             Kill Distance
             <span class="value" id="grid3dKillVal">1.0'</span>
             <input id="grid3dKill" type="range" min="0.5" max="6" step="0.5" value="1" />
+            <span class="range-bounds">
+              <input id="grid3dKillMin" type="number" value="0.5" step="0.5" aria-label="Kill Distance minimum" />
+              <span>min</span>
+              <input id="grid3dKillMax" type="number" value="6" step="0.5" aria-label="Kill Distance maximum" />
+              <span>max</span>
+            </span>
           </label>
           <label class="ctrl" title="Colonization steps per second.">
             Growth Speed
             <span class="value" id="grid3dSpeedVal">8/s</span>
             <input id="grid3dSpeed" type="range" min="1" max="24" step="1" value="8" />
+            <span class="range-bounds">
+              <input id="grid3dSpeedMin" type="number" value="1" step="1" aria-label="Growth Speed minimum" />
+              <span>min</span>
+              <input id="grid3dSpeedMax" type="number" value="24" step="1" aria-label="Growth Speed maximum" />
+              <span>max</span>
+            </span>
           </label>
           <div class="row">
             <button id="grid3dGenerate" class="primary" type="button">Generate Attractors</button>
@@ -926,8 +956,12 @@
             <input id="grid3dShowV" type="checkbox" checked />
             Show Vertical Grid
           </label>
+          <label class="check">
+            <input id="grid3dShowRoots" type="checkbox" checked />
+            Show Roots
+          </label>
           <div class="section-head">Roots</div>
-          <p class="grid-status">Roots snap to the nearest node on the selected grid. A root can start on a horizontal or vertical plane.</p>
+          <p class="grid-status">Click Add Root, then click the 3D grid. Roots snap to nodes and can be moved in X, Y, and Z. Multiple roots grow at once.</p>
           <div class="space3d-xyz">
             <label class="ctrl">
               X
@@ -944,6 +978,9 @@
           </div>
           <div class="row">
             <button id="grid3dAddRoot" class="ghost" type="button">Add Root</button>
+            <button id="grid3dMoveRoot" class="ghost" type="button">Move Root</button>
+          </div>
+          <div class="row">
             <button id="grid3dDeleteRoot" class="ghost" type="button" disabled>Delete Selected Root</button>
           </div>
           <ul id="grid3dRootList" class="seed-list"></ul>
@@ -954,6 +991,159 @@
           </div>
           <div class="row">
             <button id="grid3dReset" class="ghost" type="button">Reset Simulation</button>
+          </div>
+          <div class="section-head">Rectangular Geometry</div>
+          <p class="grid-status">Place the cyan box on grown branches, then generate axis-aligned cube solids. Paths stay on a square module, turns become 90° steps, and touching cells merge into one box. Width is the module; thickness is the other side; junction size fattens forks. Boxes that cross the cyan selection are trimmed and capped so each solid stays closed. Thin Surfaces draws a zero-thickness strip along each branch; Width is the strip width.</p>
+          <p id="grid3dSpaceStatus" class="grid-status">Grow branches, then Generate Geometry.</p>
+          <div class="row">
+            <button id="grid3dBoxMove" class="ghost" type="button">Move Box</button>
+            <button id="grid3dBoxScale" class="ghost" type="button">Scale Box</button>
+          </div>
+          <div class="row">
+            <button id="grid3dGenerateSpaces" class="primary" type="button">Generate Geometry</button>
+            <button id="grid3dResetGeom" class="ghost" type="button">Reset Geometry</button>
+          </div>
+          <label class="ctrl">
+            Width
+            <span class="value" id="grid3dWidthVal">2.00'</span>
+            <input id="grid3dWidth" type="range" min="0.25" max="5" step="0.05" value="2" />
+            <span class="range-bounds">
+              <input id="grid3dWidthMin" type="number" value="0.25" step="0.05" aria-label="Width minimum" />
+              <span>min</span>
+              <input id="grid3dWidthMax" type="number" value="5" step="0.05" aria-label="Width maximum" />
+              <span>max</span>
+            </span>
+          </label>
+          <label class="ctrl">
+            Thickness
+            <span class="value" id="grid3dThicknessVal">2.00'</span>
+            <input id="grid3dThickness" type="range" min="0.25" max="5" step="0.05" value="2" />
+            <span class="range-bounds">
+              <input id="grid3dThicknessMin" type="number" value="0.25" step="0.05" aria-label="Thickness minimum" />
+              <span>min</span>
+              <input id="grid3dThicknessMax" type="number" value="5" step="0.05" aria-label="Thickness maximum" />
+              <span>max</span>
+            </span>
+          </label>
+          <label class="ctrl">
+            Junction Size
+            <span class="value" id="grid3dJunctionVal">2.00'</span>
+            <input id="grid3dJunction" type="range" min="0.5" max="5" step="0.05" value="2" />
+            <span class="range-bounds">
+              <input id="grid3dJunctionMin" type="number" value="0.5" step="0.05" aria-label="Junction Size minimum" />
+              <span>min</span>
+              <input id="grid3dJunctionMax" type="number" value="5" step="0.05" aria-label="Junction Size maximum" />
+              <span>max</span>
+            </span>
+          </label>
+          <div id="grid3dElemEdit" class="grid3d-elem-edit hidden">
+            <div class="section-head">Selected Box</div>
+            <p id="grid3dElemStatus" class="grid-status">Click a solid in the viewport.</p>
+            <div class="section-head">Dimensions</div>
+            <label class="ctrl" id="grid3dElemWidthWrap">
+              Width
+              <span class="value" id="grid3dElemWidthVal">1.50'</span>
+              <input id="grid3dElemWidth" type="range" min="0.25" max="5" step="0.05" value="1.5" />
+              <span class="range-bounds">
+                <input id="grid3dElemWidthMin" type="number" value="0.25" step="0.05" aria-label="Selected Width minimum" />
+                <span>min</span>
+                <input id="grid3dElemWidthMax" type="number" value="5" step="0.05" aria-label="Selected Width maximum" />
+                <span>max</span>
+              </span>
+            </label>
+            <label class="ctrl" id="grid3dElemThickWrap">
+              Thickness
+              <span class="value" id="grid3dElemThickVal">0.50'</span>
+              <input id="grid3dElemThick" type="range" min="0.25" max="3" step="0.05" value="0.5" />
+              <span class="range-bounds">
+                <input id="grid3dElemThickMin" type="number" value="0.25" step="0.05" aria-label="Selected Thickness minimum" />
+                <span>min</span>
+                <input id="grid3dElemThickMax" type="number" value="3" step="0.05" aria-label="Selected Thickness maximum" />
+                <span>max</span>
+              </span>
+            </label>
+            <label class="ctrl" id="grid3dElemLenWrap">
+              Length
+              <span class="value" id="grid3dElemLenVal">1.00'</span>
+              <input id="grid3dElemLen" type="range" min="0.25" max="20" step="0.05" value="1" />
+              <span class="range-bounds">
+                <input id="grid3dElemLenMin" type="number" value="0.25" step="0.05" aria-label="Selected Length minimum" />
+                <span>min</span>
+                <input id="grid3dElemLenMax" type="number" value="20" step="0.05" aria-label="Selected Length maximum" />
+                <span>max</span>
+              </span>
+            </label>
+            <div class="section-head">Transform</div>
+            <p class="grid-status">Position in feet</p>
+            <div class="space3d-xyz">
+              <label class="ctrl">
+                X
+                <input id="grid3dElemX" type="number" min="0" max="20" step="0.05" value="10" />
+              </label>
+              <label class="ctrl">
+                Y
+                <input id="grid3dElemY" type="number" min="0" max="20" step="0.05" value="10" />
+              </label>
+              <label class="ctrl">
+                Z
+                <input id="grid3dElemZ" type="number" min="0" max="20" step="0.05" value="10" />
+              </label>
+            </div>
+            <p class="grid-status">Rotation in degrees</p>
+            <div class="space3d-xyz">
+              <label class="ctrl">
+                Rot X
+                <input id="grid3dElemRx" type="number" min="-180" max="180" step="1" value="0" />
+              </label>
+              <label class="ctrl">
+                Rot Y
+                <input id="grid3dElemRy" type="number" min="-180" max="180" step="1" value="0" />
+              </label>
+              <label class="ctrl">
+                Rot Z
+                <input id="grid3dElemRz" type="number" min="-180" max="180" step="1" value="0" />
+              </label>
+            </div>
+            <div class="row">
+              <button id="grid3dElemMove" class="ghost" type="button">Move</button>
+              <button id="grid3dElemRotate" class="ghost" type="button">Rotate</button>
+            </div>
+            <div class="row">
+              <button id="grid3dElemDup" class="ghost" type="button">Duplicate Box</button>
+              <button id="grid3dElemDel" class="ghost" type="button">Delete Box</button>
+            </div>
+            <div class="row">
+              <button id="grid3dElemClear" class="ghost" type="button">Reset Selected Box</button>
+            </div>
+          </div>
+          <label class="check">
+            <input id="grid3dShowBranches" type="checkbox" />
+            Show Original Branches
+          </label>
+          <label class="check">
+            <input id="grid3dShowSpaces" type="checkbox" checked />
+            Show Geometry
+          </label>
+          <label class="ctrl" title="3D Rectangles are individual solids. Thin Surfaces follows each branch as a zero-thickness strip.">
+            Geometry Display
+            <select id="grid3dDisplayMode">
+              <option value="solids" selected>3D Rectangles</option>
+              <option value="surface">Thin Surfaces</option>
+            </select>
+          </label>
+          <label class="check">
+            <input id="grid3dShowSelBox" type="checkbox" checked />
+            Show Selection Box
+          </label>
+          <label class="check">
+            <input id="grid3dHideOutside" type="checkbox" />
+            Hide Outside Selection
+          </label>
+          <div class="row">
+            <button id="grid3dExport3dm" class="ghost" type="button" disabled>Export Rhino .3DM</button>
+          </div>
+          <div class="row">
+            <button id="grid3dExportObj" class="ghost" type="button" disabled>Export OBJ</button>
           </div>
         </aside>
         <div class="space3d-main">
@@ -994,6 +1184,7 @@
     <script src="saved-custom-grid-store.js"></script>
     <script src="spatial-custom-grid.js"></script>
     <script src="spatial-3d.js"></script>
+    <script src="spatial-grid-spaces.js"></script>
     <script src="spatial-grid-growth.js"></script>
     <script src="app.js"></script>
   </body>

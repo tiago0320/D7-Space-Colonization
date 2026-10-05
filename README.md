@@ -10,6 +10,9 @@ Studio web app for growing path-constrained space-colonization branches on impor
 - **Custom Grid** (3D Space): import an SVG, PNG, or JPG as a shared 20' × 20' reference lattice, extrude it, and persist the default locally
 - **Generate Variations**: turn a confirmed 2D chunk into six volumetric solid studies (A1–B3) without thickening the 2D lines
 - **3D Grid Growth**: grow space-colonization branches along the built-in SVG lattice in a 20' cube (Horizontal, Vertical, or Both), with display-only toggles for attractors and grid layers
+- **Rectangular Geometry** (3D Grid Growth): place the cyan selection box on grown branches, then **Generate Geometry** to build closed 3D rectangles. Edit one box at a time (width, thickness, length, move, rotate, duplicate, delete). Cuts at the selection are capped so each solid stays closed
+- **Thin Surfaces** (3D Grid Growth): switch **Geometry Display** from 3D Rectangles to zero-thickness strips along the same branches; Width is the strip width
+- **Grid Growth Export**: download the current rectangles or thin surfaces as OBJ or Rhino `.3dm` (units = feet), with branch guides on a separate layer
 - **Branch Solids**: loft rectangular solids along the selected 2D branches; space between branches stays void
 - **Section Loft Set**: add sequential morphed sections with preserved topology, then loft corresponding branches into 3D solids when you choose
 - **Saved 3D Variations**: store the exact 3D study (sections, edits, loft, voxels, display, camera) in IndexedDB and reopen it later
@@ -42,6 +45,7 @@ Then visit http://localhost:8000
 - **Custom Grid**: import SVG/PNG/JPG in 3D Space; the lattice is shared with Generate Variations and stays in this browser
 - **Generate Variations**: with a chunk selected, generate A1–B3 solids, then **Show Generated Solid** to inspect one
 - **3D Grid Growth** (tab): pick Horizontal / Vertical / Both, set **Grid Layer Spacing**, **Generate Attractors**, add a root, then **Start**. **Display Settings** hide attractors or H/V grid lines without changing growth. Use **ISO / FRONT / TOP** cameras
+- **Generate Geometry**: after growth, place the cyan box, then generate closed rectangles. Click a solid to edit it; **Geometry Display** switches 3D Rectangles vs Thin Surfaces. **Export Rhino .3DM** / **Export OBJ** download the active view
 - **Section Loft**: with a chunk selected, **Create Loft Set**, **Add Morphed Section**, inspect layers, then **Generate Loft**
 - **Saved 3D Variations**: **Save 3D Variation** stores the current study in this browser. **Open** restores it exactly; **Save** updates it, **Save As New** / **Duplicate** make independent copies. **Delete** does not touch 2D simulations or matrices
 - **Voxels**: **Generate Voxels** from the loft and remaining branch lines, including disconnected islands; **Voxel Resolution** sets the smallest cell count across 20'; **Voxel Fidelity** controls how readily larger cubes replace small ones

@@ -318,6 +318,19 @@
     return cube;
   }
 
+  function closedBrepFromMesh(rhino, positions, indices) {
+    if (!positions || !indices || indices.length < 12) return null;
+    const mesh = fillRhinoMesh(rhino, positions, indices);
+    if (!mesh) return null;
+    try {
+      if (rhino.Brep && rhino.Brep.createFromMesh) {
+        const brep = rhino.Brep.createFromMesh(mesh, true);
+        if (brep && (brep.isSolid || (brep.isValid && brep.isManifold))) return brep;
+      }
+    } catch (err) {}
+    return null;
+  }
+
   function closedBrepFromBoxCorners(rhino, corners) {
     if (!corners || corners.length < 8) return null;
     const origin = corners[2];
@@ -480,6 +493,194 @@
     downloadBlob(filename, new Blob([text], { type: "text/plain" }));
   }
 
+  function gridSpaceToOBJ(result, objectName) {
+    const elements = result && result.elements ? result.elements : [];
+    const lines = unitHeader("Connected rectangular solids. 1 unit = 1 foot.");
+    let vertOffset = 0;
+    let wrote = false;
+    for (let e = 0; e < elements.length; e++) {
+      const el = elements[e];
+      if (!el.positions || !el.indices || !el.indices.length) continue;
+      wrote = true;
+      const name = (objectName || "RECT_SOLIDS") + "_" + (el.kind || "solid") + "_" + String(el.id || e + 1).replace(/[^A-Za-z0-9_:-]/g, "_");
+      lines.push(`o ${name}`);
+      const pos = el.positions;
+      const idx = el.indices;
+      for (let i = 0; i < pos.length; i += 3) {
+        lines.push(`v ${fmt(pos[i])} ${fmt(pos[i + 1])} ${fmt(pos[i + 2])}`);
+      }
+      for (let i = 0; i < idx.length; i += 3) {
+        lines.push(`f ${idx[i] + 1 + vertOffset} ${idx[i + 1] + 1 + vertOffset} ${idx[i + 2] + 1 + vertOffset}`);
+      }
+      vertOffset += pos.length / 3;
+    }
+    if (wrote) return lines.join("\n") + "\n";
+    if (!result || !result.positions || !result.indices || !result.indices.length) return "";
+    const pos = result.positions;
+    const idx = result.indices;
+    lines.push(`o ${objectName || "RECT_SOLIDS"}`);
+    for (let i = 0; i < pos.length; i += 3) {
+      lines.push(`v ${fmt(pos[i])} ${fmt(pos[i + 1])} ${fmt(pos[i + 2])}`);
+    }
+    for (let i = 0; i < idx.length; i += 3) {
+      lines.push(`f ${idx[i] + 1} ${idx[i + 1] + 1} ${idx[i + 2] + 1}`);
+    }
+    return lines.join("\n") + "\n";
+  }
+
+  function gridSurfacesToOBJ(result, objectName) {
+    return gridSpaceToOBJ(result, objectName || "SPACE_MESH");
+  }
+
+  function fillRhinoMesh(rhino, positions, indices) {
+    const mesh = new rhino.Mesh();
+    const verts = typeof mesh.vertices === "function" ? mesh.vertices() : mesh.vertices;
+    for (let i = 0; i < positions.length; i += 3) {
+      verts.add(positions[i], positions[i + 1], positions[i + 2]);
+    }
+    const rhFaces = typeof mesh.faces === "function" ? mesh.faces() : mesh.faces;
+    for (let i = 0; i < indices.length; i += 3) {
+      if (rhFaces.addTriFace) rhFaces.addTriFace(indices[i], indices[i + 1], indices[i + 2]);
+      else rhFaces.add(indices[i], indices[i + 1], indices[i + 2]);
+    }
+    try {
+      const normals = typeof mesh.normals === "function" ? mesh.normals() : mesh.normals;
+      if (normals && normals.computeNormals) normals.computeNormals();
+    } catch (err) {}
+    return mesh;
+  }
+
+  function addNamedLayer(rhino, doc, name) {
+    return addLayer(rhino, doc, name);
+  }
+
+  function addPlanarPatch(rhino, objects, attrs, corners) {
+    if (!corners || corners.length < 3 || corners.length > 4) return false;
+    if (!rhino.Brep || !rhino.Brep.createFromCornerPoints) return false;
+    let brep = null;
+    if (corners.length === 4) {
+      brep = rhino.Brep.createFromCornerPoints(
+        [corners[0].x, corners[0].y, corners[0].z],
+        [corners[1].x, corners[1].y, corners[1].z],
+        [corners[2].x, corners[2].y, corners[2].z],
+        [corners[3].x, corners[3].y, corners[3].z],
+        0.01
+      );
+    } else {
+      brep = rhino.Brep.createFromCornerPoints(
+        [corners[0].x, corners[0].y, corners[0].z],
+        [corners[1].x, corners[1].y, corners[1].z],
+        [corners[2].x, corners[2].y, corners[2].z],
+        [corners[2].x, corners[2].y, corners[2].z],
+        0.01
+      );
+    }
+    if (brep && brep.isValid) {
+      if (attrs && objects.addBrep) objects.addBrep(brep, attrs);
+      else if (objects.addBrep) objects.addBrep(brep);
+      return true;
+    }
+    return false;
+  }
+
+  function vec3(p) {
+    return [p.x, p.y, p.z];
+  }
+
+  async function exportGridSpace3dm(result, filename) {
+    if (!result || !result.ok || !result.indices || !result.indices.length) {
+      throw new Error("Generate Geometry first.");
+    }
+    const rhino = await loadRhino();
+    const doc = new rhino.File3dm();
+    setFeet(rhino, doc);
+    const objects = doc.objects();
+
+    const solidAttrs = addNamedLayer(rhino, doc, "RECT_SOLIDS");
+    const meshAttrs = addNamedLayer(rhino, doc, "RECT_MESHES");
+    const elements = result.elements || [];
+    let brepCount = 0;
+    let meshCount = 0;
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i];
+      let brep = null;
+      if (el.closedBox && el.solidOrigin && el.solidAxisU && el.solidAxisW && el.solidAxisT) {
+        try {
+          brep = closedBrepFromEdges(rhino, vec3(el.solidOrigin), vec3(el.solidAxisU), vec3(el.solidAxisW), vec3(el.solidAxisT));
+        } catch (err) {
+          brep = null;
+        }
+      }
+      if (!brep && el.closedBox && !el.clipped && el.origin && el.axisU && el.axisW && el.axisT) {
+        try {
+          brep = closedBrepFromEdges(rhino, vec3(el.origin), vec3(el.axisU), vec3(el.axisW), vec3(el.axisT));
+        } catch (err) {
+          brep = null;
+        }
+      }
+      if (!brep && el.meshClosed && el.positions && el.indices) {
+        try {
+          brep = closedBrepFromMesh(rhino, el.positions, el.indices);
+        } catch (err) {
+          brep = null;
+        }
+      }
+      if (brep && brep.isValid) {
+        if (solidAttrs && objects.addBrep) objects.addBrep(brep, solidAttrs);
+        else if (objects.addBrep) objects.addBrep(brep);
+        brepCount += 1;
+        continue;
+      }
+      if (el.positions && el.indices && el.indices.length) {
+        const mesh = fillRhinoMesh(rhino, el.positions, el.indices);
+        if (meshAttrs && objects.addMesh) objects.addMesh(mesh, meshAttrs);
+        else if (objects.addMesh) objects.addMesh(mesh);
+        meshCount += 1;
+      }
+    }
+    if (!brepCount && !meshCount) {
+      const mesh = fillRhinoMesh(rhino, result.positions, result.indices);
+      if (meshAttrs && objects.addMesh) objects.addMesh(mesh, meshAttrs);
+      else if (objects.addMesh) objects.addMesh(mesh);
+      meshCount = 1;
+    }
+
+    const guideAttrs = addNamedLayer(rhino, doc, "BRANCH_GUIDES");
+    const guides = result.guides || [];
+    for (let i = 0; i < guides.length; i++) {
+      const g = guides[i];
+      try {
+        const curve = new rhino.LineCurve([g.ax, g.ay, g.az], [g.bx, g.by, g.bz]);
+        if (guideAttrs && objects.addCurve) objects.addCurve(curve, guideAttrs);
+        else if (objects.addCurve) objects.addCurve(curve);
+      } catch (err) {}
+    }
+
+    const bytes = (() => {
+      try {
+        return doc.toByteArray();
+      } catch (err) {
+        return doc.toByteArrayBuffer ? doc.toByteArrayBuffer() : null;
+      }
+    })();
+    try {
+      if (doc.delete) doc.delete();
+    } catch (err) {}
+    if (!bytes) throw new Error("Geometry 3DM export failed");
+    const copy = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes);
+    downloadBlob(filename, new Blob([copy], { type: "application/octet-stream" }));
+    return {
+      added: brepCount + meshCount + guides.length,
+      closed: brepCount,
+      meshCount,
+      kind: brepCount ? "closed brep" : "closed mesh",
+    };
+  }
+
+  async function exportGridSurfaces3dm(result, filename) {
+    return exportGridSpace3dm(result, filename);
+  }
+
   global.D7SpatialExport = {
     CUBE,
     sanitizeFilename,
@@ -492,6 +693,10 @@
     exportVoxelPolysurface,
     exportGeometryMesh3dm,
     exportOBJ,
+    gridSpaceToOBJ,
+    gridSurfacesToOBJ,
+    exportGridSpace3dm,
+    exportGridSurfaces3dm,
     downloadBlob,
   };
 })(window);
