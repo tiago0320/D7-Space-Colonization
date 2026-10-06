@@ -6152,8 +6152,36 @@
       const mode = which === "surface" ? "surface" : which === "both" ? "both" : "geometry";
       ensureViewer();
       const display = viewer && viewer.captureDisplayGeometry ? viewer.captureDisplayGeometry() : null;
-      const boxes = display && display.boxes ? display.boxes : spaceResult.elements || [];
-      const surfaces = display && display.surfaces ? display.surfaces : spaceResult.surfaces || [];
+      const bakedBoxes = display && display.boxes ? display.boxes : [];
+      const bakedSurfaces = display && display.surfaces ? display.surfaces : [];
+      function attachPose(baked, source) {
+        if (!baked.length) return source || [];
+        const byId = {};
+        for (let i = 0; i < (source || []).length; i++) {
+          const el = source[i];
+          if (el && el.id != null) byId[el.id] = el;
+        }
+        const out = [];
+        for (let i = 0; i < baked.length; i++) {
+          const b = baked[i];
+          const src = b.id != null ? byId[b.id] : null;
+          if (!src) {
+            out.push(b);
+            continue;
+          }
+          out.push(
+            Object.assign({}, src, {
+              worldPositions: b.worldPositions || b.positions,
+              worldIndices: b.worldIndices || b.indices,
+              matrixWorld: b.matrixWorld,
+              clipped: !!(b.clipped || src.clipped),
+            })
+          );
+        }
+        return out;
+      }
+      const boxes = attachPose(bakedBoxes, spaceResult.elements);
+      const surfaces = attachPose(bakedSurfaces, spaceResult.surfaces);
       const guides =
         display && display.branches && display.branches.length
           ? display.branches
@@ -6193,7 +6221,7 @@
           "Exported " +
             filename +
             " · Feet · GENERATED_GEOMETRY · DEVELOPED_SURFACES · SOURCE_BRANCHES · SELECTION_BOX · ROOT_POINTS" +
-            (out && out.meshCount ? " · " + out.meshCount + " geometry meshes" : "") +
+            (out && out.closed ? " · " + out.closed + " closed polysurfaces" : "") +
             (out && out.surfCount ? " · " + out.surfCount + " surfaces" : "") +
             (out && out.branchCount ? " · " + out.branchCount + " branches" : "") +
             (viewportHash ? " · Viewport " + viewportHash : "") +

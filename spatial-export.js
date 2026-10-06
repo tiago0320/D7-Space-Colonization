@@ -382,10 +382,57 @@
     if (!mesh) return null;
     try {
       if (rhino.Brep && rhino.Brep.createFromMesh) {
-        const brep = rhino.Brep.createFromMesh(mesh, true);
+        let brep = rhino.Brep.createFromMesh(mesh, true);
+        if (brep && (brep.isSolid || (brep.isValid && brep.isManifold))) return brep;
+        brep = rhino.Brep.createFromMesh(mesh, false);
         if (brep && (brep.isSolid || (brep.isValid && brep.isManifold))) return brep;
       }
     } catch (err) {}
+    return null;
+  }
+
+  function closedBrepFromMatrix(rhino, matrixWorld) {
+    const m = matrixWorld;
+    if (!m || m.length < 16) return null;
+    const axisU = [m[0], m[1], m[2]];
+    const axisW = [m[4], m[5], m[6]];
+    const axisT = [m[8], m[9], m[10]];
+    const center = [m[12], m[13], m[14]];
+    if (len3(axisU) < 1e-8 || len3(axisW) < 1e-8 || len3(axisT) < 1e-8) return null;
+    const origin = [
+      center[0] - axisU[0] * 0.5 - axisW[0] * 0.5 - axisT[0] * 0.5,
+      center[1] - axisU[1] * 0.5 - axisW[1] * 0.5 - axisT[1] * 0.5,
+      center[2] - axisU[2] * 0.5 - axisW[2] * 0.5 - axisT[2] * 0.5,
+    ];
+    return closedBrepFromEdges(rhino, origin, axisU, axisW, axisT);
+  }
+
+  function closedBrepFromViewportBox(rhino, el) {
+    if (!el) return null;
+    if (el.matrixWorld && el.matrixWorld.length >= 16) {
+      const fromMatrix = closedBrepFromMatrix(rhino, el.matrixWorld);
+      if (fromMatrix) return fromMatrix;
+    }
+    if (el.center && el.U && el.W && el.T && el.hu != null && el.hw != null && el.ht != null) {
+      const U = el.U;
+      const W = el.W;
+      const T = el.T;
+      const hu = Number(el.hu);
+      const hw = Number(el.hw);
+      const ht = Number(el.ht);
+      const origin = [
+        el.center.x - U.x * hu - W.x * hw - T.x * ht,
+        el.center.y - U.y * hu - W.y * hw - T.y * ht,
+        el.center.z - U.z * hu - W.z * hw - T.z * ht,
+      ];
+      return closedBrepFromEdges(
+        rhino,
+        origin,
+        [U.x * hu * 2, U.y * hu * 2, U.z * hu * 2],
+        [W.x * hw * 2, W.y * hw * 2, W.z * hw * 2],
+        [T.x * ht * 2, T.y * ht * 2, T.z * ht * 2]
+      );
+    }
     return null;
   }
 
@@ -792,9 +839,29 @@
   }
 
   function addSolidElement(rhino, objects, geomAttrs, el) {
-    const mesh = elementExportMesh(el);
-    if (!mesh) return "";
-    if (addExactMesh(rhino, objects, geomAttrs, mesh.positions, mesh.indices)) return "mesh";
+    let brep = null;
+    if (!el.clipped) {
+      try {
+        brep = closedBrepFromViewportBox(rhino, el);
+      } catch (err) {
+        brep = null;
+      }
+    }
+    if (!brep) {
+      const mesh = elementExportMesh(el);
+      if (mesh) {
+        try {
+          brep = closedBrepFromMesh(rhino, mesh.positions, mesh.indices);
+        } catch (err) {
+          brep = null;
+        }
+      }
+    }
+    if (brep && (brep.isValid || brep.isSolid)) {
+      if (geomAttrs && objects.addBrep) objects.addBrep(brep, geomAttrs);
+      else if (objects.addBrep) objects.addBrep(brep);
+      return "brep";
+    }
     return "";
   }
 
@@ -826,16 +893,22 @@
     const boxAttrs = addNamedLayer(rhino, doc, "SELECTION_BOX");
     const rootAttrs = addNamedLayer(rhino, doc, "ROOT_POINTS");
 
+    let brepCount = 0;
     let meshCount = 0;
     let surfCount = 0;
     let rootCount = 0;
     if (includeGeom) {
       const elements = result.elements || [];
       for (let i = 0; i < elements.length; i++) {
-        if (addSolidElement(rhino, objects, geomAttrs, elements[i]) === "mesh") meshCount += 1;
+        if (addSolidElement(rhino, objects, geomAttrs, elements[i]) === "brep") brepCount += 1;
       }
-      if (!meshCount && result.positions && result.indices && result.indices.length) {
-        if (addExactMesh(rhino, objects, geomAttrs, result.positions, result.indices)) meshCount = 1;
+      if (!brepCount && result.positions && result.indices && result.indices.length) {
+        const brep = closedBrepFromMesh(rhino, result.positions, result.indices);
+        if (brep && objects.addBrep) {
+          if (geomAttrs) objects.addBrep(brep, geomAttrs);
+          else objects.addBrep(brep);
+          brepCount = 1;
+        }
       }
     }
     if (includeSurf) {
@@ -843,10 +916,33 @@
       for (let i = 0; i < surfaces.length; i++) {
         const mesh = elementExportMesh(surfaces[i]);
         if (!mesh) continue;
-        if (addExactMesh(rhino, objects, surfAttrs, mesh.positions, mesh.indices)) surfCount += 1;
+        let brep = null;
+        try {
+          brep = closedBrepFromMesh(rhino, mesh.positions, mesh.indices);
+        } catch (err) {
+          brep = null;
+        }
+        if (brep && (brep.isValid || brep.isSolid)) {
+          if (surfAttrs && objects.addBrep) objects.addBrep(brep, surfAttrs);
+          else if (objects.addBrep) objects.addBrep(brep);
+          surfCount += 1;
+          continue;
+        }
+        if (addExactMesh(rhino, objects, surfAttrs, mesh.positions, mesh.indices)) {
+          surfCount += 1;
+          meshCount += 1;
+        }
       }
       if (!surfCount && result.surfacePositions && result.surfaceIndices && result.surfaceIndices.length) {
-        if (addExactMesh(rhino, objects, surfAttrs, result.surfacePositions, result.surfaceIndices)) surfCount = 1;
+        const brep = closedBrepFromMesh(rhino, result.surfacePositions, result.surfaceIndices);
+        if (brep && objects.addBrep) {
+          if (surfAttrs) objects.addBrep(brep, surfAttrs);
+          else objects.addBrep(brep);
+          surfCount = 1;
+        } else if (addExactMesh(rhino, objects, surfAttrs, result.surfacePositions, result.surfaceIndices)) {
+          surfCount = 1;
+          meshCount = 1;
+        }
       }
     }
 
@@ -881,14 +977,14 @@
     const copy = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes);
     downloadBlob(filename, new Blob([copy], { type: "application/octet-stream" }));
     return {
-      added: meshCount + surfCount + guides.length + boxEdges.length + rootCount,
-      closed: 0,
+      added: brepCount + surfCount + guides.length + boxEdges.length + rootCount,
+      closed: brepCount,
       meshCount,
       surfCount,
       rootCount,
       branchCount: guides.length,
       which,
-      kind: "mesh",
+      kind: brepCount ? "closed polysurface" : meshCount ? "mesh" : "curve",
       geometryStateHash,
     };
   }
