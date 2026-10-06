@@ -17,6 +17,10 @@
   const DEFAULT_INFLUENCE = 4;
   const DEFAULT_KILL = 1;
   const DEFAULT_SPEED = 8;
+  const DEFAULT_CONNECT = false;
+  const DEFAULT_CONNECT_DIST = 1;
+  const DEFAULT_CONNECT_BIAS = 50;
+  const CONNECT_HIGHLIGHT_MS = 1000;
 
   function clamp(n, a, b) {
     return Math.max(a, Math.min(b, n));
@@ -1124,7 +1128,94 @@
       grid: options.grid || null,
       gridToSim: new Map(),
       usedEdges: new Set(),
+      nextNetworkId: 1,
+      netParent: new Map(),
+      networkRoots: new Map(),
+      connectNetworks: options.connectNetworks != null ? !!options.connectNetworks : DEFAULT_CONNECT,
+      connectDistance: options.connectDistance != null ? options.connectDistance : DEFAULT_CONNECT_DIST,
+      connectBias: options.connectBias != null ? options.connectBias : DEFAULT_CONNECT_BIAS,
+      freshConnections: [],
     };
+  }
+
+  function findNetwork(sim, id) {
+    if (id == null || !sim.netParent) return id;
+    let cur = id;
+    const seen = [];
+    while (sim.netParent.has(cur) && sim.netParent.get(cur) !== cur) {
+      seen.push(cur);
+      cur = sim.netParent.get(cur);
+      if (seen.length > 64) break;
+    }
+    if (!sim.netParent.has(cur)) sim.netParent.set(cur, cur);
+    for (let i = 0; i < seen.length; i++) sim.netParent.set(seen[i], cur);
+    return cur;
+  }
+
+  function allocNetwork(sim, rootIndex) {
+    if (!sim.netParent) sim.netParent = new Map();
+    if (!sim.networkRoots) sim.networkRoots = new Map();
+    const id = sim.nextNetworkId != null ? sim.nextNetworkId++ : 1;
+    if (sim.nextNetworkId == null) sim.nextNetworkId = id + 1;
+    sim.netParent.set(id, id);
+    sim.networkRoots.set(id, new Set(rootIndex ? [rootIndex] : []));
+    return id;
+  }
+
+  function mergeNetworks(sim, a, b) {
+    const pa = findNetwork(sim, a);
+    const pb = findNetwork(sim, b);
+    if (pa == null || pb == null || pa === pb) return pa != null ? pa : pb;
+    const keep = pa < pb ? pa : pb;
+    const drop = pa < pb ? pb : pa;
+    sim.netParent.set(drop, keep);
+    sim.netParent.set(keep, keep);
+    if (!sim.networkRoots) sim.networkRoots = new Map();
+    const rootsKeep = sim.networkRoots.get(keep) || new Set();
+    const rootsDrop = sim.networkRoots.get(drop) || new Set();
+    rootsDrop.forEach((r) => rootsKeep.add(r));
+    sim.networkRoots.set(keep, rootsKeep);
+    sim.networkRoots.delete(drop);
+    for (let i = 0; i < sim.nodes.length; i++) {
+      const n = sim.nodes[i];
+      if (findNetwork(sim, n.networkId) === keep) n.networkId = keep;
+    }
+    return keep;
+  }
+
+  function connectedNetworkSummary(sim) {
+    const groups = new Map();
+    const roots = sim.roots || [];
+    for (let i = 0; i < roots.length; i++) {
+      const n = sim.nodeById.get(roots[i]);
+      if (!n) continue;
+      const nid = findNetwork(sim, n.networkId != null ? n.networkId : n.rootIndex);
+      if (!groups.has(nid)) groups.set(nid, []);
+      groups.get(nid).push(n.rootIndex);
+    }
+    const out = [];
+    groups.forEach((list, id) => {
+      list.sort((a, b) => a - b);
+      out.push({ id, roots: list });
+    });
+    out.sort((a, b) => (a.roots[0] || 0) - (b.roots[0] || 0));
+    for (let k = 0; k < out.length; k++) {
+      out[k].name = "Connected Network " + String(k + 1).padStart(2, "0");
+    }
+    return out;
+  }
+
+  function pushFreshConnection(sim, fromNode, toNode) {
+    if (!fromNode || !toNode) return;
+    if (!sim.freshConnections) sim.freshConnections = [];
+    sim.freshConnections.push({
+      ax: fromNode.x,
+      ay: fromNode.y,
+      az: fromNode.z,
+      bx: toNode.x,
+      by: toNode.y,
+      bz: toNode.z,
+    });
   }
 
   function occupyGridNode(sim, gridId, parentSimId, asRoot) {
@@ -1132,6 +1223,7 @@
     if (sim.gridToSim.has(gridId)) return sim.nodeById.get(sim.gridToSim.get(gridId));
     const g = sim.grid.nodes[gridId];
     if (!g) return null;
+    const parent = parentSimId != null ? sim.nodeById.get(parentSimId) : null;
     const node = {
       id: sim.nextNodeId++,
       x: g.x,
@@ -1141,11 +1233,17 @@
       parentId: parentSimId,
       order: 1,
       rootIndex: asRoot ? sim.nextRootIndex++ : 0,
+      originRootIndex: 0,
+      networkId: 0,
       isRoot: !!asRoot,
     };
-    if (parentSimId != null) {
-      const parent = sim.nodeById.get(parentSimId);
-      node.order = parent ? (parent.order || 1) + 1 : 1;
+    if (asRoot) {
+      node.originRootIndex = node.rootIndex;
+      node.networkId = allocNetwork(sim, node.rootIndex);
+    } else if (parent) {
+      node.order = parent.order ? parent.order + 1 : 1;
+      node.originRootIndex = parent.originRootIndex || parent.rootIndex || 0;
+      node.networkId = parent.networkId;
     }
     sim.nodes.push(node);
     sim.nodeById.set(node.id, node);
@@ -1281,6 +1379,60 @@
     return best;
   }
 
+  function nodesWithin(index, x, y, z, maxDist, cap) {
+    const maxSq = maxDist * maxDist;
+    const limit = cap != null ? cap : 24;
+    const r = Math.max(1, Math.ceil(maxDist / index.cell));
+    const cx = Math.floor(x / index.cell);
+    const cy = Math.floor(y / index.cell);
+    const cz = Math.floor(z / index.cell);
+    const hits = [];
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const bucket = index.map.get(cx + dx + "," + (cy + dy) + "," + (cz + dz));
+          if (!bucket) continue;
+          for (let i = 0; i < bucket.length; i++) {
+            const node = bucket[i];
+            const ddx = node.x - x;
+            const ddy = node.y - y;
+            const ddz = node.z - z;
+            const dSq = ddx * ddx + ddy * ddy + ddz * ddz;
+            if (dSq <= maxSq) hits.push(node);
+          }
+        }
+      }
+    }
+    if (hits.length <= limit) return hits;
+    hits.sort((a, b) => {
+      const da = (a.x - x) * (a.x - x) + (a.y - y) * (a.y - y) + (a.z - z) * (a.z - z);
+      const db = (b.x - x) * (b.x - x) + (b.y - y) * (b.y - y) + (b.z - z) * (b.z - z);
+      return da - db;
+    });
+    return hits.slice(0, limit);
+  }
+
+  function nearestForeignNode(sim, index, node, maxDist) {
+    const hits = nodesWithin(index, node.x, node.y, node.z, maxDist, 16);
+    const net = findNetwork(sim, node.networkId);
+    let best = null;
+    let bestSq = maxDist * maxDist;
+    for (let i = 0; i < hits.length; i++) {
+      const other = hits[i];
+      if (other.id === node.id) continue;
+      if (findNetwork(sim, other.networkId) === net) continue;
+      const dSq =
+        (other.x - node.x) * (other.x - node.x) +
+        (other.y - node.y) * (other.y - node.y) +
+        (other.z - node.z) * (other.z - node.z);
+      if (dSq <= bestSq) {
+        bestSq = dSq;
+        best = other;
+      }
+    }
+    return best;
+  }
+
   function anyNodeWithin(index, x, y, z, maxDist) {
     return !!nearestNode(index, x, y, z, maxDist);
   }
@@ -1302,6 +1454,11 @@
     return n;
   }
 
+  function occupantAtGrid(sim, gridId) {
+    if (!sim.gridToSim.has(gridId)) return null;
+    return sim.nodeById.get(sim.gridToSim.get(gridId)) || null;
+  }
+
   function pickGraphNeighbor(sim, node, pull) {
     const gid = node.gridId;
     const neigh = sim.grid.adj[gid] || [];
@@ -1310,12 +1467,15 @@
     const px = pull.x / plen;
     const py = pull.y / plen;
     const pz = pull.z / plen;
+    const fromNet = findNetwork(sim, node.networkId);
     let best = -1;
     let bestDot = 0.04;
     for (let i = 0; i < neigh.length; i++) {
       const toId = neigh[i];
       const ek = edgeKey(gid, toId);
       if (sim.usedEdges.has(ek)) continue;
+      const occ = occupantAtGrid(sim, toId);
+      if (occ && findNetwork(sim, occ.networkId) !== fromNet && !sim.connectNetworks) continue;
       const to = sim.grid.nodes[toId];
       const dx = to.x - node.x;
       const dy = to.y - node.y;
@@ -1330,24 +1490,145 @@
     return best;
   }
 
-  function growAlongEdge(sim, fromNode, toGridId) {
+  function growAlongEdge(sim, fromNode, toGridId, asConnection) {
     const ek = edgeKey(fromNode.gridId, toGridId);
     if (sim.usedEdges.has(ek)) return false;
-    sim.usedEdges.add(ek);
-    let child = null;
-    if (sim.gridToSim.has(toGridId)) {
-      child = sim.nodeById.get(sim.gridToSim.get(toGridId));
-    } else {
-      child = occupyGridNode(sim, toGridId, fromNode.id, false);
+    let child = occupantAtGrid(sim, toGridId);
+    if (child && findNetwork(sim, child.networkId) !== findNetwork(sim, fromNode.networkId) && !sim.connectNetworks) {
+      return false;
     }
-    if (!child) return false;
+    sim.usedEdges.add(ek);
+    if (!child) child = occupyGridNode(sim, toGridId, fromNode.id, false);
+    if (!child) {
+      sim.usedEdges.delete(ek);
+      return false;
+    }
+    const joined =
+      findNetwork(sim, child.networkId) !== findNetwork(sim, fromNode.networkId);
+    if (joined) mergeNetworks(sim, fromNode.networkId, child.networkId);
     sim.branches.push({
       id: sim.nextBranchId++,
       fromId: fromNode.id,
       toId: child.id,
       order: child.order,
+      connection: !!(asConnection || joined),
     });
+    if (asConnection || joined) pushFreshConnection(sim, fromNode, child);
     return true;
+  }
+
+  function shortestGridPath(sim, start, goal, maxLen) {
+    if (start === goal) return [start];
+    if (!sim.grid || start < 0 || goal < 0) return null;
+    const grid = sim.grid;
+    const dist = new Map();
+    const prev = new Map();
+    const heap = [start];
+    dist.set(start, 0);
+    let visited = 0;
+    while (heap.length && visited < 420) {
+      let bestI = 0;
+      let bestD = dist.get(heap[0]);
+      for (let i = 1; i < heap.length; i++) {
+        const d = dist.get(heap[i]);
+        if (d < bestD) {
+          bestD = d;
+          bestI = i;
+        }
+      }
+      const cur = heap.splice(bestI, 1)[0];
+      visited += 1;
+      if (cur === goal) break;
+      const d0 = dist.get(cur);
+      if (d0 > maxLen) continue;
+      const neigh = grid.adj[cur] || [];
+      for (let i = 0; i < neigh.length; i++) {
+        const nb = neigh[i];
+        const ek = edgeKey(cur, nb);
+        if (sim.usedEdges.has(ek)) continue;
+        const a = grid.nodes[cur];
+        const b = grid.nodes[nb];
+        const step = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+        const nd = d0 + step;
+        if (nd > maxLen + 1e-6) continue;
+        if (dist.has(nb) && dist.get(nb) <= nd + 1e-9) continue;
+        dist.set(nb, nd);
+        prev.set(nb, cur);
+        heap.push(nb);
+      }
+    }
+    if (!prev.has(goal) && start !== goal) return null;
+    const path = [goal];
+    let cur = goal;
+    while (cur !== start) {
+      cur = prev.get(cur);
+      if (cur == null) return null;
+      path.push(cur);
+      if (path.length > 80) return null;
+    }
+    path.reverse();
+    return path;
+  }
+
+  function materializeGridPath(sim, path) {
+    if (!path || path.length < 2) return 0;
+    let grew = 0;
+    for (let i = 1; i < path.length; i++) {
+      const from = occupantAtGrid(sim, path[i - 1]);
+      if (!from) break;
+      if (growAlongEdge(sim, from, path[i], true)) grew += 1;
+    }
+    return grew;
+  }
+
+  function tryConnectNetworks(sim) {
+    if (!sim.connectNetworks || !sim.grid || sim.nodes.length < 2) return 0;
+    const maxDist = Math.max(0.25, Math.min(4, Number(sim.connectDistance) || DEFAULT_CONNECT_DIST));
+    const index = buildNodeIndex(sim);
+    const nodes = sim.nodes.slice();
+    const seen = new Set();
+    let linked = 0;
+    for (let i = 0; i < nodes.length && linked < 6; i++) {
+      const node = nodes[i];
+      if (node.gridId == null) continue;
+      const net = findNetwork(sim, node.networkId);
+      const near = nodesWithin(index, node.x, node.y, node.z, maxDist, 12);
+      for (let j = 0; j < near.length && linked < 6; j++) {
+        const other = near[j];
+        if (other.id === node.id || other.gridId == null) continue;
+        if (findNetwork(sim, other.networkId) === net) continue;
+        const pair = node.id < other.id ? node.id + ":" + other.id : other.id + ":" + node.id;
+        if (seen.has(pair)) continue;
+        seen.add(pair);
+        const path = shortestGridPath(sim, node.gridId, other.gridId, maxDist);
+        if (!path || path.length < 2) continue;
+        const added = materializeGridPath(sim, path);
+        if (added) linked += 1;
+      }
+    }
+    return linked;
+  }
+
+  function mixConnectionBias(sim, index, node, pull) {
+    const bias = clamp(Number(sim.connectBias) || 0, 0, 100) / 100;
+    if (!sim.connectNetworks || bias <= 1e-6) return pull;
+    const reach = Math.max(sim.connectDistance * 3, Math.min(Number(sim.influence) || DEFAULT_INFLUENCE, 8));
+    const foreign = nearestForeignNode(sim, index, node, reach);
+    if (!foreign) return pull;
+    const al = Math.hypot(pull.x, pull.y, pull.z);
+    const fx = foreign.x - node.x;
+    const fy = foreign.y - node.y;
+    const fz = foreign.z - node.z;
+    const fl = Math.hypot(fx, fy, fz);
+    if (fl < 1e-8) return pull;
+    const ax = al > 1e-8 ? pull.x / al : 0;
+    const ay = al > 1e-8 ? pull.y / al : 0;
+    const az = al > 1e-8 ? pull.z / al : 0;
+    return {
+      x: ax * (1 - bias) + (fx / fl) * bias,
+      y: ay * (1 - bias) + (fy / fl) * bias,
+      z: az * (1 - bias) + (fz / fl) * bias,
+    };
   }
 
   function growStep(sim) {
@@ -1358,10 +1639,8 @@
     }
     if (!sim.roots.length) ensureDefaultRoot(sim);
     if (!sim.attractors.length) generateAttractors(sim);
-    if (!aliveCount(sim)) {
-      sim.done = true;
-      return false;
-    }
+    if (!sim.freshConnections) sim.freshConnections = [];
+    sim.freshConnections.length = 0;
     const index = buildNodeIndex(sim);
     const influence = Math.max(NODE_STEP * 1.1, sim.influence);
     const pulls = new Map();
@@ -1379,19 +1658,19 @@
       pull.y += a.y - node.y;
       pull.z += a.z - node.z;
     }
-    if (!pulls.size) {
-      sim.done = true;
-      return false;
-    }
-    const ids = Array.from(pulls.keys()).sort((a, b) => a - b);
     let grew = 0;
-    for (let i = 0; i < ids.length; i++) {
-      const node = sim.nodeById.get(ids[i]);
-      if (!node) continue;
-      const next = pickGraphNeighbor(sim, node, pulls.get(ids[i]));
-      if (next < 0) continue;
-      if (growAlongEdge(sim, node, next)) grew += 1;
+    if (pulls.size) {
+      const ids = Array.from(pulls.keys()).sort((a, b) => a - b);
+      for (let i = 0; i < ids.length; i++) {
+        const node = sim.nodeById.get(ids[i]);
+        if (!node) continue;
+        const pull = mixConnectionBias(sim, index, node, pulls.get(ids[i]));
+        const next = pickGraphNeighbor(sim, node, pull);
+        if (next < 0) continue;
+        if (growAlongEdge(sim, node, next, false)) grew += 1;
+      }
     }
+    grew += tryConnectNetworks(sim);
     sim.iteration += 1;
     killNearNetwork(sim);
     if (!grew || !aliveCount(sim)) sim.done = true;
@@ -1412,6 +1691,11 @@
     sim.gridToSim = new Map();
     sim.usedEdges = new Set();
     sim.roots = [];
+    sim.nextNetworkId = 1;
+    sim.netParent = new Map();
+    sim.networkRoots = new Map();
+    sim.freshConnections = [];
+    sim.nextRootIndex = 1;
     const kept = [];
     let maxIndex = 0;
     for (let i = 0; i < rootNodes.length; i++) {
@@ -1425,6 +1709,9 @@
       const node = occupyGridNode(sim, gid, null, true);
       if (!node) continue;
       if (old.rootIndex) node.rootIndex = old.rootIndex;
+      node.originRootIndex = old.originRootIndex || node.rootIndex;
+      const nid = node.networkId;
+      if (nid) sim.networkRoots.set(nid, new Set([node.rootIndex]));
       if (old.uid != null) node.uid = old.uid;
       maxIndex = Math.max(maxIndex, node.rootIndex || 0);
       kept.push(node.id);
@@ -1461,12 +1748,21 @@
       const b = sim.nodeById.get(sim.branches[i].toId);
       if (a && b && a.gridId != null && b.gridId != null) sim.usedEdges.add(edgeKey(a.gridId, b.gridId));
     }
+    sim.networkRoots = new Map();
+    for (let i = 0; i < sim.roots.length; i++) {
+      const n = sim.nodeById.get(sim.roots[i]);
+      if (!n) continue;
+      const nid = findNetwork(sim, n.networkId != null ? n.networkId : n.rootIndex);
+      n.networkId = nid;
+      if (!sim.networkRoots.has(nid)) sim.networkRoots.set(nid, new Set());
+      sim.networkRoots.get(nid).add(n.rootIndex);
+    }
     return true;
   }
 
   function snapshot(sim) {
     return {
-      version: 3,
+      version: 4,
       cube: CUBE,
       units: "feet",
       upAxis: "Y",
@@ -1476,6 +1772,10 @@
       influence: sim.influence,
       kill: sim.kill,
       iteration: sim.iteration,
+      connectNetworks: !!sim.connectNetworks,
+      connectDistance: sim.connectDistance != null ? sim.connectDistance : DEFAULT_CONNECT_DIST,
+      connectBias: sim.connectBias != null ? sim.connectBias : DEFAULT_CONNECT_BIAS,
+      connectedNetworks: connectedNetworkSummary(sim),
       roots: (sim.rootDrafts && sim.rootDrafts.length ? sim.rootDrafts : sim.roots.map((id) => sim.nodeById.get(id)).filter(Boolean)).map((n) => ({
         id: n.simId != null ? n.simId : n.id,
         uid: n.uid != null ? n.uid : n.id,
@@ -1483,6 +1783,8 @@
         y: n.y,
         z: n.z,
         rootIndex: n.rootIndex,
+        originRootIndex: n.originRootIndex != null ? n.originRootIndex : n.rootIndex,
+        networkId: n.networkId,
         gridId: n.gridId,
       })),
       nodes: sim.nodes.map((n) => ({
@@ -1494,12 +1796,16 @@
         order: n.order,
         isRoot: !!n.isRoot,
         gridId: n.gridId,
+        rootIndex: n.rootIndex,
+        originRootIndex: n.originRootIndex != null ? n.originRootIndex : n.rootIndex,
+        networkId: n.networkId,
       })),
       branches: sim.branches.map((b) => ({
         id: b.id,
         fromId: b.fromId,
         toId: b.toId,
         order: b.order,
+        connection: !!b.connection,
       })),
       attractors: sim.attractors.map((a, i) => ({
         x: a.x,
@@ -1508,6 +1814,74 @@
         alive: !!sim.alive[i],
       })),
     };
+  }
+
+  function restoreGraph(sim, data) {
+    sim.nodes = [];
+    sim.nodeById = new Map();
+    sim.gridToSim = new Map();
+    sim.branches = [];
+    sim.usedEdges = new Set();
+    sim.roots = [];
+    sim.netParent = new Map();
+    sim.networkRoots = new Map();
+    sim.freshConnections = [];
+    let maxNode = 0;
+    let maxBranch = 0;
+    let maxRoot = 0;
+    let maxNet = 0;
+    const nodes = data.nodes || [];
+    for (let i = 0; i < nodes.length; i++) {
+      const src = nodes[i];
+      const node = {
+        id: src.id,
+        x: src.x,
+        y: src.y,
+        z: src.z,
+        parentId: src.parentId,
+        order: src.order || 1,
+        isRoot: !!src.isRoot,
+        gridId: src.gridId,
+        rootIndex: src.rootIndex || 0,
+        originRootIndex: src.originRootIndex != null ? src.originRootIndex : src.rootIndex || 0,
+        networkId: src.networkId != null ? src.networkId : src.originRootIndex || src.rootIndex || 0,
+      };
+      if (src.uid != null) node.uid = src.uid;
+      sim.nodes.push(node);
+      sim.nodeById.set(node.id, node);
+      if (node.gridId != null) sim.gridToSim.set(node.gridId, node.id);
+      if (node.isRoot) sim.roots.push(node.id);
+      maxNode = Math.max(maxNode, node.id || 0);
+      maxRoot = Math.max(maxRoot, node.rootIndex || 0);
+      maxNet = Math.max(maxNet, node.networkId || 0);
+      const nid = node.networkId;
+      if (nid && !sim.netParent.has(nid)) sim.netParent.set(nid, nid);
+      if (node.isRoot) {
+        if (!sim.networkRoots.has(nid)) sim.networkRoots.set(nid, new Set());
+        sim.networkRoots.get(nid).add(node.rootIndex);
+      }
+    }
+    const branches = data.branches || [];
+    for (let i = 0; i < branches.length; i++) {
+      const b = branches[i];
+      sim.branches.push({
+        id: b.id,
+        fromId: b.fromId,
+        toId: b.toId,
+        order: b.order,
+        connection: !!b.connection,
+      });
+      maxBranch = Math.max(maxBranch, b.id || 0);
+      const a = sim.nodeById.get(b.fromId);
+      const c = sim.nodeById.get(b.toId);
+      if (a && c && a.gridId != null && c.gridId != null) sim.usedEdges.add(edgeKey(a.gridId, c.gridId));
+    }
+    sim.nextNodeId = maxNode + 1;
+    sim.nextBranchId = maxBranch + 1;
+    sim.nextRootIndex = maxRoot + 1;
+    sim.nextNetworkId = maxNet + 1;
+    sim.iteration = data.iteration || 0;
+    sim.done = !!data.done;
   }
 
   function cubeWire(THREE, size) {
@@ -2192,6 +2566,21 @@
     );
     scene.add(branches);
 
+    const connectHighlightPos = new Float32Array(256 * 6);
+    const connectHighlightGeom = new THREE.BufferGeometry();
+    connectHighlightGeom.setAttribute("position", new THREE.BufferAttribute(connectHighlightPos, 3));
+    connectHighlightGeom.setDrawRange(0, 0);
+    const connectHighlightMat = new THREE.LineBasicMaterial({
+      color: 0xffe14a,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+    });
+    const connectHighlight = new THREE.LineSegments(connectHighlightGeom, connectHighlightMat);
+    connectHighlight.visible = false;
+    scene.add(connectHighlight);
+    let highlightUntil = 0;
+
     const rootsGroup = new THREE.Group();
     scene.add(rootsGroup);
     const SphereGeom = THREE.SphereBufferGeometry || THREE.SphereGeometry;
@@ -2346,6 +2735,45 @@
       applySpatialVis();
     }
 
+    function highlightConnections(list) {
+      const segs = list || [];
+      const count = Math.min(segs.length, 256);
+      for (let i = 0; i < count; i++) {
+        const s = segs[i];
+        const o = i * 6;
+        connectHighlightPos[o] = s.ax;
+        connectHighlightPos[o + 1] = s.ay;
+        connectHighlightPos[o + 2] = s.az;
+        connectHighlightPos[o + 3] = s.bx;
+        connectHighlightPos[o + 4] = s.by;
+        connectHighlightPos[o + 5] = s.bz;
+      }
+      connectHighlightGeom.attributes.position.needsUpdate = true;
+      connectHighlightGeom.setDrawRange(0, count * 2);
+      if (count) connectHighlightGeom.computeBoundingSphere();
+      if (count) {
+        highlightUntil = (typeof performance !== "undefined" ? performance.now() : Date.now()) + CONNECT_HIGHLIGHT_MS;
+        connectHighlightMat.opacity = 1;
+        connectHighlight.visible = !geomActive;
+      }
+    }
+
+    function fadeConnectionHighlight(now) {
+      if (!highlightUntil) {
+        if (connectHighlight.visible) connectHighlight.visible = false;
+        return;
+      }
+      const t = (highlightUntil - now) / CONNECT_HIGHLIGHT_MS;
+      if (t <= 0) {
+        highlightUntil = 0;
+        connectHighlight.visible = false;
+        connectHighlightMat.opacity = 1;
+        return;
+      }
+      connectHighlightMat.opacity = Math.max(0, Math.min(1, t));
+      connectHighlight.visible = !geomActive;
+    }
+
     function setShowBranches(on) {
       showBranches = !!on;
       applySpatialVis();
@@ -2404,6 +2832,7 @@
         return;
       }
       branches.visible = false;
+      connectHighlight.visible = false;
       pickLines.visible = false;
       skeletonLines.visible = showBranches;
       const showForm = showSpaces;
@@ -2467,6 +2896,7 @@
       const mats = [
         cube.material,
         branches.material,
+        connectHighlightMat,
         attractors.material,
         pickLines.material,
         rootMat,
@@ -3023,6 +3453,7 @@
 
     function tick() {
       if (controls && viewMode === "perspective") controls.update();
+      fadeConnectionHighlight(typeof performance !== "undefined" ? performance.now() : Date.now());
       renderer.render(scene, activeCamera);
       raf = requestAnimationFrame(tick);
     }
@@ -3104,7 +3535,7 @@
 
     function captureThumbnail() {
       const savedCam = getCameraState();
-      const hide = [cube, attractors, rootsGroup, hLines, vLines, snapPts, snapGhost, pickLines, branches, skeletonLines];
+      const hide = [cube, attractors, rootsGroup, hLines, vLines, snapPts, snapGhost, pickLines, branches, connectHighlight, skeletonLines];
       const prevVis = hide.map((obj) => (obj ? obj.visible : false));
       const gizmoPrev = gizmo ? { vis: gizmo.visible, en: gizmo.enabled } : null;
       const rootPrev = rootGizmo ? { vis: rootGizmo.visible, en: rootGizmo.enabled } : null;
@@ -3205,6 +3636,7 @@
       setShowAttractors,
       setAttractors,
       setBranches,
+      highlightConnections,
       setShowBranches,
       setSelectionPreview,
       setShowSpaces,
@@ -3315,6 +3747,12 @@
       rootZ: document.getElementById("grid3dRootZ"),
       deleteRoot: document.getElementById("grid3dDeleteRoot"),
       rootList: document.getElementById("grid3dRootList"),
+      connectNetworks: document.getElementById("grid3dConnectNetworks"),
+      connectDist: document.getElementById("grid3dConnectDist"),
+      connectDistVal: document.getElementById("grid3dConnectDistVal"),
+      connectBias: document.getElementById("grid3dConnectBias"),
+      connectBiasVal: document.getElementById("grid3dConnectBiasVal"),
+      connectStatus: document.getElementById("grid3dConnectStatus"),
       readout: document.getElementById("grid3dReadout"),
       hint: document.getElementById("grid3dViewHint"),
       spaceStatus: document.getElementById("grid3dSpaceStatus"),
@@ -3546,6 +3984,27 @@
       if (els.exportSurf) els.exportSurf.disabled = !canExport;
       if (els.exportBoth) els.exportBoth.disabled = !canExport;
       paintSavedIterButtons();
+      paintConnectControls();
+    }
+
+    function paintConnectControls() {
+      const on = !!(els.connectNetworks && els.connectNetworks.checked);
+      if (els.connectDist) els.connectDist.disabled = !on;
+      if (els.connectBias) els.connectBias.disabled = !on;
+      if (!els.connectStatus) return;
+      if (!on) {
+        els.connectStatus.textContent = "Each root grows its own network. Branches from different roots do not merge.";
+        return;
+      }
+      const groups = connectedNetworkSummary(sim);
+      const merged = groups.filter((g) => g.roots.length > 1);
+      if (!merged.length) {
+        els.connectStatus.textContent = "Each root grows independently until nearby grid paths connect them.";
+        return;
+      }
+      els.connectStatus.textContent = merged
+        .map((g) => g.name + " · " + g.roots.map((r) => "R" + r).join(" + "))
+        .join(" · ");
     }
 
     function setSpaceStatus(message, kind) {
@@ -3589,6 +4048,10 @@
       if (viewer) {
         viewer.setAttractors(aliveAttractors());
         viewer.setBranches(sim.branches, sim.nodeById);
+        if (viewer.highlightConnections && sim.freshConnections && sim.freshConnections.length) {
+          viewer.highlightConnections(sim.freshConnections);
+          sim.freshConnections = [];
+        }
         if (!(viewer.rootGizmoBusy && viewer.rootGizmoBusy())) {
           viewer.setRoots(rootPlacements, selectedRootId);
           updateRootGizmo();
@@ -3625,6 +4088,7 @@
         sim.done ? "active" : playing ? "active" : undefined
       );
       paintGridStats();
+      paintConnectControls();
     }
 
     function readRootFields() {
@@ -3683,6 +4147,25 @@
       if (els.rootY) els.rootY.value = Number(p.y).toFixed(1);
       if (els.rootZ) els.rootZ.value = Number(p.z).toFixed(1);
       applyingFields = false;
+    }
+
+    function writeConnectToHud(data) {
+      if (!data) return;
+      if (els.connectNetworks && data.connectNetworks != null) {
+        els.connectNetworks.checked = !!data.connectNetworks;
+      }
+      if (els.connectDist && data.connectDistance != null) {
+        els.connectDist.value = String(data.connectDistance);
+        if (els.connectDistVal) els.connectDistVal.textContent = Number(data.connectDistance).toFixed(2) + "'";
+      }
+      if (els.connectBias && data.connectBias != null) {
+        els.connectBias.value = String(data.connectBias);
+        if (els.connectBiasVal) els.connectBiasVal.textContent = String(Math.round(Number(data.connectBias)));
+      }
+      sim.connectNetworks = !!(els.connectNetworks && els.connectNetworks.checked);
+      sim.connectDistance = clamp(Number(els.connectDist?.value ?? DEFAULT_CONNECT_DIST), 0.25, 4);
+      sim.connectBias = clamp(Number(els.connectBias?.value ?? DEFAULT_CONNECT_BIAS), 0, 100);
+      paintConnectControls();
     }
 
     function syncPlacementsFromSim() {
@@ -3877,6 +4360,9 @@
       sim.attractorTarget = Number(els.attractorCount?.value ?? DEFAULT_ATTRACTORS);
       sim.influence = Number(els.influence?.value ?? DEFAULT_INFLUENCE);
       sim.kill = Number(els.kill?.value ?? DEFAULT_KILL);
+      sim.connectNetworks = !!(els.connectNetworks && els.connectNetworks.checked);
+      sim.connectDistance = clamp(Number(els.connectDist?.value ?? DEFAULT_CONNECT_DIST), 0.25, 4);
+      sim.connectBias = clamp(Number(els.connectBias?.value ?? DEFAULT_CONNECT_BIAS), 0, 100);
     }
 
     function growLoop(ts) {
@@ -4170,6 +4656,7 @@
 
     function captureWorkingSnapshot() {
       const cloned = spaceResult ? clonePlain(spaceResult) : null;
+      sim.rootDrafts = rootPlacements;
       return {
         selectionBox: viewer && viewer.getSelectionState ? viewer.getSelectionState() : null,
         displayMode: formMode,
@@ -4189,6 +4676,10 @@
         sourceGeometry: cloned && cloned.elements ? cloned.elements : [],
         surfaceGeometry: cloned && cloned.surfaces ? cloned.surfaces : [],
         camera: viewer && viewer.getCameraState ? viewer.getCameraState() : null,
+        connectNetworks: !!(els.connectNetworks && els.connectNetworks.checked),
+        connectDistance: clamp(Number(els.connectDist?.value ?? DEFAULT_CONNECT_DIST), 0.25, 4),
+        connectBias: clamp(Number(els.connectBias?.value ?? DEFAULT_CONNECT_BIAS), 0, 100),
+        growthSnapshot: snapshot(sim),
       };
     }
 
@@ -4237,6 +4728,11 @@
         if (els.hideOutside) {
           els.hideOutside.checked = !!snapshot.hideOutside;
           if (viewer && viewer.setHideOutsideSelection) viewer.setHideOutsideSelection(els.hideOutside.checked);
+        }
+        writeConnectToHud(snapshot);
+        if (snapshot.growthSnapshot && snapshot.growthSnapshot.nodes && snapshot.growthSnapshot.nodes.length) {
+          applyGrowthSnapshot(snapshot.growthSnapshot);
+          syncViewer();
         }
         applyFormMode(snapshot.displayMode || "geometry", { keepSelection: true });
         const packed = clonePlain(snapshot.spaceResult);
@@ -4891,6 +5387,8 @@
     bindVal(els.attractorCount, els.attractorCountVal, (v) => String(Math.round(Number(v))));
     bindVal(els.influence, els.influenceVal, (v) => `${Number(v).toFixed(1)}'`);
     bindVal(els.kill, els.killVal, (v) => `${Number(v).toFixed(1)}'`);
+    bindVal(els.connectDist, els.connectDistVal, (v) => `${Number(v).toFixed(2)}'`);
+    bindVal(els.connectBias, els.connectBiasVal, (v) => String(Math.round(Number(v))));
     bindVal(els.speed, els.speedVal, (v) => `${Math.round(Number(v))}/s`);
     bindVal(els.spacing, els.spacingVal, (v) => `${Number(v).toFixed(1)}'`);
     bindVal(els.width, els.widthVal, (v) => `${Number(v).toFixed(2)}'`);
@@ -4902,6 +5400,8 @@
       { slider: "grid3dAttractorCount", min: "grid3dAttractorCountMin", max: "grid3dAttractorCountMax", hardMin: 1, hardMax: 20000 },
       { slider: "grid3dInfluence", min: "grid3dInfluenceMin", max: "grid3dInfluenceMax", hardMin: 0.1, hardMax: 40 },
       { slider: "grid3dKill", min: "grid3dKillMin", max: "grid3dKillMax", hardMin: 0.1, hardMax: 40 },
+      { slider: "grid3dConnectDist", min: "grid3dConnectDistMin", max: "grid3dConnectDistMax", hardMin: 0.25, hardMax: 8 },
+      { slider: "grid3dConnectBias", min: "grid3dConnectBiasMin", max: "grid3dConnectBiasMax", hardMin: 0, hardMax: 100 },
       { slider: "grid3dSpeed", min: "grid3dSpeedMin", max: "grid3dSpeedMax", hardMin: 1, hardMax: 120 },
       { slider: "grid3dWidth", min: "grid3dWidthMin", max: "grid3dWidthMax", hardMin: 0.05, hardMax: 40 },
       { slider: "grid3dThickness", min: "grid3dThicknessMin", max: "grid3dThicknessMax", hardMin: 0.05, hardMax: 40 },
@@ -5538,6 +6038,22 @@
         sim.attractorTarget = Number(els.attractorCount.value);
       });
     }
+    if (els.connectNetworks) {
+      els.connectNetworks.addEventListener("change", () => {
+        readParamsIntoSim();
+        paintConnectControls();
+      });
+    }
+    if (els.connectDist) {
+      els.connectDist.addEventListener("input", () => {
+        sim.connectDistance = clamp(Number(els.connectDist.value), 0.25, 4);
+      });
+    }
+    if (els.connectBias) {
+      els.connectBias.addEventListener("input", () => {
+        sim.connectBias = clamp(Number(els.connectBias.value), 0, 100);
+      });
+    }
     initGridSliderBounds();
 
     document.querySelectorAll("#grid3dViewBar .grid3d-view-btn").forEach((btn) => {
@@ -5554,6 +6070,50 @@
     paintFormModeButtons();
     loadDefaultGrid();
     refreshSavedIterList();
+
+    function applyGrowthSnapshot(data) {
+      if (!data || !sim.grid) return false;
+      pauseGrowth();
+      if (data.seed) sim.seed = data.seed >>> 0;
+      if (data.attractorCount != null) sim.attractorTarget = data.attractorCount;
+      if (data.influence != null) sim.influence = data.influence;
+      if (data.kill != null) sim.kill = data.kill;
+      sim.connectNetworks = data.connectNetworks != null ? !!data.connectNetworks : sim.connectNetworks;
+      sim.connectDistance =
+        data.connectDistance != null ? clamp(Number(data.connectDistance), 0.25, 4) : sim.connectDistance;
+      sim.connectBias =
+        data.connectBias != null ? clamp(Number(data.connectBias), 0, 100) : sim.connectBias;
+      writeConnectToHud({
+        connectNetworks: sim.connectNetworks,
+        connectDistance: sim.connectDistance,
+        connectBias: sim.connectBias,
+      });
+      if (data.nodes && data.nodes.length && data.branches) {
+        restoreGraph(sim, data);
+        const rootSrc = data.roots || [];
+        for (let i = 0; i < sim.roots.length && i < rootSrc.length; i++) {
+          const n = sim.nodeById.get(sim.roots[i]);
+          if (n && rootSrc[i].uid != null) n.uid = rootSrc[i].uid;
+        }
+        syncPlacementsFromSim();
+      } else if (data.roots && data.roots.length) {
+        resetGrowth(sim, data.roots);
+        for (let i = 0; i < sim.roots.length && i < data.roots.length; i++) {
+          const n = sim.nodeById.get(sim.roots[i]);
+          if (n && data.roots[i].uid != null) n.uid = data.roots[i].uid;
+        }
+        syncPlacementsFromSim();
+      }
+      if (data.attractors && data.attractors.length) {
+        sim.attractors = data.attractors.map((a) => ({ x: a.x, y: a.y, z: a.z, gridId: a.gridId }));
+        sim.alive = data.attractors.map((a) => (a.alive === false ? 0 : 1));
+      }
+      networkOutdated = false;
+      selectedRootId = rootPlacements[0] ? rootPlacements[0].uid : null;
+      if (selectedRootId) writeRootFields(selectedPlacement());
+      paintRoots();
+      return true;
+    }
 
     const api = {
       show() {
@@ -5591,31 +6151,34 @@
         return snapshot(sim);
       },
       applySnapshot(data) {
-        if (!data || !sim.grid) return false;
-        pauseGrowth();
-        if (data.seed) sim.seed = data.seed >>> 0;
-        if (data.attractorCount != null) sim.attractorTarget = data.attractorCount;
-        if (data.influence != null) sim.influence = data.influence;
-        if (data.kill != null) sim.kill = data.kill;
-        if (data.roots && data.roots.length) {
-          resetGrowth(sim, data.roots);
-          for (let i = 0; i < sim.roots.length && i < data.roots.length; i++) {
-            const n = sim.nodeById.get(sim.roots[i]);
-            if (n && data.roots[i].uid != null) n.uid = data.roots[i].uid;
-          }
-          syncPlacementsFromSim();
-        }
-        if (data.attractors && data.attractors.length) {
-          sim.attractors = data.attractors.map((a) => ({ x: a.x, y: a.y, z: a.z }));
-          sim.alive = data.attractors.map((a) => (a.alive === false ? 0 : 1));
-        }
-        networkOutdated = false;
-        selectedRootId = rootPlacements[0] ? rootPlacements[0].uid : null;
-        if (selectedRootId) writeRootFields(selectedPlacement());
-        paintRoots();
+        const ok = applyGrowthSnapshot(data);
+        if (!ok) return false;
         syncViewer();
         paintStatus();
+        paintButtons();
         return true;
+      },
+      getConnectedNetworks() {
+        return connectedNetworkSummary(sim);
+      },
+      getConnectState() {
+        return {
+          connectNetworks: !!sim.connectNetworks,
+          connectDistance: sim.connectDistance,
+          connectBias: sim.connectBias,
+          networks: connectedNetworkSummary(sim),
+          roots: sim.roots.map((id) => {
+            const n = sim.nodeById.get(id);
+            return n
+              ? {
+                  id: n.id,
+                  rootIndex: n.rootIndex,
+                  originRootIndex: n.originRootIndex,
+                  networkId: findNetwork(sim, n.networkId),
+                }
+              : null;
+          }),
+        };
       },
       getHumanScaleState() {
         return viewer && viewer.getHumanScaleState ? viewer.getHumanScaleState() : null;
@@ -5661,6 +6224,7 @@
     CUBE,
     mount,
     snapshot,
+    connectedNetworkSummary,
     buildGridFromSvg,
   };
 })(window);

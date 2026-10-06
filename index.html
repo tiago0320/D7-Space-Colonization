@@ -984,6 +984,35 @@
             <button id="grid3dDeleteRoot" class="ghost" type="button" disabled>Delete Selected Root</button>
           </div>
           <ul id="grid3dRootList" class="seed-list"></ul>
+          <div class="section-head">Root Networks</div>
+          <p class="grid-status">When on, independently growing roots may join through valid SVG-grid paths once they are close enough. No straight-line shortcuts between roots.</p>
+          <label class="check">
+            <input id="grid3dConnectNetworks" type="checkbox" />
+            Connect Root Networks
+          </label>
+          <label class="ctrl" title="How close two root networks must be, along the 3D grid, before they may connect.">
+            Network Connection Distance
+            <span class="value" id="grid3dConnectDistVal">1.0'</span>
+            <input id="grid3dConnectDist" type="range" min="0.25" max="4" step="0.25" value="1" />
+            <span class="range-bounds">
+              <input id="grid3dConnectDistMin" type="number" value="0.25" step="0.25" aria-label="Network Connection Distance minimum" />
+              <span>min</span>
+              <input id="grid3dConnectDistMax" type="number" value="4" step="0.25" aria-label="Network Connection Distance maximum" />
+              <span>max</span>
+            </span>
+          </label>
+          <label class="ctrl" title="How strongly nearby foreign networks influence growth direction. Attractors still matter.">
+            Root Connection Bias
+            <span class="value" id="grid3dConnectBiasVal">50</span>
+            <input id="grid3dConnectBias" type="range" min="0" max="100" step="1" value="50" />
+            <span class="range-bounds">
+              <input id="grid3dConnectBiasMin" type="number" value="0" step="1" aria-label="Root Connection Bias minimum" />
+              <span>min</span>
+              <input id="grid3dConnectBiasMax" type="number" value="100" step="1" aria-label="Root Connection Bias maximum" />
+              <span>max</span>
+            </span>
+          </label>
+          <p id="grid3dConnectStatus" class="grid-status">Each root grows its own network until they meet on the grid.</p>
           <div class="section-head">Simulate</div>
           <div class="row">
             <button id="grid3dStart" class="primary" type="button">Start</button>
