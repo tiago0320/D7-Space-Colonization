@@ -2468,6 +2468,8 @@
     let geomActive = false;
     let displayMode = "geometry";
     let selectedElementId = null;
+    let lastSkeletonSegs = [];
+    let lastLiveBranchSegs = [];
     const compareMat = new THREE.MeshLambertMaterial({
       color: 0xb4b4b4,
       emissive: 0x101010,
@@ -2712,6 +2714,7 @@
 
     function setBranches(list, nodesById) {
       const count = Math.min(list.length, MAX_SEGS);
+      lastLiveBranchSegs = [];
       for (let i = 0; i < count; i++) {
         const b = list[i];
         const a = nodesById.get(b.fromId);
@@ -2728,6 +2731,20 @@
         branchPos[o + 3] = c.x;
         branchPos[o + 4] = c.y;
         branchPos[o + 5] = c.z;
+        lastLiveBranchSegs.push({
+          id: b.id != null ? "branch_" + padStable(b.id) : "branch_" + padStable(i + 1),
+          originalId: b.id,
+          startNodeId: b.fromId,
+          endNodeId: b.toId,
+          ax: a.x,
+          ay: a.y,
+          az: a.z,
+          bx: c.x,
+          by: c.y,
+          bz: c.z,
+          networkId: a.networkId != null ? a.networkId : c.networkId,
+          connection: !!b.connection,
+        });
       }
       branchGeom.attributes.position.needsUpdate = true;
       branchGeom.setDrawRange(0, count * 2);
@@ -3081,8 +3098,13 @@
       }
     }
 
+    function padStable(n) {
+      return String(n).padStart(3, "0");
+    }
+
     function setSkeleton(segs) {
       const list = segs || [];
+      lastSkeletonSegs = [];
       const pos = new Float32Array(list.length * 6);
       for (let i = 0; i < list.length; i++) {
         const s = list[i];
@@ -3093,6 +3115,19 @@
         pos[o + 3] = s.bx;
         pos[o + 4] = s.by;
         pos[o + 5] = s.bz;
+        lastSkeletonSegs.push({
+          id: s.id || "branch_" + padStable(i + 1),
+          startNodeId: s.startNodeId != null ? s.startNodeId : s.a,
+          endNodeId: s.endNodeId != null ? s.endNodeId : s.b,
+          ax: s.ax,
+          ay: s.ay,
+          az: s.az,
+          bx: s.bx,
+          by: s.by,
+          bz: s.bz,
+          networkId: s.networkId,
+          connection: !!s.connection,
+        });
       }
       skeletonGeom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
       skeletonGeom.computeBoundingSphere();
@@ -3108,6 +3143,82 @@
         detachElemGizmo();
       }
       applySpatialVis();
+    }
+
+    function bakeWorldMesh(mesh) {
+      if (!mesh || !mesh.isMesh || !mesh.geometry || !mesh.geometry.attributes || !mesh.geometry.attributes.position) {
+        return null;
+      }
+      mesh.updateMatrixWorld(true);
+      const attr = mesh.geometry.attributes.position;
+      const v = new THREE.Vector3();
+      const positions = [];
+      for (let i = 0; i < attr.count; i++) {
+        v.fromBufferAttribute(attr, i);
+        v.applyMatrix4(mesh.matrixWorld);
+        positions.push(v.x, v.y, v.z);
+      }
+      const indices = [];
+      if (mesh.geometry.index) {
+        const idx = mesh.geometry.index;
+        for (let i = 0; i < idx.count; i++) indices.push(idx.getX(i));
+      } else {
+        for (let i = 0; i < attr.count; i++) indices.push(i);
+      }
+      return {
+        id: mesh.userData.elementId,
+        kind: mesh.userData.kind || "segment",
+        clipped: !!mesh.userData.clipped,
+        positions,
+        indices,
+        worldPositions: positions,
+        worldIndices: indices,
+        matrixWorld: mesh.matrixWorld.toArray(),
+      };
+    }
+
+    function bakeGroupMeshes(group) {
+      const out = [];
+      if (!group) return out;
+      for (let i = 0; i < group.children.length; i++) {
+        const baked = bakeWorldMesh(group.children[i]);
+        if (baked) out.push(baked);
+      }
+      return out;
+    }
+
+    function captureDisplayedBranches() {
+      if (geomActive) return lastSkeletonSegs.slice();
+      return lastLiveBranchSegs.slice();
+    }
+
+    function captureDisplayedRoots() {
+      const out = [];
+      for (let i = 0; i < rootsGroup.children.length; i++) {
+        const mesh = rootsGroup.children[i];
+        mesh.updateMatrixWorld(true);
+        const p = mesh.getWorldPosition(new THREE.Vector3());
+        out.push({
+          id: mesh.userData.rootId,
+          stableId: "root_" + padStable(i + 1),
+          x: p.x,
+          y: p.y,
+          z: p.z,
+        });
+      }
+      return out;
+    }
+
+    function captureDisplayGeometry() {
+      scene.updateMatrixWorld(true);
+      const boxes = bakeGroupMeshes(geomGroup);
+      const surfaces = bakeGroupMeshes(surfGroup);
+      const branches = captureDisplayedBranches();
+      const roots = captureDisplayedRoots();
+      const payload = { boxes, surfaces, branches, roots, elements: boxes, generatedBoxes: boxes, surfaceGeometry: surfaces, sourceBranches: branches, guides: branches };
+      const lib = global.D7SpatialExport;
+      payload.hash = lib && lib.hashGeometryState ? lib.hashGeometryState(payload) : "";
+      return payload;
     }
 
     function findElemMesh(id) {
@@ -3459,6 +3570,8 @@
     }
 
     function getSelectionState() {
+      selBox.updateMatrixWorld(true);
+      const b = selectionBoxBounds();
       return {
         cx: selBox.position.x,
         cy: selBox.position.y,
@@ -3469,6 +3582,16 @@
         rx: selBox.rotation.x,
         ry: selBox.rotation.y,
         rz: selBox.rotation.z,
+        bounds: b,
+        width: CUBE,
+        height: CUBE,
+        depth: CUBE,
+        units: "feet",
+        worldUnit: 1,
+        matrixWorld: selBox.matrixWorld.toArray(),
+        localX: { x: 1, y: 0, z: 0 },
+        localY: { x: 0, y: 1, z: 0 },
+        localZ: { x: 0, y: 0, z: 1 },
       };
     }
 
@@ -3649,6 +3772,9 @@
       setSpacesMesh,
       setSkeleton,
       setSpatialActive,
+      captureDisplayGeometry,
+      captureDisplayedBranches,
+      captureDisplayedRoots,
       setSelectedElement,
       pickGeometry,
       setElemGizmoMode(mode) {
@@ -3776,6 +3902,7 @@
       exportGeom: document.getElementById("grid3dExportGeom"),
       exportSurf: document.getElementById("grid3dExportSurf"),
       exportBoth: document.getElementById("grid3dExportBoth"),
+      exportBranchesSvg: document.getElementById("grid3dExportBranchesSvg"),
       savedIterStatus: document.getElementById("grid3dSavedIterStatus"),
       saveIter: document.getElementById("grid3dSaveIter"),
       saveIterUpdate: document.getElementById("grid3dSaveIterUpdate"),
@@ -3983,6 +4110,10 @@
       if (els.exportGeom) els.exportGeom.disabled = !canExport;
       if (els.exportSurf) els.exportSurf.disabled = !canExport;
       if (els.exportBoth) els.exportBoth.disabled = !canExport;
+      if (els.exportBranchesSvg) {
+        const clipped = currentClippedGraph();
+        els.exportBranchesSvg.disabled = spaceBusy || !clipped.segs.length;
+      }
       paintSavedIterButtons();
       paintConnectControls();
     }
@@ -4014,11 +4145,16 @@
       els.spaceStatus.classList.toggle("error", kind === "error");
     }
 
+    function currentClippedGraph() {
+      if (!viewer || !global.D7GridSpaces) return { nodes: [], segs: [] };
+      return global.D7GridSpaces.clipGraph(sim.nodes, sim.branches, viewer.getSelectionBox());
+    }
+
     function paintSelection() {
       if (!viewer || !global.D7GridSpaces) return;
-      const box = viewer.getSelectionBox();
-      const clipped = global.D7GridSpaces.clipGraph(sim.nodes, sim.branches, box);
+      const clipped = currentClippedGraph();
       viewer.setSelectionPreview(clipped.segs);
+      if (els.exportBranchesSvg) els.exportBranchesSvg.disabled = spaceBusy || !clipped.segs.length;
       if (!spaceResult && !spaceBusy) {
         if (!sim.branches.length) {
           setSpaceStatus("Grow branches, then Generate Geometry.");
@@ -4643,7 +4779,7 @@
         setSavedIterStatus("Opened · " + (openedIterationName || "Iteration"), "active");
       } else {
         setSavedIterStatus(
-          "Save the current selection box, rectangular geometry, and developed surfaces. Iterations stay on this computer until you delete them."
+          "Save the actual viewport geometry and branches. Load restores that same state. Iterations stay on this computer until you delete them."
         );
       }
     }
@@ -4654,66 +4790,293 @@
       if (label) label.textContent = Number(value).toFixed(2) + "'";
     }
 
+    function padId(n) {
+      return String(n).padStart(3, "0");
+    }
+
+    function geometryHash(payload) {
+      const lib = global.D7SpatialExport;
+      if (lib && typeof lib.hashGeometryState === "function") return lib.hashGeometryState(payload);
+      return "";
+    }
+
+    function captureSourceBranches() {
+      if (viewer && viewer.captureDisplayedBranches) {
+        const shown = viewer.captureDisplayedBranches();
+        if (shown && shown.length) return clonePlain(shown);
+      }
+      if (spaceResult && spaceResult.graph && spaceResult.graph.segs && spaceResult.graph.segs.length) {
+        return spaceResult.graph.segs.map((s, i) => ({
+          id: s.id || "branch_" + padId(i + 1),
+          startNodeId: s.a,
+          endNodeId: s.b,
+          ax: s.ax,
+          ay: s.ay,
+          az: s.az,
+          bx: s.bx,
+          by: s.by,
+          bz: s.bz,
+          networkId: s.networkId,
+          connection: !!s.connection,
+        }));
+      }
+      if (spaceResult && spaceResult.guides && spaceResult.guides.length) return clonePlain(spaceResult.guides);
+      return sim.branches.map((b, i) => {
+        const a = sim.nodeById.get(b.fromId);
+        const c = sim.nodeById.get(b.toId);
+        return {
+          id: b.id != null ? "branch_" + padId(b.id) : "branch_" + padId(i + 1),
+          originalId: b.id,
+          startNodeId: b.fromId,
+          endNodeId: b.toId,
+          ax: a ? a.x : 0,
+          ay: a ? a.y : 0,
+          az: a ? a.z : 0,
+          bx: c ? c.x : 0,
+          by: c ? c.y : 0,
+          bz: c ? c.z : 0,
+          networkId: a && a.networkId != null ? a.networkId : c && c.networkId,
+          connection: !!b.connection,
+        };
+      });
+    }
+
+    function captureBranchNodes() {
+      if (spaceResult && spaceResult.graph && spaceResult.graph.nodes && spaceResult.graph.nodes.length) {
+        const out = [];
+        for (let i = 0; i < spaceResult.graph.nodes.length; i++) {
+          const n = spaceResult.graph.nodes[i];
+          if (!n) continue;
+          out.push({
+            id: n.id != null ? n.id : i,
+            stableId: "node_" + padId((n.id != null ? n.id : i) + 1),
+            x: n.x,
+            y: n.y,
+            z: n.z,
+            isRoot: !!n.isRoot,
+            networkId: n.networkId,
+            degree: n.degree,
+          });
+        }
+        return out;
+      }
+      return sim.nodes.map((n) => ({
+        id: n.id,
+        stableId: "node_" + padId(n.id),
+        x: n.x,
+        y: n.y,
+        z: n.z,
+        parentId: n.parentId,
+        isRoot: !!n.isRoot,
+        networkId: n.networkId,
+        rootIndex: n.rootIndex,
+        originRootIndex: n.originRootIndex,
+        gridId: n.gridId,
+      }));
+    }
+
+    function captureRootsCanonical() {
+      if (viewer && viewer.captureDisplayedRoots) {
+        const shown = viewer.captureDisplayedRoots();
+        if (shown && shown.length) return shown;
+      }
+      const list = rootPlacements.length
+        ? rootPlacements
+        : sim.roots.map((id) => sim.nodeById.get(id)).filter(Boolean);
+      return list.map((n, i) => ({
+        id: n.uid != null ? n.uid : n.id,
+        stableId: "root_" + padId(i + 1),
+        x: n.x,
+        y: n.y,
+        z: n.z,
+        rootIndex: n.rootIndex,
+        originRootIndex: n.originRootIndex != null ? n.originRootIndex : n.rootIndex,
+        networkId: n.networkId,
+        gridId: n.gridId,
+      }));
+    }
+
+    function boxCanonical(el, ov) {
+      const rec = clonePlain(el);
+      rec.edited = !!(ov && (ov.cx != null || ov.cy != null || ov.cz != null || ov.rx != null || ov.ry != null || ov.rz != null || ov.width != null || ov.thickness != null || ov.length != null));
+      rec.duplicated = rec.kind === "duplicate" || !!(ov && ov.dup);
+      rec.deleted = false;
+      rec.clipped = !!el.clipped;
+      rec.sourceBranchId = el.source && el.source.runIndex != null ? el.source.runIndex : el.source || null;
+      rec.transform = {
+        position: clonePlain(el.center),
+        rotation: { rx: el.rx || 0, ry: el.ry || 0, rz: el.rz || 0 },
+        scale: { x: el.hu * 2, y: el.hw * 2, z: el.ht * 2 },
+        U: clonePlain(el.U),
+        W: clonePlain(el.W),
+        T: clonePlain(el.T),
+      };
+      return rec;
+    }
+
+    function attachDisplayMeshes(records, baked) {
+      if (!records || !baked) return records;
+      const byId = {};
+      for (let i = 0; i < baked.length; i++) {
+        if (baked[i] && baked[i].id != null) byId[baked[i].id] = baked[i];
+      }
+      for (let i = 0; i < records.length; i++) {
+        const rec = records[i];
+        const mesh = rec && rec.id != null ? byId[rec.id] : null;
+        if (!mesh) continue;
+        rec.worldPositions = mesh.worldPositions || mesh.positions;
+        rec.worldIndices = mesh.worldIndices || mesh.indices;
+        rec.matrixWorld = mesh.matrixWorld;
+      }
+      return records;
+    }
+
     function captureWorkingSnapshot() {
       const cloned = spaceResult ? clonePlain(spaceResult) : null;
       sim.rootDrafts = rootPlacements;
-      return {
-        selectionBox: viewer && viewer.getSelectionState ? viewer.getSelectionState() : null,
-        displayMode: formMode,
-        showBranches: !!(els.showBranches && els.showBranches.checked),
-        showSpaces: !(els.showSpaces) || !!els.showSpaces.checked,
-        showSelBox: !(els.showSelBox) || !!els.showSelBox.checked,
-        showHumanScale: !!(els.showHumanScale && els.showHumanScale.checked),
+      const display = viewer && viewer.captureDisplayGeometry ? viewer.captureDisplayGeometry() : null;
+      const overrides = clonePlain(geomOverrides) || {};
+      const generatedBoxes = attachDisplayMeshes(
+        cloned && cloned.elements ? cloned.elements.map((el) => boxCanonical(el, overrides[el.id])) : [],
+        display && display.boxes
+      );
+      const surfaceGeometry = attachDisplayMeshes(
+        cloned && cloned.surfaces ? cloned.surfaces.map((el) => boxCanonical(el, overrides[el.id])) : [],
+        display && display.surfaces
+      );
+      const duplicatedBoxes = generatedBoxes.filter((el) => el.duplicated);
+      const deletedBoxes = [];
+      for (const key in overrides) {
+        if (!Object.prototype.hasOwnProperty.call(overrides, key)) continue;
+        if (overrides[key] && overrides[key].deleted) {
+          deletedBoxes.push({ id: key, deleted: true, override: clonePlain(overrides[key]) });
+        }
+      }
+      const sourceBranches = captureSourceBranches();
+      const branchNodes = captureBranchNodes();
+      const roots = captureRootsCanonical();
+      const selectionBox = viewer && viewer.getSelectionState ? viewer.getSelectionState() : null;
+      if (selectionBox) {
+        selectionBox.normalization =
+          cloned && cloned.graph && cloned.graph.fit
+            ? clonePlain(cloned.graph.fit)
+            : { scale: 1, ox: 0, oy: 0, oz: 0, cube: CUBE };
+      }
+      const canonical = {
+        schemaVersion: 2,
+        version: 2,
+        id: openedIterationId || null,
+        selectionBox,
+        sourceBranches,
+        branchNodes,
+        generatedBoxes,
+        duplicatedBoxes,
+        deletedBoxes,
+        surfaceGeometry,
+        displayGeometry: display,
+        roots,
+        attractors: sim.attractors.map((a, i) => ({
+          x: a.x,
+          y: a.y,
+          z: a.z,
+          alive: sim.alive[i] !== 0,
+          gridId: a.gridId,
+        })),
+        parameters: {
+          width: els.width ? Number(els.width.value) : 2,
+          thickness: els.thickness ? Number(els.thickness.value) : 2,
+          junction: els.junction ? Number(els.junction.value) : 2,
+          connectNetworks: !!(els.connectNetworks && els.connectNetworks.checked),
+          connectDistance: clamp(Number(els.connectDist?.value ?? DEFAULT_CONNECT_DIST), 0.25, 4),
+          connectBias: clamp(Number(els.connectBias?.value ?? DEFAULT_CONNECT_BIAS), 0, 100),
+        },
+        displayState: {
+          displayMode: formMode,
+          showBranches: !!(els.showBranches && els.showBranches.checked),
+          showSpaces: !(els.showSpaces) || !!els.showSpaces.checked,
+          showSelBox: !(els.showSelBox) || !!els.showSelBox.checked,
+          showHumanScale: !!(els.showHumanScale && els.showHumanScale.checked),
+          hideOutside: !!(els.hideOutside && els.hideOutside.checked),
+        },
+        cameraState: viewer && viewer.getCameraState ? viewer.getCameraState() : null,
+        randomSeed: sim.seed,
         humanScale: viewer && viewer.getHumanScaleState ? viewer.getHumanScaleState() : null,
-        hideOutside: !!(els.hideOutside && els.hideOutside.checked),
-        width: els.width ? Number(els.width.value) : 2,
-        thickness: els.thickness ? Number(els.thickness.value) : 2,
-        junction: els.junction ? Number(els.junction.value) : 2,
-        geomOverrides: clonePlain(geomOverrides),
+        geomOverrides: overrides,
         nextDupId,
         selectedGeomId,
         spaceResult: cloned,
-        sourceGeometry: cloned && cloned.elements ? cloned.elements : [],
-        surfaceGeometry: cloned && cloned.surfaces ? cloned.surfaces : [],
+        sourceGeometry: generatedBoxes,
         camera: viewer && viewer.getCameraState ? viewer.getCameraState() : null,
         connectNetworks: !!(els.connectNetworks && els.connectNetworks.checked),
         connectDistance: clamp(Number(els.connectDist?.value ?? DEFAULT_CONNECT_DIST), 0.25, 4),
         connectBias: clamp(Number(els.connectBias?.value ?? DEFAULT_CONNECT_BIAS), 0, 100),
         growthSnapshot: snapshot(sim),
+        displayMode: formMode,
+        showBranches: !!(els.showBranches && els.showBranches.checked),
+        showSpaces: !(els.showSpaces) || !!els.showSpaces.checked,
+        showSelBox: !(els.showSelBox) || !!els.showSelBox.checked,
+        showHumanScale: !!(els.showHumanScale && els.showHumanScale.checked),
+        hideOutside: !!(els.hideOutside && els.hideOutside.checked),
+        width: els.width ? Number(els.width.value) : 2,
+        thickness: els.thickness ? Number(els.thickness.value) : 2,
+        junction: els.junction ? Number(els.junction.value) : 2,
       };
+      canonical.geometryStateHash = geometryHash({
+        sourceBranches,
+        generatedBoxes: display && display.boxes ? display.boxes : generatedBoxes,
+        surfaceGeometry: display && display.surfaces ? display.surfaces : surfaceGeometry,
+        guides: sourceBranches,
+        elements: display && display.boxes ? display.boxes : generatedBoxes,
+        surfaces: display && display.surfaces ? display.surfaces : surfaceGeometry,
+        displayGeometry: display,
+      });
+      return canonical;
     }
 
     function applyWorkingSnapshot(snapshot) {
       if (!snapshot) return;
       iterationLoadLock = true;
       try {
+        pauseGrowth();
         ensureViewer();
+        clearSpacePack();
         if (snapshot.selectionBox && viewer && viewer.setSelectionBox) {
           viewer.setSelectionBox(snapshot.selectionBox);
         }
-        writeGlobalSlider(els.width, els.widthVal, snapshot.width != null ? snapshot.width : 2);
-        writeGlobalSlider(els.thickness, els.thicknessVal, snapshot.thickness != null ? snapshot.thickness : 2);
-        writeGlobalSlider(els.junction, els.junctionVal, snapshot.junction != null ? snapshot.junction : 2);
+        const width = snapshot.parameters && snapshot.parameters.width != null ? snapshot.parameters.width : snapshot.width;
+        const thickness = snapshot.parameters && snapshot.parameters.thickness != null ? snapshot.parameters.thickness : snapshot.thickness;
+        const junction = snapshot.parameters && snapshot.parameters.junction != null ? snapshot.parameters.junction : snapshot.junction;
+        writeGlobalSlider(els.width, els.widthVal, width != null ? width : 2);
+        writeGlobalSlider(els.thickness, els.thicknessVal, thickness != null ? thickness : 2);
+        writeGlobalSlider(els.junction, els.junctionVal, junction != null ? junction : 2);
         geomOverrides = clonePlain(snapshot.geomOverrides) || {};
+        if (snapshot.deletedBoxes && snapshot.deletedBoxes.length) {
+          for (let i = 0; i < snapshot.deletedBoxes.length; i++) {
+            const gone = snapshot.deletedBoxes[i];
+            if (!gone || gone.id == null) continue;
+            geomOverrides[gone.id] = Object.assign({}, geomOverrides[gone.id] || {}, gone.override || { deleted: true }, { deleted: true });
+          }
+        }
         nextDupId = snapshot.nextDupId || nextDupFromStore();
         selectedGeomId = snapshot.selectedGeomId || null;
         geomHist = [];
         geomFuture = [];
+        const displayState = snapshot.displayState || snapshot;
         if (els.showBranches) {
-          els.showBranches.checked = !!snapshot.showBranches;
+          els.showBranches.checked = !!displayState.showBranches;
           if (viewer) viewer.setShowBranches(els.showBranches.checked);
         }
         if (els.showSpaces) {
-          els.showSpaces.checked = snapshot.showSpaces !== false;
+          els.showSpaces.checked = displayState.showSpaces !== false;
           if (viewer) viewer.setShowSpaces(els.showSpaces.checked);
         }
         if (els.showSelBox) {
-          els.showSelBox.checked = snapshot.showSelBox !== false;
+          els.showSelBox.checked = displayState.showSelBox !== false;
           if (viewer && viewer.setShowSelectionBox) viewer.setShowSelectionBox(els.showSelBox.checked);
         }
         if (els.showHumanScale) {
           const hs = snapshot.humanScale || {};
-          const showHs = snapshot.showHumanScale != null ? !!snapshot.showHumanScale : !!hs.show;
+          const showHs = displayState.showHumanScale != null ? !!displayState.showHumanScale : !!hs.show;
           els.showHumanScale.checked = showHs;
           if (viewer && viewer.setHumanScaleState) {
             viewer.setHumanScaleState({
@@ -4726,29 +5089,48 @@
           }
         }
         if (els.hideOutside) {
-          els.hideOutside.checked = !!snapshot.hideOutside;
+          els.hideOutside.checked = !!displayState.hideOutside;
           if (viewer && viewer.setHideOutsideSelection) viewer.setHideOutsideSelection(els.hideOutside.checked);
         }
-        writeConnectToHud(snapshot);
+        writeConnectToHud(snapshot.parameters || snapshot);
+        if (snapshot.randomSeed != null) sim.seed = snapshot.randomSeed >>> 0;
         if (snapshot.growthSnapshot && snapshot.growthSnapshot.nodes && snapshot.growthSnapshot.nodes.length) {
           applyGrowthSnapshot(snapshot.growthSnapshot);
           syncViewer();
+        } else if (snapshot.roots && snapshot.roots.length && (!snapshot.growthSnapshot || !snapshot.growthSnapshot.nodes)) {
+          applyGrowthSnapshot({ roots: snapshot.roots, attractors: snapshot.attractors, seed: snapshot.randomSeed });
+          syncViewer();
         }
-        applyFormMode(snapshot.displayMode || "geometry", { keepSelection: true });
+        applyFormMode(displayState.displayMode || snapshot.displayMode || "geometry", { keepSelection: true });
         const packed = clonePlain(snapshot.spaceResult);
         if (packed && packed.ok) {
-          if ((!packed.elements || !packed.elements.length) && snapshot.sourceGeometry) {
-            packed.elements = clonePlain(snapshot.sourceGeometry);
+          if ((!packed.elements || !packed.elements.length) && (snapshot.generatedBoxes || snapshot.sourceGeometry)) {
+            packed.elements = clonePlain(snapshot.generatedBoxes || snapshot.sourceGeometry);
           }
           if ((!packed.surfaces || !packed.surfaces.length) && snapshot.surfaceGeometry) {
             packed.surfaces = clonePlain(snapshot.surfaceGeometry);
           }
+          if (snapshot.sourceBranches && snapshot.sourceBranches.length) {
+            packed.guides = clonePlain(snapshot.sourceBranches);
+          }
           applyGeomResult(packed);
+        } else if (snapshot.generatedBoxes && snapshot.generatedBoxes.length) {
+          applyGeomResult({
+            ok: true,
+            elements: clonePlain(snapshot.generatedBoxes),
+            surfaces: clonePlain(snapshot.surfaceGeometry || []),
+            guides: clonePlain(snapshot.sourceBranches || []),
+            box: snapshot.selectionBox && snapshot.selectionBox.bounds,
+            graph: null,
+          });
         } else {
-          clearSpacePack();
+          if (snapshot.sourceBranches && snapshot.sourceBranches.length && viewer && viewer.setSkeleton) {
+            viewer.setSkeleton(snapshot.sourceBranches);
+          }
         }
         if (selectedGeomId) selectGeom(selectedGeomId);
-        if (snapshot.camera && viewer && viewer.setCameraState) viewer.setCameraState(snapshot.camera);
+        const cam = snapshot.cameraState || snapshot.camera;
+        if (cam && viewer && viewer.setCameraState) viewer.setCameraState(cam);
         paintSelection();
         paintViewButtons();
       } finally {
@@ -4874,20 +5256,27 @@
       ensureViewer();
       const thumbnail = viewer && viewer.captureThumbnail ? viewer.captureThumbnail() : "";
       const now = Date.now();
+      const snap = captureWorkingSnapshot();
       const record = {
         id: store.createId(),
         name: String(name || store.nextDefaultName(savedIterRecords)).trim() || store.nextDefaultName(savedIterRecords),
         createdAt: now,
         updatedAt: now,
         thumbnail: thumbnail || "",
-        snapshot: captureWorkingSnapshot(),
+        version: 2,
+        schemaVersion: 2,
+        geometryStateHash: snap.geometryStateHash,
+        snapshot: snap,
       };
       await persistSavedIteration(record);
       openedIterationId = record.id;
       openedIterationName = record.name;
       iterationDirty = false;
       await refreshSavedIterList();
-      setSavedIterStatus("Saved · " + record.name, "active");
+      setSavedIterStatus(
+        "Saved · " + record.name + (snap.geometryStateHash ? " · hash " + snap.geometryStateHash : ""),
+        "active"
+      );
     }
 
     async function overwriteOpenedIteration() {
@@ -4897,14 +5286,21 @@
       const existing = await store.get(openedIterationId);
       if (!existing) throw new Error("That saved iteration is no longer in this browser.");
       const thumbnail = viewer && viewer.captureThumbnail ? viewer.captureThumbnail() : existing.thumbnail;
+      const snap = captureWorkingSnapshot();
       existing.updatedAt = Date.now();
       existing.thumbnail = thumbnail || existing.thumbnail || "";
-      existing.snapshot = captureWorkingSnapshot();
+      existing.version = 2;
+      existing.schemaVersion = 2;
+      existing.geometryStateHash = snap.geometryStateHash;
+      existing.snapshot = snap;
       await persistSavedIteration(existing);
       openedIterationName = existing.name;
       iterationDirty = false;
       await refreshSavedIterList();
-      setSavedIterStatus("Saved changes · " + existing.name, "active");
+      setSavedIterStatus(
+        "Saved changes · " + existing.name + (snap.geometryStateHash ? " · hash " + snap.geometryStateHash : ""),
+        "active"
+      );
     }
 
     async function loadSavedIteration(id) {
@@ -4915,17 +5311,30 @@
         setSavedIterStatus("Could not load that iteration.", "error");
         return;
       }
-      applyWorkingSnapshot(record.snapshot);
+      applyWorkingSnapshot(clonePlain(record.snapshot));
       openedIterationId = record.id;
       openedIterationName = record.name || "";
       iterationDirty = false;
       renderSavedIterList();
+      const live = captureWorkingSnapshot();
+      iterationDirty = false;
       paintSavedIterButtons();
+      const savedHash = record.snapshot.geometryStateHash || record.geometryStateHash || "";
+      const liveHash = live.geometryStateHash || "";
+      const match = savedHash && liveHash && savedHash === liveHash;
       setSpaceStatus(
         spaceResult
           ? geomStatusText(spaceResult) + " · loaded " + (record.name || "iteration")
           : "Loaded " + (record.name || "iteration") + " · no generated geometry in this save.",
         "active"
+      );
+      setSavedIterStatus(
+        "Loaded · " +
+          (record.name || "iteration") +
+          (liveHash ? " · Viewport " + liveHash : "") +
+          (savedHash ? " · Saved " + savedHash : "") +
+          (savedHash && liveHash ? (match ? " · match" : " · MISMATCH") : ""),
+        match || !savedHash ? "active" : "error"
       );
     }
 
@@ -4942,6 +5351,9 @@
         updatedAt: now,
         thumbnail: record.thumbnail || "",
         snapshot: clonePlain(record.snapshot),
+        version: 2,
+        schemaVersion: 2,
+        geometryStateHash: record.snapshot && record.snapshot.geometryStateHash,
       };
       await persistSavedIteration(copy);
       await refreshSavedIterList();
@@ -5738,10 +6150,16 @@
         return;
       }
       const mode = which === "surface" ? "surface" : which === "both" ? "both" : "geometry";
-      const hasGeom = !!(spaceResult.elements && spaceResult.elements.length);
-      const hasSurf =
-        !!(spaceResult.surfaces && spaceResult.surfaces.length) ||
-        !!(spaceResult.surfacePositions && spaceResult.surfacePositions.length);
+      ensureViewer();
+      const display = viewer && viewer.captureDisplayGeometry ? viewer.captureDisplayGeometry() : null;
+      const boxes = display && display.boxes ? display.boxes : spaceResult.elements || [];
+      const surfaces = display && display.surfaces ? display.surfaces : spaceResult.surfaces || [];
+      const guides =
+        display && display.branches && display.branches.length
+          ? display.branches
+          : spaceResult.guides || [];
+      const hasGeom = !!(boxes && boxes.length);
+      const hasSurf = !!(surfaces && surfaces.length) || !!(spaceResult.surfacePositions && spaceResult.surfacePositions.length);
       if (mode === "geometry" && !hasGeom) {
         setSpaceStatus("No rectangular geometry to export.", "error");
         return;
@@ -5750,18 +6168,37 @@
         setSpaceStatus("No developed surface to export.", "error");
         return;
       }
+      const viewportHash = display && display.hash ? display.hash : geometryHash({
+        sourceBranches: guides,
+        generatedBoxes: boxes,
+        surfaceGeometry: surfaces,
+      });
       try {
         setSpaceStatus("Writing Rhino 3DM…");
         const filename =
           mode === "surface" ? "D7_Grid_Surface.3dm" : mode === "both" ? "D7_Grid_Both.3dm" : "D7_Grid_Geometry.3dm";
-        const out = await lib.exportGridSpace3dm(spaceResult, filename, { which: mode });
+        const payload = {
+          ok: true,
+          elements: boxes,
+          surfaces,
+          guides,
+          sourceBranches: guides,
+          box: viewer && viewer.getSelectionBox ? viewer.getSelectionBox() : spaceResult.box,
+          roots: display && display.roots ? display.roots : captureRootsCanonical(),
+          geometryStateHash: viewportHash,
+        };
+        const out = await lib.exportGridSpace3dm(payload, filename, { which: mode });
+        const exportHash = out && out.geometryStateHash ? out.geometryStateHash : viewportHash;
         setSpaceStatus(
           "Exported " +
             filename +
-            " · Feet · BRANCH_GEOMETRY · DEVELOPED_SURFACE · SOURCE_BRANCHES · SELECTION_BOX" +
-            (out && out.closed ? " · " + out.closed + " closed Breps" : "") +
+            " · Feet · GENERATED_GEOMETRY · DEVELOPED_SURFACES · SOURCE_BRANCHES · SELECTION_BOX · ROOT_POINTS" +
             (out && out.meshCount ? " · " + out.meshCount + " geometry meshes" : "") +
-            (out && out.surfCount ? " · " + out.surfCount + " surfaces" : ""),
+            (out && out.surfCount ? " · " + out.surfCount + " surfaces" : "") +
+            (out && out.branchCount ? " · " + out.branchCount + " branches" : "") +
+            (viewportHash ? " · Viewport " + viewportHash : "") +
+            (exportHash ? " · Export " + exportHash : "") +
+            (viewportHash && exportHash && viewportHash === exportHash ? " · match" : ""),
           "active"
         );
       } catch (err) {
@@ -5771,6 +6208,38 @@
     if (els.exportGeom) els.exportGeom.addEventListener("click", () => exportIteration("geometry"));
     if (els.exportSurf) els.exportSurf.addEventListener("click", () => exportIteration("surface"));
     if (els.exportBoth) els.exportBoth.addEventListener("click", () => exportIteration("both"));
+    if (els.exportBranchesSvg) {
+      els.exportBranchesSvg.addEventListener("click", () => {
+        const lib = global.D7SpatialExport;
+        if (!lib || !lib.exportClippedBranchesSvg) {
+          setSpaceStatus("SVG export is not available.", "error");
+          return;
+        }
+        ensureViewer();
+        const clipped = currentClippedGraph();
+        if (!clipped.segs.length) {
+          setSpaceStatus("No branches inside the cyan box. Grow inside the module, or move the box.", "error");
+          return;
+        }
+        try {
+          const view = viewer && viewer.getViewMode ? viewer.getViewMode() : "front";
+          const viewName = view === "perspective" ? "ISO" : String(view).toUpperCase();
+          const filename = "D7_Grid_Branches_" + viewName + ".svg";
+          const out = lib.exportClippedBranchesSvg(clipped, filename, { view });
+          setSpaceStatus(
+            "Exported " +
+              (out && out.filename ? out.filename : filename) +
+              " · " +
+              clipped.segs.length +
+              " segments · 1 unit = 1 foot · view " +
+              (out && out.view ? out.view : view),
+            "active"
+          );
+        } catch (err) {
+          setSpaceStatus("SVG export failed: " + (err && err.message ? err.message : String(err)), "error");
+        }
+      });
+    }
 
     if (els.saveIter) {
       els.saveIter.addEventListener("click", () => {
@@ -6179,6 +6648,19 @@
               : null;
           }),
         };
+      },
+      getCanonicalState() {
+        return captureWorkingSnapshot();
+      },
+      getGeometryHash() {
+        const snap = captureWorkingSnapshot();
+        return snap && snap.geometryStateHash ? snap.geometryStateHash : "";
+      },
+      compareGeometryHash(savedHash) {
+        const live = captureWorkingSnapshot();
+        const viewport = live.geometryStateHash || "";
+        const saved = String(savedHash || live.geometryStateHash || "");
+        return { viewport, saved, match: !!(viewport && saved && viewport === saved) };
       },
       getHumanScaleState() {
         return viewer && viewer.getHumanScaleState ? viewer.getHumanScaleState() : null;

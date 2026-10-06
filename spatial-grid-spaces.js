@@ -1781,7 +1781,19 @@
       surfacePositions: new Float32Array(surf.positions),
       surfaceIndices: surf.indices.slice(),
       surfaceTriangleCount: surf.indices.length / 3,
-      guides: graph.segs.map((s) => ({ ax: s.ax, ay: s.ay, az: s.az, bx: s.bx, by: s.by, bz: s.bz })),
+      guides: graph.segs.map((s, i) => ({
+        id: s.id || "branch_" + String(i + 1).padStart(3, "0"),
+        startNodeId: s.a,
+        endNodeId: s.b,
+        ax: s.ax,
+        ay: s.ay,
+        az: s.az,
+        bx: s.bx,
+        by: s.by,
+        bz: s.bz,
+        networkId: s.networkId,
+        connection: !!s.connection,
+      })),
     };
   }
 
@@ -1925,6 +1937,8 @@
     normalizeBox,
     eulerDegFromFrame,
     frameFromEulerDeg,
+    worldToLocalPositions,
+    localToWorldPositions,
     testCaps,
   };
 })(window);

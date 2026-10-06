@@ -8,7 +8,8 @@
   const DB_NAME = "d7-saved-grid-iterations";
   const DB_VERSION = 1;
   const STORE = "savedGridIterations";
-  const DATA_VERSION = 1;
+  const DATA_VERSION = 2;
+  const SCHEMA_VERSION = 2;
 
   function openDb() {
     return new Promise((resolve, reject) => {
@@ -111,6 +112,7 @@
     const payload = {
       ...record,
       version: record.version || DATA_VERSION,
+      schemaVersion: record.schemaVersion || (record.snapshot && record.snapshot.schemaVersion) || SCHEMA_VERSION,
       createdAt: record.createdAt || now,
       updatedAt: record.updatedAt || now,
     };
@@ -123,6 +125,7 @@
 
   global.D7SavedGridIterations = {
     DATA_VERSION,
+    SCHEMA_VERSION,
     createId,
     nextDefaultName,
     duplicateName,

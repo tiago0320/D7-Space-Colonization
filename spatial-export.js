@@ -26,6 +26,64 @@
     return String(Math.round(v * 1e6) / 1e6);
   }
 
+  function quantize(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return 0;
+    return Math.round(v * 1e4) / 1e4;
+  }
+
+  function hashGeometryState(payload) {
+    const src = payload && typeof payload === "object" ? payload : {};
+    let h = 5381;
+    function feed(value) {
+      const s = String(value);
+      for (let i = 0; i < s.length; i++) h = (Math.imul(h, 33) + s.charCodeAt(i)) >>> 0;
+    }
+    function feedMesh(mesh) {
+      if (!mesh) return;
+      const pos = mesh.worldPositions || mesh.positions || [];
+      const idx = mesh.worldIndices || mesh.indices || [];
+      feed("m");
+      feed(pos.length);
+      feed(idx.length);
+      for (let i = 0; i < pos.length; i++) feed(quantize(pos[i]));
+      for (let i = 0; i < idx.length; i++) feed(idx[i] | 0);
+      if (mesh.matrixWorld && mesh.matrixWorld.length) {
+        for (let i = 0; i < mesh.matrixWorld.length; i++) feed(quantize(mesh.matrixWorld[i]));
+      }
+    }
+    const branches = src.sourceBranches || src.guides || (src.displayGeometry && src.displayGeometry.branches) || [];
+    feed("b");
+    feed(branches.length);
+    for (let i = 0; i < branches.length; i++) {
+      const g = branches[i];
+      feed(g.id || "");
+      feed(g.startNodeId != null ? g.startNodeId : g.fromId != null ? g.fromId : "");
+      feed(g.endNodeId != null ? g.endNodeId : g.toId != null ? g.toId : "");
+      feed(quantize(g.ax));
+      feed(quantize(g.ay));
+      feed(quantize(g.az));
+      feed(quantize(g.bx));
+      feed(quantize(g.by));
+      feed(quantize(g.bz));
+    }
+    const boxes = src.generatedBoxes || src.elements || (src.displayGeometry && src.displayGeometry.boxes) || [];
+    feed("e");
+    feed(boxes.length);
+    for (let i = 0; i < boxes.length; i++) {
+      feed(boxes[i] && boxes[i].id != null ? boxes[i].id : i);
+      feedMesh(boxes[i]);
+    }
+    const surfs = src.surfaceGeometry || src.surfaces || (src.displayGeometry && src.displayGeometry.surfaces) || [];
+    feed("s");
+    feed(surfs.length);
+    for (let i = 0; i < surfs.length; i++) {
+      feed(surfs[i] && surfs[i].id != null ? surfs[i].id : i);
+      feedMesh(surfs[i]);
+    }
+    return ("00000000" + h.toString(16)).slice(-8).toUpperCase();
+  }
+
   function downloadBlob(filename, blob) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -588,32 +646,36 @@
       const elements = result && result.elements ? result.elements : [];
       for (let e = 0; e < elements.length; e++) {
         const el = elements[e];
-        if (!el.positions || !el.indices || !el.indices.length) continue;
+        const pos = el.worldPositions || el.positions;
+        const idx = el.worldIndices || el.indices;
+        if (!pos || !idx || !idx.length) continue;
         wrote = true;
         const name =
-          "BRANCH_GEOMETRY_" +
+          "GENERATED_GEOMETRY_" +
           (el.kind || "solid") +
           "_" +
           String(el.id || e + 1).replace(/[^A-Za-z0-9_:-]/g, "_");
-        vertOffset = appendMeshOBJ(lines, name, el.positions, el.indices, vertOffset);
+        vertOffset = appendMeshOBJ(lines, name, pos, idx, vertOffset);
       }
       if (!wrote && result && result.positions && result.indices && result.indices.length) {
         wrote = true;
-        vertOffset = appendMeshOBJ(lines, "BRANCH_GEOMETRY", result.positions, result.indices, vertOffset);
+        vertOffset = appendMeshOBJ(lines, "GENERATED_GEOMETRY", result.positions, result.indices, vertOffset);
       }
     }
     if (includeSurf) {
       const surfaces = result && result.surfaces ? result.surfaces : [];
       for (let e = 0; e < surfaces.length; e++) {
         const el = surfaces[e];
-        if (!el.positions || !el.indices || !el.indices.length) continue;
+        const pos = el.worldPositions || el.positions;
+        const idx = el.worldIndices || el.indices;
+        if (!pos || !idx || !idx.length) continue;
         wrote = true;
-        const name = "DEVELOPED_SURFACE_" + String(el.id || e + 1).replace(/[^A-Za-z0-9_:-]/g, "_");
-        vertOffset = appendMeshOBJ(lines, name, el.positions, el.indices, vertOffset);
+        const name = "DEVELOPED_SURFACES_" + String(el.id || e + 1).replace(/[^A-Za-z0-9_:-]/g, "_");
+        vertOffset = appendMeshOBJ(lines, name, pos, idx, vertOffset);
       }
       if (!surfaces.length && result && result.surfacePositions && result.surfaceIndices && result.surfaceIndices.length) {
         wrote = true;
-        vertOffset = appendMeshOBJ(lines, "DEVELOPED_SURFACE", result.surfacePositions, result.surfaceIndices, vertOffset);
+        vertOffset = appendMeshOBJ(lines, "DEVELOPED_SURFACES", result.surfacePositions, result.surfaceIndices, vertOffset);
       }
     }
     const guides = result && result.guides ? result.guides : [];
@@ -700,40 +762,39 @@
     }
   }
 
+  function elementExportMesh(el) {
+    if (!el) return null;
+    const positions = el.worldPositions || el.positions;
+    const indices = el.worldIndices || el.indices;
+    if (!positions || !indices || !indices.length) return null;
+    return { positions, indices };
+  }
+
+  function addExactMesh(rhino, objects, attrs, positions, indices) {
+    if (!positions || !indices || !indices.length) return false;
+    const mesh = fillRhinoMesh(rhino, positions, indices);
+    if (!mesh) return false;
+    if (attrs && objects.addMesh) objects.addMesh(mesh, attrs);
+    else if (objects.addMesh) objects.addMesh(mesh);
+    return true;
+  }
+
+  function addRhinoPoint(rhino, objects, attrs, x, y, z) {
+    try {
+      const pt = [Number(x) || 0, Number(y) || 0, Number(z) || 0];
+      if (attrs && objects.addPoint) objects.addPoint(pt, attrs);
+      else if (objects.addPoint) objects.addPoint(pt);
+      else return false;
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
   function addSolidElement(rhino, objects, geomAttrs, el) {
-    let brep = null;
-    if (el.closedBox && el.solidOrigin && el.solidAxisU && el.solidAxisW && el.solidAxisT) {
-      try {
-        brep = closedBrepFromEdges(rhino, vec3(el.solidOrigin), vec3(el.solidAxisU), vec3(el.solidAxisW), vec3(el.solidAxisT));
-      } catch (err) {
-        brep = null;
-      }
-    }
-    if (!brep && el.closedBox && !el.clipped && el.origin && el.axisU && el.axisW && el.axisT) {
-      try {
-        brep = closedBrepFromEdges(rhino, vec3(el.origin), vec3(el.axisU), vec3(el.axisW), vec3(el.axisT));
-      } catch (err) {
-        brep = null;
-      }
-    }
-    if (!brep && el.meshClosed && el.positions && el.indices) {
-      try {
-        brep = closedBrepFromMesh(rhino, el.positions, el.indices);
-      } catch (err) {
-        brep = null;
-      }
-    }
-    if (brep && brep.isValid) {
-      if (geomAttrs && objects.addBrep) objects.addBrep(brep, geomAttrs);
-      else if (objects.addBrep) objects.addBrep(brep);
-      return "brep";
-    }
-    if (el.positions && el.indices && el.indices.length) {
-      const mesh = fillRhinoMesh(rhino, el.positions, el.indices);
-      if (geomAttrs && objects.addMesh) objects.addMesh(mesh, geomAttrs);
-      else if (objects.addMesh) objects.addMesh(mesh);
-      return "mesh";
-    }
+    const mesh = elementExportMesh(el);
+    if (!mesh) return "";
+    if (addExactMesh(rhino, objects, geomAttrs, mesh.positions, mesh.indices)) return "mesh";
     return "";
   }
 
@@ -759,47 +820,37 @@
     setFeet(rhino, doc);
     const objects = doc.objects();
 
-    const geomAttrs = addNamedLayer(rhino, doc, "BRANCH_GEOMETRY");
-    const surfAttrs = addNamedLayer(rhino, doc, "DEVELOPED_SURFACE");
+    const geomAttrs = addNamedLayer(rhino, doc, "GENERATED_GEOMETRY");
+    const surfAttrs = addNamedLayer(rhino, doc, "DEVELOPED_SURFACES");
     const branchAttrs = addNamedLayer(rhino, doc, "SOURCE_BRANCHES");
     const boxAttrs = addNamedLayer(rhino, doc, "SELECTION_BOX");
+    const rootAttrs = addNamedLayer(rhino, doc, "ROOT_POINTS");
 
-    let brepCount = 0;
     let meshCount = 0;
     let surfCount = 0;
+    let rootCount = 0;
     if (includeGeom) {
       const elements = result.elements || [];
       for (let i = 0; i < elements.length; i++) {
-        const kind = addSolidElement(rhino, objects, geomAttrs, elements[i]);
-        if (kind === "brep") brepCount += 1;
-        else if (kind === "mesh") meshCount += 1;
+        if (addSolidElement(rhino, objects, geomAttrs, elements[i]) === "mesh") meshCount += 1;
       }
-      if (!brepCount && !meshCount && result.positions && result.indices && result.indices.length) {
-        const mesh = fillRhinoMesh(rhino, result.positions, result.indices);
-        if (geomAttrs && objects.addMesh) objects.addMesh(mesh, geomAttrs);
-        else if (objects.addMesh) objects.addMesh(mesh);
-        meshCount = 1;
+      if (!meshCount && result.positions && result.indices && result.indices.length) {
+        if (addExactMesh(rhino, objects, geomAttrs, result.positions, result.indices)) meshCount = 1;
       }
     }
     if (includeSurf) {
       const surfaces = result.surfaces || [];
       for (let i = 0; i < surfaces.length; i++) {
-        const el = surfaces[i];
-        if (!el.positions || !el.indices || !el.indices.length) continue;
-        const mesh = fillRhinoMesh(rhino, el.positions, el.indices);
-        if (surfAttrs && objects.addMesh) objects.addMesh(mesh, surfAttrs);
-        else if (objects.addMesh) objects.addMesh(mesh);
-        surfCount += 1;
+        const mesh = elementExportMesh(surfaces[i]);
+        if (!mesh) continue;
+        if (addExactMesh(rhino, objects, surfAttrs, mesh.positions, mesh.indices)) surfCount += 1;
       }
       if (!surfCount && result.surfacePositions && result.surfaceIndices && result.surfaceIndices.length) {
-        const mesh = fillRhinoMesh(rhino, result.surfacePositions, result.surfaceIndices);
-        if (surfAttrs && objects.addMesh) objects.addMesh(mesh, surfAttrs);
-        else if (objects.addMesh) objects.addMesh(mesh);
-        surfCount = 1;
+        if (addExactMesh(rhino, objects, surfAttrs, result.surfacePositions, result.surfaceIndices)) surfCount = 1;
       }
     }
 
-    const guides = result.guides || [];
+    const guides = result.guides || result.sourceBranches || [];
     for (let i = 0; i < guides.length; i++) {
       const g = guides[i];
       addRhinoCurve(rhino, objects, branchAttrs, g.ax, g.ay, g.az, g.bx, g.by, g.bz);
@@ -809,7 +860,13 @@
       const g = boxEdges[i];
       addRhinoCurve(rhino, objects, boxAttrs, g.ax, g.ay, g.az, g.bx, g.by, g.bz);
     }
+    const roots = result.roots || [];
+    for (let i = 0; i < roots.length; i++) {
+      const r = roots[i];
+      if (addRhinoPoint(rhino, objects, rootAttrs, r.x, r.y, r.z)) rootCount += 1;
+    }
 
+    const geometryStateHash = result.geometryStateHash || hashGeometryState(result);
     const bytes = (() => {
       try {
         return doc.toByteArray();
@@ -824,17 +881,201 @@
     const copy = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes);
     downloadBlob(filename, new Blob([copy], { type: "application/octet-stream" }));
     return {
-      added: brepCount + meshCount + surfCount + guides.length + boxEdges.length,
-      closed: brepCount,
+      added: meshCount + surfCount + guides.length + boxEdges.length + rootCount,
+      closed: 0,
       meshCount,
       surfCount,
+      rootCount,
+      branchCount: guides.length,
       which,
-      kind: which === "surface" ? "developed surface" : brepCount ? "closed brep" : "closed mesh",
+      kind: "mesh",
+      geometryStateHash,
     };
   }
 
   async function exportGridSurfaces3dm(result, filename) {
     return exportGridSpace3dm(result, filename, { which: "surface" });
+  }
+
+  function xmlEscape(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function viewBasis(view) {
+    const mode = String(view || "front").toLowerCase();
+    let dx = 0;
+    let dy = 0;
+    let dz = 1;
+    let ux = 0;
+    let uy = 1;
+    let uz = 0;
+    if (mode === "back") dz = -1;
+    else if (mode === "right") {
+      dx = 1;
+      dz = 0;
+    } else if (mode === "left") {
+      dx = -1;
+      dz = 0;
+    } else if (mode === "top") {
+      dy = 1;
+      dz = 0;
+      ux = 0;
+      uy = 0;
+      uz = -1;
+    } else if (mode === "bottom") {
+      dy = -1;
+      dz = 0;
+      ux = 0;
+      uy = 0;
+      uz = 1;
+    } else if (mode === "isometric" || mode === "iso" || mode === "perspective" || mode === "persp") {
+      dx = 1;
+      dy = 1;
+      dz = 1;
+    }
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    dx /= dl;
+    dy /= dl;
+    dz /= dl;
+    let xx = uy * dz - uz * dy;
+    let xy = uz * dx - ux * dz;
+    let xz = ux * dy - uy * dx;
+    const xl = Math.hypot(xx, xy, xz);
+    if (xl < 1e-8) {
+      xx = 1;
+      xy = 0;
+      xz = 0;
+    } else {
+      xx /= xl;
+      xy /= xl;
+      xz /= xl;
+    }
+    const yx = dy * xz - dz * xy;
+    const yy = dz * xx - dx * xz;
+    const yz = dx * xy - dy * xx;
+    return { xx, xy, xz, yx, yy, yz, name: mode === "perspective" || mode === "persp" ? "isometric" : mode };
+  }
+
+  function projectPoint(x, y, z, basis) {
+    return {
+      u: x * basis.xx + y * basis.xy + z * basis.xz,
+      v: x * basis.yx + y * basis.yy + z * basis.yz,
+    };
+  }
+
+  function clippedBranchesToSvg(graph, options) {
+    const segs = (graph && graph.segs) || [];
+    const box = (graph && graph.box) || { minx: 0, maxx: CUBE, miny: 0, maxy: CUBE, minz: 0, maxz: CUBE };
+    const basis = viewBasis(options && options.view);
+    const pts = [];
+    function add(x, y, z) {
+      pts.push(projectPoint(x, y, z, basis));
+    }
+    add(box.minx, box.miny, box.minz);
+    add(box.maxx, box.miny, box.minz);
+    add(box.maxx, box.maxy, box.minz);
+    add(box.minx, box.maxy, box.minz);
+    add(box.minx, box.miny, box.maxz);
+    add(box.maxx, box.miny, box.maxz);
+    add(box.maxx, box.maxy, box.maxz);
+    add(box.minx, box.maxy, box.maxz);
+    for (let i = 0; i < segs.length; i++) {
+      add(segs[i].ax, segs[i].ay, segs[i].az);
+      add(segs[i].bx, segs[i].by, segs[i].bz);
+    }
+    let minU = Infinity;
+    let maxU = -Infinity;
+    let minV = Infinity;
+    let maxV = -Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      if (pts[i].u < minU) minU = pts[i].u;
+      if (pts[i].u > maxU) maxU = pts[i].u;
+      if (pts[i].v < minV) minV = pts[i].v;
+      if (pts[i].v > maxV) maxV = pts[i].v;
+    }
+    const pad = 0.4;
+    minU -= pad;
+    maxU += pad;
+    minV -= pad;
+    maxV += pad;
+    const w = Math.max(0.5, maxU - minU);
+    const h = Math.max(0.5, maxV - minV);
+    function svgPt(x, y, z) {
+      const p = projectPoint(x, y, z, basis);
+      return { x: p.u - minU, y: maxV - p.v };
+    }
+    const px = Math.round(Math.max(w, h) * 36);
+    const parts = [];
+    parts.push(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${px}" height="${Math.round((h / w) * px)}" viewBox="0 0 ${fmt(w)} ${fmt(h)}">`
+    );
+    parts.push(`<title>D7 Grid Growth branches · ${xmlEscape(basis.name)}</title>`);
+    parts.push(
+      `<desc>1 SVG user unit = 1 foot. Branches clipped to the selection box. View: ${xmlEscape(basis.name)}. Box ${fmt(box.maxx - box.minx)} × ${fmt(box.maxz - box.minz)} × ${fmt(box.maxy - box.miny)} ft.</desc>`
+    );
+    parts.push(`<rect width="${fmt(w)}" height="${fmt(h)}" fill="#000000"/>`);
+    const corners = [
+      [box.minx, box.miny, box.minz],
+      [box.maxx, box.miny, box.minz],
+      [box.maxx, box.maxy, box.minz],
+      [box.minx, box.maxy, box.minz],
+      [box.minx, box.miny, box.maxz],
+      [box.maxx, box.miny, box.maxz],
+      [box.maxx, box.maxy, box.maxz],
+      [box.minx, box.maxy, box.maxz],
+    ];
+    const edges = [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+      [3, 0],
+      [4, 5],
+      [5, 6],
+      [6, 7],
+      [7, 4],
+      [0, 4],
+      [1, 5],
+      [2, 6],
+      [3, 7],
+    ];
+    parts.push(`<g id="SELECTION_BOX" fill="none" stroke="#5ad4e8" stroke-width="0.04" stroke-opacity="0.85">`);
+    for (let i = 0; i < edges.length; i++) {
+      const a = svgPt(corners[edges[i][0]][0], corners[edges[i][0]][1], corners[edges[i][0]][2]);
+      const b = svgPt(corners[edges[i][1]][0], corners[edges[i][1]][1], corners[edges[i][1]][2]);
+      parts.push(
+        `<line x1="${fmt(a.x)}" y1="${fmt(a.y)}" x2="${fmt(b.x)}" y2="${fmt(b.y)}"/>`
+      );
+    }
+    parts.push(`</g>`);
+    parts.push(
+      `<g id="SOURCE_BRANCHES" fill="none" stroke="#ffffff" stroke-width="0.06" stroke-linecap="round" stroke-linejoin="round">`
+    );
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      const a = svgPt(s.ax, s.ay, s.az);
+      const b = svgPt(s.bx, s.by, s.bz);
+      parts.push(
+        `<line x1="${fmt(a.x)}" y1="${fmt(a.y)}" x2="${fmt(b.x)}" y2="${fmt(b.y)}"/>`
+      );
+    }
+    parts.push(`</g>`);
+    parts.push(`</svg>`);
+    return parts.join("\n");
+  }
+
+  function exportClippedBranchesSvg(graph, filename, options) {
+    const segs = graph && graph.segs ? graph.segs : [];
+    if (!segs.length) throw new Error("No branches inside the selection box.");
+    const text = clippedBranchesToSvg(graph, options || {});
+    let name = sanitizeFilename(String(filename || "D7_Grid_Branches").replace(/\.svg$/i, ""));
+    if (!name) name = "D7_Grid_Branches";
+    name += ".svg";
+    downloadBlob(name, new Blob([text], { type: "image/svg+xml" }));
+    return { filename: name, count: segs.length, view: viewBasis(options && options.view).name };
   }
 
   global.D7SpatialExport = {
@@ -853,6 +1094,9 @@
     gridSurfacesToOBJ,
     exportGridSpace3dm,
     exportGridSurfaces3dm,
+    clippedBranchesToSvg,
+    exportClippedBranchesSvg,
+    hashGeometryState,
     downloadBlob,
   };
 })(window);
