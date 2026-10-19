@@ -8,8 +8,8 @@
   const DB_NAME = "d7-saved-grid-iterations";
   const DB_VERSION = 1;
   const STORE = "savedGridIterations";
-  const DATA_VERSION = 2;
-  const SCHEMA_VERSION = 2;
+  const DATA_VERSION = 4;
+  const SCHEMA_VERSION = 4;
 
   function openDb() {
     return new Promise((resolve, reject) => {

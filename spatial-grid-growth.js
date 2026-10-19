@@ -1135,6 +1135,7 @@
       connectDistance: options.connectDistance != null ? options.connectDistance : DEFAULT_CONNECT_DIST,
       connectBias: options.connectBias != null ? options.connectBias : DEFAULT_CONNECT_BIAS,
       freshConnections: [],
+      descriptorBias: options.descriptorBias || null,
     };
   }
 
@@ -1322,7 +1323,32 @@
         }
       }
       if (!ok) continue;
+      const bias = sim.descriptorBias;
+      const t = bias && bias.influence != null ? clamp(Number(bias.influence), 0, 1) : 0;
+      if (t > 0 && global.D7DescriptorProfiles && typeof global.D7DescriptorProfiles.weightAt === "function") {
+        const w = (1 - t) + t * global.D7DescriptorProfiles.weightAt(g.x, g.y, g.z, bias);
+        if (rng() > clamp(w, 0.03, 1.2)) continue;
+      }
       attractors.push({ x: g.x, y: g.y, z: g.z, gridId: gid });
+    }
+    for (let r = 0; r < sim.roots.length; r++) {
+      const root = sim.nodeById.get(sim.roots[r]);
+      if (!root) continue;
+      const near = nearbyGridNodes(sim.grid, root.x, root.y, root.z, Math.max(2.5, sim.influence), 28);
+      for (let i = 0; i < near.length && attractors.length < want; i++) {
+        const hit = near[i];
+        if (used.has(hit.id)) continue;
+        used.add(hit.id);
+        attractors.push({ x: hit.x, y: hit.y, z: hit.z, gridId: hit.id });
+      }
+    }
+    if (attractors.length < want) {
+      for (let gid = 0; gid < n && attractors.length < want; gid++) {
+        if (used.has(gid)) continue;
+        const g = sim.grid.nodes[gid];
+        if (!g || !sim.grid.adj[gid] || !sim.grid.adj[gid].length) continue;
+        attractors.push({ x: g.x, y: g.y, z: g.z, gridId: gid });
+      }
     }
     sim.attractors = attractors;
     sim.alive = new Uint8Array(attractors.length);
@@ -1470,6 +1496,9 @@
     const fromNet = findNetwork(sim, node.networkId);
     let best = -1;
     let bestDot = 0.04;
+    const bias = sim.descriptorBias;
+    const hb = bias ? Number(bias.horiz) || 0 : 0;
+    const vb = bias ? Number(bias.vert) || 0 : 0;
     for (let i = 0; i < neigh.length; i++) {
       const toId = neigh[i];
       const ek = edgeKey(gid, toId);
@@ -1481,9 +1510,14 @@
       const dy = to.y - node.y;
       const dz = to.z - node.z;
       const len = Math.hypot(dx, dy, dz) || 1;
-      const dot = (dx / len) * px + (dy / len) * py + (dz / len) * pz;
-      if (dot > bestDot) {
-        bestDot = dot;
+      let score = (dx / len) * px + (dy / len) * py + (dz / len) * pz;
+      if (hb || vb) {
+        const horiz = 1 - Math.abs(dy) / len;
+        const vert = Math.abs(dy) / len;
+        score += hb * horiz * 0.35 + vb * vert * 0.35;
+      }
+      if (score > bestDot) {
+        bestDot = score;
         best = toId;
       }
     }
@@ -1814,6 +1848,34 @@
         alive: !!sim.alive[i],
       })),
     };
+  }
+
+  function runHeadless(grid, options) {
+    const opts = options || {};
+    const seed = (opts.seed >>> 0) || 1;
+    const bias = opts.bias || null;
+    const t = bias && bias.influence != null ? Number(bias.influence) : 0;
+    const useBias = !!(bias && t > 0.001);
+    const sim = createSim({
+      seed,
+      grid,
+      influence: opts.influence != null ? opts.influence : DEFAULT_INFLUENCE,
+      kill: opts.kill != null ? opts.kill : DEFAULT_KILL,
+      attractorCount: opts.attractorCount != null ? opts.attractorCount : DEFAULT_ATTRACTORS,
+      connectNetworks: useBias && bias.connectNetworks ? true : !!opts.connectNetworks,
+      connectDistance: opts.connectDistance != null ? opts.connectDistance : DEFAULT_CONNECT_DIST,
+      connectBias: opts.connectBias != null ? opts.connectBias : DEFAULT_CONNECT_BIAS,
+      descriptorBias: useBias ? bias : null,
+    });
+    const roots = useBias && bias.roots ? bias.roots : [];
+    for (let i = 0; i < roots.length; i++) addRootAt(sim, roots[i].x, roots[i].y, roots[i].z);
+    if (!sim.roots.length) ensureDefaultRoot(sim);
+    generateAttractors(sim);
+    const cap = opts.maxSteps != null ? opts.maxSteps : 640;
+    for (let i = 0; i < cap; i++) {
+      if (!growStep(sim)) break;
+    }
+    return snapshot(sim);
   }
 
   function restoreGraph(sim, data) {
@@ -2462,6 +2524,22 @@
     const surfGroup = new THREE.Group();
     surfGroup.visible = false;
     scene.add(surfGroup);
+    const prepGroup = new THREE.Group();
+    prepGroup.visible = false;
+    scene.add(prepGroup);
+    const prepMat = new THREE.MeshLambertMaterial({
+      color: 0xf4f4f4,
+      emissive: 0x101010,
+      side: THREE.DoubleSide,
+      transparent: false,
+      opacity: 1,
+      depthWrite: true,
+    });
+    const prepEdgeMat = new THREE.LineBasicMaterial({
+      color: 0xb8b8b8,
+      transparent: true,
+      opacity: 0.55,
+    });
     let showSpaces = true;
     let showMeshEdges = true;
     let showBranches = false;
@@ -2582,6 +2660,210 @@
     connectHighlight.visible = false;
     scene.add(connectHighlight);
     let highlightUntil = 0;
+
+    const analysisGroup = new THREE.Group();
+    analysisGroup.visible = false;
+    scene.add(analysisGroup);
+
+    const spatialRegionGroup = new THREE.Group();
+    spatialRegionGroup.visible = false;
+    scene.add(spatialRegionGroup);
+    const spatialConnectGroup = new THREE.Group();
+    spatialConnectGroup.visible = false;
+    scene.add(spatialConnectGroup);
+    const spatialConnMat = new THREE.LineBasicMaterial({
+      color: 0xe8e2d4,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+    });
+    let spatialShow = { branches: true, regions: true, connections: true };
+
+    function disposeAnalysis() {
+      while (analysisGroup.children.length) {
+        const ch = analysisGroup.children[0];
+        analysisGroup.remove(ch);
+        if (ch.geometry) ch.geometry.dispose();
+        if (ch.material) {
+          if (Array.isArray(ch.material)) ch.material.forEach((m) => m.dispose && m.dispose());
+          else if (ch.material.dispose) ch.material.dispose();
+        }
+      }
+    }
+
+    function disposeGroupTree(group) {
+      while (group.children.length) {
+        const ch = group.children[0];
+        group.remove(ch);
+        if (ch.geometry) ch.geometry.dispose();
+        const mat = ch.material;
+        if (!mat || mat === spatialConnMat) continue;
+        if (Array.isArray(mat)) mat.forEach((m) => m && m !== spatialConnMat && m.dispose && m.dispose());
+        else if (mat.dispose) mat.dispose();
+      }
+    }
+
+    function applySpatialOverlayVis() {
+      spatialRegionGroup.visible = spatialShow.regions !== false && spatialRegionGroup.children.length > 0;
+      spatialConnectGroup.visible = spatialShow.connections !== false && spatialConnectGroup.children.length > 0;
+    }
+
+    function setSpatialOverlay(data, flags) {
+      disposeGroupTree(spatialRegionGroup);
+      disposeGroupTree(spatialConnectGroup);
+      if (flags) {
+        if (flags.branches != null) spatialShow.branches = !!flags.branches;
+        if (flags.regions != null) spatialShow.regions = !!flags.regions;
+        if (flags.connections != null) spatialShow.connections = !!flags.connections;
+      }
+      if (!data) {
+        applySpatialVis();
+        return;
+      }
+      const regions = data.regions || [];
+      const sphereSrc = THREE.SphereBufferGeometry || THREE.SphereGeometry;
+      for (let i = 0; i < regions.length; i++) {
+        const r = regions[i];
+        const rx = Math.max(0.4, (r.width || 4) * 0.5);
+        const ry = Math.max(0.4, (r.height || 4) * 0.5);
+        const rz = Math.max(0.4, (r.depth || 4) * 0.5);
+        const critical = !!r.critical || r.descriptorRole === "BOTTLENECK" || r.descriptorRole === "PRIMARY_CENTER";
+        const major = r.major !== false && !critical;
+        const mesh = new THREE.Mesh(
+          new sphereSrc(1, 18, 12),
+          new THREE.MeshBasicMaterial({
+            color: critical ? 0xb45a5a : 0x9a9a9a,
+            transparent: true,
+            opacity: critical ? 0.28 : major ? 0.2 : 0.14,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+          })
+        );
+        mesh.position.set(r.center.x, r.center.y, r.center.z);
+        mesh.scale.set(rx, ry, rz);
+        mesh.userData.kind = "spatial-region";
+        spatialRegionGroup.add(mesh);
+      }
+      const connections = data.connections || [];
+      if (connections.length) {
+        const pos = new Float32Array(connections.length * 6);
+        for (let i = 0; i < connections.length; i++) {
+          const c = connections[i];
+          const o = i * 6;
+          pos[o] = c.ax;
+          pos[o + 1] = c.ay;
+          pos[o + 2] = c.az;
+          pos[o + 3] = c.bx;
+          pos[o + 4] = c.by;
+          pos[o + 5] = c.bz;
+        }
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+        const lines = new THREE.LineSegments(geom, spatialConnMat);
+        lines.userData.kind = "spatial-connection";
+        spatialConnectGroup.add(lines);
+      }
+      applySpatialVis();
+    }
+
+    function setSpatialDisplay(state) {
+      if (!state) return;
+      if (state.branches != null) spatialShow.branches = !!state.branches;
+      if (state.regions != null) spatialShow.regions = !!state.regions;
+      if (state.connections != null) spatialShow.connections = !!state.connections;
+      applySpatialVis();
+    }
+
+    function clearSpatialDevelop() {
+      disposeGroupTree(spatialRegionGroup);
+      disposeGroupTree(spatialConnectGroup);
+      applySpatialVis();
+    }
+
+    function setDescriptorOverlay(viz, on) {
+      disposeAnalysis();
+      analysisGroup.visible = !!(on && viz);
+      if (!viz || !on) return;
+      const sphereSrc = THREE.SphereBufferGeometry || THREE.SphereGeometry;
+      const spheres = viz.spheres || [];
+      for (let i = 0; i < spheres.length; i++) {
+        const s = spheres[i];
+        const mesh = new THREE.Mesh(
+          new sphereSrc(Math.max(0.4, Number(s.r) || 1), 14, 10),
+          new THREE.MeshBasicMaterial({
+            color: s.color != null ? s.color : 0x888888,
+            transparent: true,
+            opacity: s.opacity != null ? s.opacity : 0.22,
+            depthWrite: false,
+          })
+        );
+        mesh.position.set(s.x, s.y, s.z);
+        analysisGroup.add(mesh);
+      }
+      const boxes = viz.boxes || [];
+      for (let i = 0; i < boxes.length; i++) {
+        const b = boxes[i];
+        const sx = Math.max(0.4, b.maxx - b.minx);
+        const sy = Math.max(0.4, b.maxy - b.miny);
+        const sz = Math.max(0.4, b.maxz - b.minz);
+        const mesh = new THREE.Mesh(
+          new THREE.BoxGeometry(sx, sy, sz),
+          new THREE.MeshBasicMaterial({
+            color: b.color != null ? b.color : 0x999999,
+            transparent: true,
+            opacity: b.opacity != null ? b.opacity : 0.14,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+          })
+        );
+        mesh.position.set((b.minx + b.maxx) * 0.5, (b.miny + b.maxy) * 0.5, (b.minz + b.maxz) * 0.5);
+        analysisGroup.add(mesh);
+      }
+      const planes = viz.planes || [];
+      for (let i = 0; i < planes.length; i++) {
+        const p = planes[i];
+        const mesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(CUBE, CUBE),
+          new THREE.MeshBasicMaterial({
+            color: p.color != null ? p.color : 0xc8c2ae,
+            transparent: true,
+            opacity: p.opacity != null ? p.opacity : 0.12,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+          })
+        );
+        mesh.rotation.x = -Math.PI * 0.5;
+        mesh.position.set(CUBE * 0.5, p.y, CUBE * 0.5);
+        analysisGroup.add(mesh);
+      }
+      const segs = viz.lines || [];
+      if (segs.length) {
+        const pos = new Float32Array(segs.length * 6);
+        for (let i = 0; i < segs.length; i++) {
+          const ln = segs[i];
+          const o = i * 6;
+          pos[o] = ln.ax;
+          pos[o + 1] = ln.ay;
+          pos[o + 2] = ln.az;
+          pos[o + 3] = ln.bx;
+          pos[o + 4] = ln.by;
+          pos[o + 5] = ln.bz;
+        }
+        const lg = new THREE.BufferGeometry();
+        lg.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+        analysisGroup.add(
+          new THREE.LineSegments(
+            lg,
+            new THREE.LineBasicMaterial({
+              color: segs[0].color != null ? segs[0].color : 0xffffff,
+              transparent: true,
+              opacity: 0.95,
+              depthWrite: false,
+            })
+          )
+        );
+      }
+    }
 
     const rootsGroup = new THREE.Group();
     scene.add(rootsGroup);
@@ -2833,17 +3115,20 @@
     function normalizeDisplayMode(mode) {
       const m = String(mode || "").toLowerCase();
       if (m === "surface") return "surface";
+      if (m === "prep" || m === "prepmesh" || m === "prep-mesh") return "prep";
       if (m === "both") return "both";
       return "geometry";
     }
 
     function applySpatialVis() {
+      applySpatialOverlayVis();
       if (!geomActive) {
-        branches.visible = true;
+        branches.visible = spatialShow.branches !== false;
         pickLines.visible = !!(pickGeom.attributes.position && pickGeom.attributes.position.count > 0);
         skeletonLines.visible = false;
         geomGroup.visible = false;
         surfGroup.visible = false;
+        prepGroup.visible = false;
         if (spaceMesh) spaceMesh.visible = false;
         if (spaceEdges) spaceEdges.visible = false;
         return;
@@ -2851,13 +3136,16 @@
       branches.visible = false;
       connectHighlight.visible = false;
       pickLines.visible = false;
-      skeletonLines.visible = showBranches;
+      skeletonLines.visible = showBranches || spatialShow.branches !== false;
       const showForm = showSpaces;
       const mode = normalizeDisplayMode(displayMode);
-      const solidsOn = showForm && (mode === "geometry" || mode === "both");
-      const surfaceOn = showForm && (mode === "surface" || mode === "both");
+      const hasPrep = prepGroup.children.length > 0;
+      const solidsOn = showForm && (mode === "geometry" || mode === "both" || (mode === "prep" && !hasPrep));
+      const surfaceOn = showForm && mode === "surface";
+      const prepOn = showForm && hasPrep && (mode === "prep" || mode === "both");
       geomGroup.visible = solidsOn;
       surfGroup.visible = surfaceOn;
+      prepGroup.visible = prepOn;
       if (spaceMesh) spaceMesh.visible = false;
       if (spaceEdges) spaceEdges.visible = false;
       if (solidsOn) {
@@ -3060,10 +3348,12 @@
     }
 
     function paintElementHighlight() {
-      const both = normalizeDisplayMode(displayMode) === "both";
-      paintGroupHighlight(geomGroup, both ? compareWireMat : spaceMat, both ? compareEdgeMat : spaceEdgeMat, both);
+      const mode = normalizeDisplayMode(displayMode);
+      const both = mode === "both";
+      paintGroupHighlight(geomGroup, both ? compareMat : spaceMat, both ? compareEdgeMat : spaceEdgeMat, both);
       paintGroupHighlight(surfGroup, ribbonMat, spaceEdgeMat, false);
-      attachElemGizmo(selectedElementId);
+      if (mode === "prep") detachElemGizmo();
+      else attachElemGizmo(selectedElementId);
     }
 
     function disposeGroupMeshes(group) {
@@ -3076,6 +3366,40 @@
           }
         });
       }
+    }
+
+    function disposePrepGroup() {
+      disposeGroupMeshes(prepGroup);
+    }
+
+    function setPrepMeshDisplay(mesh) {
+      disposePrepGroup();
+      if (!mesh || !mesh.positions || !mesh.indices || !mesh.indices.length) {
+        applySpatialVis();
+        return null;
+      }
+      const geom = new THREE.BufferGeometry();
+      const pos = mesh.positions instanceof Float32Array ? mesh.positions : new Float32Array(mesh.positions);
+      geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      const maxIndex = mesh.indices.reduce((m, v) => (v > m ? v : m), 0);
+      geom.setIndex(new THREE.BufferAttribute(maxIndex > 65535 ? new Uint32Array(mesh.indices) : new Uint16Array(mesh.indices), 1));
+      if (mesh.normals && mesh.normals.length === pos.length) {
+        const nrm = mesh.normals instanceof Float32Array ? mesh.normals : new Float32Array(mesh.normals);
+        geom.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
+      } else {
+        geom.computeVertexNormals();
+      }
+      geom.computeBoundingBox();
+      geom.computeBoundingSphere();
+      const obj = new THREE.Mesh(geom, prepMat);
+      obj.userData.kind = "prep";
+      obj.frustumCulled = false;
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 30), prepEdgeMat);
+      edges.userData.kind = "prep";
+      obj.add(edges);
+      prepGroup.add(obj);
+      applySpatialVis();
+      return obj;
     }
 
     function disposeGeomGroup() {
@@ -3215,7 +3539,24 @@
       const surfaces = bakeGroupMeshes(surfGroup);
       const branches = captureDisplayedBranches();
       const roots = captureDisplayedRoots();
-      const payload = { boxes, surfaces, branches, roots, elements: boxes, generatedBoxes: boxes, surfaceGeometry: surfaces, sourceBranches: branches, guides: branches };
+      const prep = [];
+      for (let i = 0; i < prepGroup.children.length; i++) {
+        const baked = bakeWorldMesh(prepGroup.children[i]);
+        if (baked) prep.push(baked);
+      }
+      const payload = {
+        boxes,
+        surfaces,
+        branches,
+        roots,
+        prep,
+        prepMesh: prep[0] || null,
+        elements: boxes,
+        generatedBoxes: boxes,
+        surfaceGeometry: surfaces,
+        sourceBranches: branches,
+        guides: branches,
+      };
       const lib = global.D7SpatialExport;
       payload.hash = lib && lib.hashGeometryState ? lib.hashGeometryState(payload) : "";
       return payload;
@@ -3403,7 +3744,9 @@
 
     function pickGeometry(clientX, clientY) {
       if (!geomActive || !showSpaces) return null;
-      const group = normalizeDisplayMode(displayMode) === "surface" ? surfGroup : geomGroup;
+      const mode = normalizeDisplayMode(displayMode);
+      if (mode === "prep") return null;
+      const group = mode === "surface" ? surfGroup : geomGroup;
       if (!group.children.length) return null;
       const rect = renderer.domElement.getBoundingClientRect();
       const pointer = new THREE.Vector2(
@@ -3658,7 +4001,7 @@
 
     function captureThumbnail() {
       const savedCam = getCameraState();
-      const hide = [cube, attractors, rootsGroup, hLines, vLines, snapPts, snapGhost, pickLines, branches, connectHighlight, skeletonLines];
+      const hide = [cube, attractors, rootsGroup, hLines, vLines, snapPts, snapGhost, pickLines, branches, connectHighlight, skeletonLines, analysisGroup];
       const prevVis = hide.map((obj) => (obj ? obj.visible : false));
       const gizmoPrev = gizmo ? { vis: gizmo.visible, en: gizmo.enabled } : null;
       const rootPrev = rootGizmo ? { vis: rootGizmo.visible, en: rootGizmo.enabled } : null;
@@ -3770,6 +4113,11 @@
       setHideOutsideSelection,
       setCutaway,
       setSpacesMesh,
+      setPrepMesh: setPrepMeshDisplay,
+      clearPrepMesh() {
+        disposePrepGroup();
+        applySpatialVis();
+      },
       setSkeleton,
       setSpatialActive,
       captureDisplayGeometry,
@@ -3836,6 +4184,10 @@
       setOnRootGizmoEnd(fn) {
         onRootGizmoEnd = fn;
       },
+      setDescriptorOverlay,
+      setSpatialOverlay,
+      setSpatialDisplay,
+      clearSpatialDevelop,
     };
   }
 
@@ -3895,7 +4247,13 @@
       showSpaces: document.getElementById("grid3dShowSpaces"),
       modeGeometry: document.getElementById("grid3dModeGeometry"),
       modeSurface: document.getElementById("grid3dModeSurface"),
+      modePrep: document.getElementById("grid3dModePrep"),
       modeBoth: document.getElementById("grid3dModeBoth"),
+      prepMesh: document.getElementById("grid3dPrepMesh"),
+      rebuildPrep: document.getElementById("grid3dRebuildPrep"),
+      prepRes: document.getElementById("grid3dPrepRes"),
+      prepStatus: document.getElementById("grid3dPrepStatus"),
+      exportGh: document.getElementById("grid3dExportGh"),
       showSelBox: document.getElementById("grid3dShowSelBox"),
       showHumanScale: document.getElementById("grid3dShowHumanScale"),
       hideOutside: document.getElementById("grid3dHideOutside"),
@@ -3938,6 +4296,27 @@
       elemDel: document.getElementById("grid3dElemDel"),
       elemClear: document.getElementById("grid3dElemClear"),
       resetGeom: document.getElementById("grid3dResetGeom"),
+      descMode: document.getElementById("grid3dDescMode"),
+      descTools: document.getElementById("grid3dDescTools"),
+      descCat: document.getElementById("grid3dDescCat"),
+      descWord: document.getElementById("grid3dDescWord"),
+      descInfl: document.getElementById("grid3dDescInfl"),
+      descInflVal: document.getElementById("grid3dDescInflVal"),
+      descCount: document.getElementById("grid3dDescCount"),
+      descGenerate: document.getElementById("grid3dDescGenerate"),
+      descStatus: document.getElementById("grid3dDescStatus"),
+      descCards: document.getElementById("grid3dDescCards"),
+      descLoad: document.getElementById("grid3dDescLoad"),
+      descSave: document.getElementById("grid3dDescSave"),
+      descOverlay: document.getElementById("grid3dDescOverlay"),
+      descDebug: document.getElementById("grid3dDescDebug"),
+      descDebugPanel: document.getElementById("grid3dDescDebugPanel"),
+      descSavedList: document.getElementById("grid3dDescSavedList"),
+      spatialGenerate: document.getElementById("grid3dSpatialGenerate"),
+      spatialStatus: document.getElementById("grid3dSpatialStatus"),
+      spatialShowBranches: document.getElementById("grid3dSpatialShowBranches"),
+      spatialShowRegions: document.getElementById("grid3dSpatialShowRegions"),
+      spatialShowConn: document.getElementById("grid3dSpatialShowConn"),
     };
 
     let viewer = null;
@@ -3968,6 +4347,30 @@
     let geomFuture = [];
     let geomHistLock = false;
     let formMode = "geometry";
+    let prepMesh = null;
+    let prepBusy = false;
+    let prepLiveMode = false;
+    let prepBuilding = false;
+    let descModeOn = false;
+    let descBusy = false;
+    let descCandidates = [];
+    let descSelectedId = null;
+    let descLoaded = null;
+    let descAnalysis = null;
+    let spatialRegions = [];
+    let spatialConnections = [];
+    let spatialDescriptor = "";
+    let spatialCategory = "";
+    let spatialLabel = "";
+    let prepGenId = 0;
+    let prepPending = null;
+    let prepPreviewTimer = 0;
+    let prepFinalTimer = 0;
+    let prepSwitchView = false;
+    let geomSliderActive = false;
+    let prepResolution = "medium";
+    const PREP_PREVIEW_MS = 110;
+    const PREP_FINAL_MS = 250;
     let openedIterationId = null;
     let openedIterationName = "";
     let iterationDirty = false;
@@ -4106,10 +4509,18 @@
       }
       if (els.generateSpaces) els.generateSpaces.disabled = spaceBusy || !ready;
       if (els.resetGeom) els.resetGeom.disabled = spaceBusy || !spaceResult;
+      if (els.prepMesh) els.prepMesh.disabled = spaceBusy || !spaceResult;
+      if (els.rebuildPrep) {
+        const stale = !!(prepMesh && prepMesh.outOfDate && !prepLiveMode);
+        els.rebuildPrep.disabled = spaceBusy || !stale;
+        els.rebuildPrep.classList.toggle("hidden", prepLiveMode || !stale);
+      }
+      if (els.prepRes) els.prepRes.disabled = spaceBusy;
       const canExport = !spaceBusy && !!spaceResult;
       if (els.exportGeom) els.exportGeom.disabled = !canExport;
       if (els.exportSurf) els.exportSurf.disabled = !canExport;
       if (els.exportBoth) els.exportBoth.disabled = !canExport;
+      if (els.exportGh) els.exportGh.disabled = !canExport || !prepMesh;
       if (els.exportBranchesSvg) {
         const clipped = currentClippedGraph();
         els.exportBranchesSvg.disabled = spaceBusy || !clipped.segs.length;
@@ -4143,6 +4554,227 @@
       els.spaceStatus.textContent = message;
       els.spaceStatus.classList.toggle("active", kind === "active");
       els.spaceStatus.classList.toggle("error", kind === "error");
+    }
+
+    function setPrepStatus(message, kind) {
+      if (!els.prepStatus) return;
+      els.prepStatus.textContent = message;
+      els.prepStatus.classList.toggle("active", kind === "active");
+      els.prepStatus.classList.toggle("error", kind === "error");
+    }
+
+    function currentBoxSourceHash() {
+      const lib = global.D7PrepMesh;
+      const elsList = spaceResult && spaceResult.elements ? spaceResult.elements : [];
+      if (lib && lib.sourceHash) return lib.sourceHash(elsList);
+      return "";
+    }
+
+    function livePrepPending() {
+      return !!(geomSliderActive || prepPreviewTimer || prepFinalTimer || prepPending || prepBuilding);
+    }
+
+    function prepStatusText() {
+      if (geomSliderActive && prepLiveMode) return "Updating Geometry…";
+      if (prepBuilding || prepBusy || (prepLiveMode && livePrepPending())) return "Updating Prep Mesh…";
+      if (!prepMesh) return "Generate Geometry, then Prepare for Grasshopper.";
+      const n = prepMesh.components != null ? prepMesh.components : 0;
+      if (prepMesh.outOfDate) return "Prep Mesh Out of Date · Connected Components: " + n + " · Rebuild Prep Mesh";
+      const issues = prepMesh.validation && prepMesh.validation.issues ? prepMesh.validation.issues : [];
+      const resLabel = String(prepMesh.resolution || prepResolution || "").toUpperCase();
+      let msg = "Prep Mesh Ready · Connected Components: " + n;
+      if (resLabel) msg += " · " + resLabel;
+      if (issues.length) msg += " · " + issues[0];
+      return msg;
+    }
+
+    function paintPrepStatus() {
+      if (geomSliderActive && prepLiveMode) setPrepStatus("Updating Geometry…", "active");
+      else if (prepBuilding || prepBusy || (prepLiveMode && livePrepPending())) setPrepStatus("Updating Prep Mesh…", "active");
+      else if (prepMesh && prepMesh.outOfDate) setPrepStatus(prepStatusText(), "error");
+      else if (prepMesh) setPrepStatus(prepStatusText(), "active");
+      else setPrepStatus(prepStatusText());
+    }
+
+    function paintPrepButtonLabel() {
+      if (!els.prepMesh) return;
+      els.prepMesh.textContent = prepLiveMode ? "Rebuild Prep Mesh" : "Prepare for Grasshopper";
+    }
+
+    function applyPrepToViewer() {
+      if (!viewer) return;
+      if (prepMesh && viewer.setPrepMesh) viewer.setPrepMesh(prepMesh);
+      else if (viewer.clearPrepMesh) viewer.clearPrepMesh();
+    }
+
+    function cancelLivePrep(invalidate) {
+      if (prepPreviewTimer) {
+        clearTimeout(prepPreviewTimer);
+        prepPreviewTimer = 0;
+      }
+      if (prepFinalTimer) {
+        clearTimeout(prepFinalTimer);
+        prepFinalTimer = 0;
+      }
+      prepPending = null;
+      geomSliderActive = false;
+      if (invalidate) prepGenId += 1;
+    }
+
+    function resetPrepSession() {
+      cancelLivePrep(true);
+      prepLiveMode = false;
+      prepSwitchView = false;
+      prepBusy = false;
+      prepBuilding = false;
+      paintPrepButtonLabel();
+    }
+
+    function clearPrepMeshState() {
+      resetPrepSession();
+      prepMesh = null;
+      if (viewer && viewer.clearPrepMesh) viewer.clearPrepMesh();
+      paintPrepStatus();
+      paintButtons();
+    }
+
+    function markPrepStale() {
+      if (!prepMesh) return;
+      if (prepLiveMode) {
+        scheduleLivePrep({ preview: false });
+        return;
+      }
+      const hash = currentBoxSourceHash();
+      if (hash && prepMesh.sourceHash && hash === prepMesh.sourceHash && prepMesh.resolution === prepResolution) return;
+      prepMesh.outOfDate = true;
+      paintPrepStatus();
+      paintButtons();
+    }
+
+    function scheduleLivePrep(opts) {
+      const o = opts || {};
+      if (!prepLiveMode && !o.force) return;
+      if (!spaceResult || !spaceResult.elements || !spaceResult.elements.length) return;
+      const preview = !!o.preview;
+      const resolution = preview ? "low" : prepResolution;
+      prepGenId += 1;
+      const id = prepGenId;
+      if (prepPreviewTimer) {
+        clearTimeout(prepPreviewTimer);
+        prepPreviewTimer = 0;
+      }
+      if (prepFinalTimer) {
+        clearTimeout(prepFinalTimer);
+        prepFinalTimer = 0;
+      }
+      const delay = o.immediate ? 0 : preview ? PREP_PREVIEW_MS : PREP_FINAL_MS;
+      const kick = () => {
+        if (preview) prepPreviewTimer = 0;
+        else prepFinalTimer = 0;
+        beginPrepBuild(id, resolution, preview, !!o.force);
+      };
+      if (delay <= 0) kick();
+      else if (preview) prepPreviewTimer = setTimeout(kick, delay);
+      else prepFinalTimer = setTimeout(kick, delay);
+      paintPrepStatus();
+    }
+
+    function beginPrepBuild(id, resolution, preview, force) {
+      if (id !== prepGenId) return;
+      if (prepBuilding) {
+        prepPending = { id, resolution, preview, force };
+        return;
+      }
+      runPrepBuild(id, resolution, preview, force);
+    }
+
+    function packPrepMesh(mesh) {
+      if (!mesh) return null;
+      return {
+        positions: Array.from(mesh.positions || []),
+        indices: Array.from(mesh.indices || []),
+        normals: mesh.normals ? Array.from(mesh.normals) : [],
+        resolution: mesh.resolution || prepResolution,
+        components: mesh.components || 0,
+        sourceHash: mesh.sourceHash || "",
+        outOfDate: !!mesh.outOfDate,
+        validation: mesh.validation ? clonePlain(mesh.validation) : null,
+        box: mesh.box ? clonePlain(mesh.box) : null,
+      };
+    }
+
+    async function runPrepBuild(id, resolution, preview, force) {
+      if (id !== prepGenId) return;
+      const lib = global.D7PrepMesh;
+      if (!lib || !lib.buildAsync) {
+        setPrepStatus("Prep mesh builder did not load.", "error");
+        return;
+      }
+      const elements = spaceResult && spaceResult.elements ? spaceResult.elements.slice() : [];
+      if (!elements.length) {
+        setPrepStatus("Generate Geometry first.", "error");
+        return;
+      }
+      const hash = lib.sourceHash(elements);
+      if (
+        !force &&
+        prepMesh &&
+        !prepMesh.outOfDate &&
+        prepMesh.sourceHash === hash &&
+        prepMesh.resolution === resolution
+      ) {
+        paintPrepStatus();
+        paintButtons();
+        return;
+      }
+      prepBuilding = true;
+      paintPrepStatus();
+      try {
+        const box = viewer && viewer.getSelectionBox ? viewer.getSelectionBox() : spaceResult.box;
+        const result = await lib.buildAsync(elements, {
+          resolution,
+          box: box || { minx: 0, miny: 0, minz: 0, maxx: CUBE, maxy: CUBE, maxz: CUBE },
+        });
+        if (id !== prepGenId) return;
+        result.outOfDate = false;
+        result.sourceHash = hash;
+        prepMesh = result;
+        prepLiveMode = true;
+        paintPrepButtonLabel();
+        applyPrepToViewer();
+        markIterationDirty();
+        if (prepSwitchView) {
+          if (formMode === "geometry" || formMode === "prep") applyFormMode("prep", { keepSelection: true });
+          prepSwitchView = false;
+        }
+        setSpaceStatus(geomStatusText(spaceResult), "active");
+      } catch (err) {
+        if (id !== prepGenId) return;
+        setPrepStatus("Prep mesh failed: " + (err && err.message ? err.message : String(err)), "error");
+        setSpaceStatus("Prep mesh failed: " + (err && err.message ? err.message : String(err)), "error");
+      } finally {
+        const pending = prepPending;
+        prepPending = null;
+        prepBuilding = false;
+        if (pending && pending.id === prepGenId) {
+          beginPrepBuild(pending.id, pending.resolution, pending.preview, pending.force);
+        } else {
+          paintPrepStatus();
+          paintButtons();
+        }
+      }
+    }
+
+    function runPrepareGrasshopper() {
+      if (!spaceResult || !spaceResult.elements || !spaceResult.elements.length) {
+        setPrepStatus("Generate Geometry first.", "error");
+        return;
+      }
+      prepSwitchView = !prepLiveMode && (formMode === "geometry" || formMode === "prep");
+      prepLiveMode = true;
+      paintPrepButtonLabel();
+      cancelLivePrep(true);
+      scheduleLivePrep({ preview: false, immediate: true, force: true });
     }
 
     function currentClippedGraph() {
@@ -4643,7 +5275,10 @@
       if (result.didConstrain) msg += " · capped at selection";
       if (result.invalidCount) msg += " · " + result.invalidCount + " open";
       if (formMode === "surface") msg += " · surface";
-      else if (formMode === "both") msg += " · geometry + surface";
+      else if (formMode === "prep") msg += " · prep mesh";
+      else if (formMode === "both") msg += prepMesh ? " · geometry + prep mesh" : " · geometry + surface";
+      if (prepMesh && prepMesh.outOfDate) msg += " · prep out of date";
+      else if (prepMesh) msg += " · Connected Components: " + (prepMesh.components || 0);
       return msg;
     }
 
@@ -4654,13 +5289,17 @@
       nextDupId = 1;
       geomHist = [];
       geomFuture = [];
+      resetPrepSession();
+      prepMesh = null;
       if (viewer) {
         if (viewer.setSelectedElement) viewer.setSelectedElement(null);
         if (viewer.setSpacesMesh) viewer.setSpacesMesh(null);
+        if (viewer.clearPrepMesh) viewer.clearPrepMesh();
         if (viewer.setSkeleton) viewer.setSkeleton([]);
         if (viewer.setSpatialActive) viewer.setSpatialActive(false);
       }
       paintElemPanel();
+      paintPrepStatus();
       paintButtons();
     }
 
@@ -4746,7 +5385,7 @@
     }
 
     function paintFormModeButtons() {
-      const buttons = [els.modeGeometry, els.modeSurface, els.modeBoth];
+      const buttons = [els.modeGeometry, els.modeSurface, els.modePrep, els.modeBoth];
       for (let i = 0; i < buttons.length; i++) {
         const btn = buttons[i];
         if (!btn) continue;
@@ -4758,7 +5397,8 @@
     }
 
     function applyFormMode(mode, opts) {
-      const next = mode === "surface" ? "surface" : mode === "both" ? "both" : "geometry";
+      const next =
+        mode === "surface" ? "surface" : mode === "prep" ? "prep" : mode === "both" ? "both" : "geometry";
       formMode = next;
       if (!opts || !opts.keepSelection) selectGeom(null);
       if (viewer && viewer.setDisplayMode) viewer.setDisplayMode(formMode);
@@ -4963,8 +5603,8 @@
             : { scale: 1, ox: 0, oy: 0, oz: 0, cube: CUBE };
       }
       const canonical = {
-        schemaVersion: 2,
-        version: 2,
+        schemaVersion: 4,
+        version: 4,
         id: openedIterationId || null,
         selectionBox,
         sourceBranches,
@@ -4997,7 +5637,12 @@
           showSelBox: !(els.showSelBox) || !!els.showSelBox.checked,
           showHumanScale: !!(els.showHumanScale && els.showHumanScale.checked),
           hideOutside: !!(els.hideOutside && els.hideOutside.checked),
+          prepResolution,
         },
+        prepMesh: packPrepMesh(prepMesh),
+        prepResolution,
+        prepComponents: prepMesh ? prepMesh.components : 0,
+        prepOutOfDate: !!(prepMesh && prepMesh.outOfDate),
         cameraState: viewer && viewer.getCameraState ? viewer.getCameraState() : null,
         randomSeed: sim.seed,
         humanScale: viewer && viewer.getHumanScaleState ? viewer.getHumanScaleState() : null,
@@ -5020,6 +5665,7 @@
         width: els.width ? Number(els.width.value) : 2,
         thickness: els.thickness ? Number(els.thickness.value) : 2,
         junction: els.junction ? Number(els.junction.value) : 2,
+        spatialTranslation: packSpatialTranslation(),
       };
       canonical.geometryStateHash = geometryHash({
         sourceBranches,
@@ -5029,6 +5675,7 @@
         elements: display && display.boxes ? display.boxes : generatedBoxes,
         surfaces: display && display.surfaces ? display.surfaces : surfaceGeometry,
         displayGeometry: display,
+        prepMesh: packPrepMesh(prepMesh),
       });
       return canonical;
     }
@@ -5101,6 +5748,11 @@
           applyGrowthSnapshot({ roots: snapshot.roots, attractors: snapshot.attractors, seed: snapshot.randomSeed });
           syncViewer();
         }
+        if (snapshot.prepResolution || (snapshot.displayState && snapshot.displayState.prepResolution)) {
+          prepResolution = String(snapshot.prepResolution || snapshot.displayState.prepResolution || "medium").toLowerCase();
+          if (prepResolution !== "low" && prepResolution !== "high") prepResolution = "medium";
+          if (els.prepRes) els.prepRes.value = prepResolution;
+        }
         applyFormMode(displayState.displayMode || snapshot.displayMode || "geometry", { keepSelection: true });
         const packed = clonePlain(snapshot.spaceResult);
         if (packed && packed.ok) {
@@ -5128,9 +5780,25 @@
             viewer.setSkeleton(snapshot.sourceBranches);
           }
         }
+        if (snapshot.prepMesh && snapshot.prepMesh.positions && snapshot.prepMesh.indices) {
+          prepMesh = packPrepMesh(snapshot.prepMesh);
+          const liveHash = currentBoxSourceHash();
+          if (liveHash && prepMesh.sourceHash && liveHash !== prepMesh.sourceHash) prepMesh.outOfDate = true;
+          else if (snapshot.prepOutOfDate) prepMesh.outOfDate = true;
+          prepLiveMode = true;
+          paintPrepButtonLabel();
+          applyPrepToViewer();
+        } else {
+          prepMesh = null;
+          prepLiveMode = false;
+          paintPrepButtonLabel();
+          if (viewer && viewer.clearPrepMesh) viewer.clearPrepMesh();
+        }
+        paintPrepStatus();
         if (selectedGeomId) selectGeom(selectedGeomId);
         const cam = snapshot.cameraState || snapshot.camera;
         if (cam && viewer && viewer.setCameraState) viewer.setCameraState(cam);
+        applySpatialSnapshot(snapshot);
         paintSelection();
         paintViewButtons();
       } finally {
@@ -5263,8 +5931,8 @@
         createdAt: now,
         updatedAt: now,
         thumbnail: thumbnail || "",
-        version: 2,
-        schemaVersion: 2,
+        version: 4,
+        schemaVersion: 4,
         geometryStateHash: snap.geometryStateHash,
         snapshot: snap,
       };
@@ -5289,8 +5957,8 @@
       const snap = captureWorkingSnapshot();
       existing.updatedAt = Date.now();
       existing.thumbnail = thumbnail || existing.thumbnail || "";
-      existing.version = 2;
-      existing.schemaVersion = 2;
+      existing.version = 4;
+      existing.schemaVersion = 4;
       existing.geometryStateHash = snap.geometryStateHash;
       existing.snapshot = snap;
       await persistSavedIteration(existing);
@@ -5351,8 +6019,8 @@
         updatedAt: now,
         thumbnail: record.thumbnail || "",
         snapshot: clonePlain(record.snapshot),
-        version: 2,
-        schemaVersion: 2,
+        version: 4,
+        schemaVersion: 4,
         geometryStateHash: record.snapshot && record.snapshot.geometryStateHash,
       };
       await persistSavedIteration(copy);
@@ -5467,13 +6135,19 @@
       paintViewButtons();
     }
 
-    function rebuildGeometry() {
+    function rebuildGeometry(liveOpts) {
       if (!spaceResult || !spaceResult.graph || !global.D7GridSpaces) return;
       try {
+        if (prepLiveMode && liveOpts && liveOpts.preview) setPrepStatus("Updating Geometry…", "active");
         const next = global.D7GridSpaces.rebuild(spaceResult.graph, geomOpts());
         applyGeomResult(next);
         markIterationDirty();
         setSpaceStatus(geomStatusText(next), "active");
+        if (prepLiveMode) {
+          scheduleLivePrep({ preview: !!(liveOpts && liveOpts.preview) });
+        } else {
+          markPrepStale();
+        }
       } catch (err) {
         setSpaceStatus("Rebuild failed: " + (err && err.message ? err.message : String(err)), "error");
       }
@@ -5517,6 +6191,7 @@
         nextDupId = nextDupFromStore();
         geomHist = [];
         geomFuture = [];
+        clearPrepMeshState();
         if (selectedGeomId && !findElement(selectedGeomId)) selectGeom(null);
         markIterationDirty();
         setSpaceStatus(geomStatusText(result), "active");
@@ -5864,6 +6539,500 @@
       if (!silent && value !== prev) slider.dispatchEvent(new Event("change", { bubbles: true }));
     }
 
+    function descCategory() {
+      return String(els.descCat && els.descCat.value ? els.descCat.value : "workspace").toLowerCase();
+    }
+
+    function descWord() {
+      return String(els.descWord && els.descWord.value ? els.descWord.value : "compressed").toLowerCase();
+    }
+
+    function descInfluence() {
+      return clamp(Number(els.descInfl && els.descInfl.value != null ? els.descInfl.value : 65), 0, 100);
+    }
+
+    function fillDescriptorOptions() {
+      if (!els.descWord || !global.D7DescriptorProfiles) return;
+      const list = global.D7DescriptorProfiles.descriptorsFor(descCategory());
+      const prev = els.descWord.value;
+      els.descWord.innerHTML = "";
+      for (let i = 0; i < list.length; i++) {
+        const opt = document.createElement("option");
+        opt.value = list[i].id;
+        opt.textContent = list[i].label;
+        els.descWord.appendChild(opt);
+      }
+      const keep = list.some((d) => d.id === prev);
+      if (keep) els.descWord.value = prev;
+      else if (descCategory() === "workspace" && list.some((d) => d.id === "compressed")) els.descWord.value = "compressed";
+      else if (descCategory() === "lobby" && list.some((d) => d.id === "centralized")) els.descWord.value = "centralized";
+      else if (descCategory() === "gathering" && list.some((d) => d.id === "terraced")) els.descWord.value = "terraced";
+      else els.descWord.value = list[0] ? list[0].id : "";
+    }
+
+    function setDescStatus(msg, kind) {
+      if (!els.descStatus) return;
+      els.descStatus.textContent = msg;
+      els.descStatus.classList.toggle("error", kind === "error");
+      els.descStatus.classList.toggle("active", kind === "active");
+    }
+
+    function paintDescMode() {
+      descModeOn = !!(els.descMode && els.descMode.checked);
+      if (els.descTools) els.descTools.classList.toggle("hidden", !descModeOn);
+      if (!descModeOn) {
+        if (els.descOverlay) els.descOverlay.checked = false;
+        applyDescOverlay();
+      }
+    }
+
+    function currentDescViz() {
+      if (!descAnalysis || !global.D7DescriptorProfiles) return null;
+      return global.D7DescriptorProfiles.visualization(descAnalysis, descCategory(), descWord());
+    }
+
+    function applyDescOverlay() {
+      if (!viewer || !viewer.setDescriptorOverlay) return;
+      const on = descModeOn && !!(els.descOverlay && els.descOverlay.checked);
+      viewer.setDescriptorOverlay(on ? currentDescViz() : null, on);
+    }
+
+    function paintDescDebug() {
+      if (!els.descDebugPanel) return;
+      const show = descModeOn && !!(els.descDebug && els.descDebug.checked);
+      els.descDebugPanel.classList.toggle("hidden", !show);
+      if (!show) return;
+      const d = descAnalysis && descAnalysis.debug ? descAnalysis.debug : null;
+      if (!d) {
+        els.descDebugPanel.textContent = "Load a candidate to inspect metrics.";
+        return;
+      }
+      const lines = [
+        "Cluster Count: " + d.clusterCount,
+        "Dominant Centrality: " + d.dominantCentrality,
+        "Average Clearance: " + d.averageClearance,
+        "Min Bottleneck Clearance: " + d.minBottleneckClearance,
+        "Z Cluster Count: " + d.zClusterCount,
+        "Vertical Span: " + d.verticalSpan,
+        "Dead-End Ratio: " + d.deadEndRatio,
+        "Void Ratio: " + d.voidRatio,
+        "Path Continuity: " + d.pathContinuity,
+        "Bottleneck Ratio: " + d.bottleneckRatio,
+        "XY Overlap Across Z: " + d.xyOverlapAcrossZ,
+      ];
+      if (descLoaded && descLoaded.score != null) {
+        lines.unshift("Overall Score: " + descLoaded.score);
+        const parts = descLoaded.parts || [];
+        for (let i = 0; i < parts.length; i++) lines.push(parts[i].label + ": " + parts[i].value);
+      }
+      els.descDebugPanel.textContent = lines.join("\n");
+    }
+
+    function packCandidateRecord(cand, extra) {
+      const rec = Object.assign(
+        {
+          version: 1,
+          category: cand.category,
+          descriptor: cand.descriptor,
+          descriptorLabel: cand.descriptorLabel,
+          influence: cand.influence,
+          seed: cand.seed,
+          score: cand.score,
+          parts: cand.parts,
+          metrics: cand.metrics,
+          clusters: cand.clusters,
+          growthSnapshot: cand.growthSnapshot,
+          thumb: cand.thumb || "",
+        },
+        extra || {}
+      );
+      return rec;
+    }
+
+    function paintDescCards() {
+      if (!els.descCards) return;
+      els.descCards.innerHTML = "";
+      const top = descCandidates.slice(0, 6);
+      for (let i = 0; i < top.length; i++) {
+        const cand = top[i];
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "grid3d-desc-card" + (cand.id === descSelectedId ? " active" : "");
+        btn.dataset.id = cand.id;
+        const canvas = document.createElement("canvas");
+        canvas.width = 220;
+        canvas.height = 96;
+        if (global.D7DescriptorMetrics) {
+          global.D7DescriptorMetrics.drawNetworkThumb(canvas, cand.growthSnapshot.nodes, cand.growthSnapshot.branches);
+        }
+        const title = document.createElement("strong");
+        title.textContent = "Candidate " + String(i + 1).padStart(2, "0");
+        const score = document.createElement("span");
+        score.textContent = "Score: " + cand.score;
+        btn.appendChild(canvas);
+        btn.appendChild(title);
+        btn.appendChild(score);
+        btn.addEventListener("click", () => {
+          descSelectedId = cand.id;
+          paintDescCards();
+          if (els.descLoad) els.descLoad.disabled = false;
+          if (els.descSave) els.descSave.disabled = false;
+          loadCandidateExact(cand);
+        });
+        els.descCards.appendChild(btn);
+      }
+      if (els.descLoad) els.descLoad.disabled = !descSelectedId;
+      if (els.descSave) els.descSave.disabled = !(descSelectedId || descLoaded);
+    }
+
+    function selectedCandidate() {
+      if (descLoaded && descLoaded.id === descSelectedId) return descLoaded;
+      for (let i = 0; i < descCandidates.length; i++) if (descCandidates[i].id === descSelectedId) return descCandidates[i];
+      return descLoaded;
+    }
+
+    function loadCandidateExact(cand) {
+      if (!cand || !cand.growthSnapshot) return false;
+      pauseGrowth();
+      const ok = applyGrowthSnapshot(cand.growthSnapshot);
+      if (!ok) return false;
+      descLoaded = cand;
+      descSelectedId = cand.id;
+      descAnalysis = cand.metrics;
+      clearSpatialState();
+      if (els.showBranches) {
+        els.showBranches.checked = true;
+        if (viewer) viewer.setShowBranches(true);
+      }
+      syncViewer();
+      paintStatus();
+      paintButtons();
+      paintDescCards();
+      applyDescOverlay();
+      paintDescDebug();
+      const parts = (cand.parts || []).map((p) => p.label + " " + p.value).join(" · ");
+      setDescStatus(
+        (cand.descriptorLabel || cand.descriptor) + " · overall " + cand.score + (parts ? " · " + parts : "") + " · loaded exactly (not regenerated)",
+        "active"
+      );
+      return true;
+    }
+
+    async function generateDescriptorCandidates() {
+      if (descBusy) return;
+      if (!sim.grid) {
+        setDescStatus("SVG grid is not loaded yet.", "error");
+        return;
+      }
+      if (!global.D7DescriptorProfiles || !global.D7DescriptorMetrics) {
+        setDescStatus("Descriptor modules failed to load.", "error");
+        return;
+      }
+      const count = clamp(Number(els.descCount && els.descCount.value ? els.descCount.value : 25), 10, 50);
+      const category = descCategory();
+      const word = descWord();
+      const infl = descInfluence();
+      const label = global.D7DescriptorProfiles.labelOf(category, word);
+      descBusy = true;
+      if (els.descGenerate) els.descGenerate.disabled = true;
+      setDescStatus("Generating " + count + " " + label + " candidates…", "active");
+      const base = hash32((sim.seed || 1) ^ hash32(category.length * 31 + word.length * 17 + Math.round(infl)));
+      const batch = [];
+      try {
+        for (let i = 0; i < count; i++) {
+          const seed = hash32(base + (i + 1) * 7919 + word.charCodeAt(0) * 13);
+          const rng = mulberry32(seed);
+          const bias = global.D7DescriptorProfiles.buildBias(category, word, infl, rng);
+          const snap = runHeadless(sim.grid, {
+            seed,
+            bias,
+            influence: Number(els.influence && els.influence.value != null ? els.influence.value : DEFAULT_INFLUENCE),
+            kill: Number(els.kill && els.kill.value != null ? els.kill.value : DEFAULT_KILL),
+            attractorCount: Number(els.attractorCount && els.attractorCount.value != null ? els.attractorCount.value : DEFAULT_ATTRACTORS),
+            connectNetworks: !!(els.connectNetworks && els.connectNetworks.checked),
+            connectDistance: clamp(Number(els.connectDist && els.connectDist.value != null ? els.connectDist.value : DEFAULT_CONNECT_DIST), 0.25, 4),
+            connectBias: clamp(Number(els.connectBias && els.connectBias.value != null ? els.connectBias.value : DEFAULT_CONNECT_BIAS), 0, 100),
+            maxSteps: 560,
+          });
+          const metrics = global.D7DescriptorMetrics.analyze(snap);
+          const scored = global.D7DescriptorProfiles.score(metrics, category, word);
+          batch.push({
+            id: "cand-" + String(i + 1).padStart(2, "0") + "-" + seed.toString(16),
+            index: i,
+            category,
+            descriptor: word,
+            descriptorLabel: label,
+            influence: infl,
+            seed,
+            score: scored.overall,
+            parts: scored.parts,
+            metrics,
+            clusters: metrics.clusters || [],
+            growthSnapshot: snap,
+          });
+          if (i % 2 === 1) {
+            setDescStatus("Generating " + (i + 1) + " / " + count + "…", "active");
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        }
+        batch.sort((a, b) => b.score - a.score || a.seed - b.seed);
+        descCandidates = batch;
+        descSelectedId = batch[0] ? batch[0].id : null;
+        descLoaded = null;
+        descAnalysis = batch[0] ? batch[0].metrics : null;
+        paintDescCards();
+        paintDescDebug();
+        const top = batch.slice(0, 3).map((c, i) => String(i + 1).padStart(2, "0") + "=" + c.score);
+        setDescStatus("Top " + Math.min(6, batch.length) + " of " + count + " · " + top.join(" · ") + ". Select one and Load Candidate.", "active");
+      } catch (err) {
+        setDescStatus("Candidate generation failed.", "error");
+      } finally {
+        descBusy = false;
+        if (els.descGenerate) els.descGenerate.disabled = false;
+      }
+    }
+
+    async function saveSelectedCandidate() {
+      const cand = selectedCandidate();
+      if (!cand || !global.D7SavedDescriptorCandidates) return;
+      try {
+        const rec = packCandidateRecord(cand, {
+          id: global.D7SavedDescriptorCandidates.createId(),
+          name: (cand.descriptorLabel || cand.descriptor) + " " + cand.score,
+        });
+        await global.D7SavedDescriptorCandidates.put(rec);
+        await refreshSavedDescList();
+        setDescStatus("Saved " + rec.name + ".", "active");
+      } catch (_) {
+        setDescStatus("Could not save candidate.", "error");
+      }
+    }
+
+    async function refreshSavedDescList() {
+      if (!els.descSavedList || !global.D7SavedDescriptorCandidates) return;
+      let records = [];
+      try {
+        records = await global.D7SavedDescriptorCandidates.list();
+      } catch (_) {
+        records = [];
+      }
+      els.descSavedList.innerHTML = "";
+      for (let i = 0; i < records.length; i++) {
+        const rec = records[i];
+        const li = document.createElement("li");
+        const name = document.createElement("span");
+        name.textContent = (rec.name || rec.descriptorLabel || "Candidate") + " · " + rec.score;
+        const row = document.createElement("div");
+        row.className = "row";
+        const loadBtn = document.createElement("button");
+        loadBtn.type = "button";
+        loadBtn.className = "ghost";
+        loadBtn.textContent = "Load";
+        loadBtn.addEventListener("click", () => loadCandidateExact(rec));
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "ghost";
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", async () => {
+          await global.D7SavedDescriptorCandidates.remove(rec.id);
+          refreshSavedDescList();
+        });
+        row.appendChild(loadBtn);
+        row.appendChild(delBtn);
+        li.appendChild(name);
+        li.appendChild(row);
+        els.descSavedList.appendChild(li);
+      }
+    }
+
+    function setSpatialStatus(msg, kind) {
+      if (!els.spatialStatus) return;
+      els.spatialStatus.textContent = msg;
+      els.spatialStatus.classList.toggle("error", kind === "error");
+      els.spatialStatus.classList.toggle("active", kind === "active");
+    }
+
+    function clearSpatialState() {
+      spatialRegions = [];
+      spatialConnections = [];
+      spatialDescriptor = "";
+      spatialCategory = "";
+      spatialLabel = "";
+      if (viewer && viewer.clearSpatialDevelop) viewer.clearSpatialDevelop();
+      paintButtons();
+    }
+
+    function connectionGuides(regions, connections) {
+      const byId = {};
+      for (let i = 0; i < (regions || []).length; i++) byId[regions[i].id] = regions[i];
+      const out = [];
+      for (let i = 0; i < (connections || []).length; i++) {
+        const c = connections[i];
+        const a = byId[c.fromId];
+        const b = byId[c.toId];
+        if (!a || !b) continue;
+        out.push({
+          id: c.id,
+          ax: a.center.x,
+          ay: a.center.y,
+          az: a.center.z,
+          bx: b.center.x,
+          by: b.center.y,
+          bz: b.center.z,
+          critical: !!c.critical,
+        });
+      }
+      return out;
+    }
+
+    function applySpatialHud() {
+      ensureViewer();
+      if (!viewer || !viewer.setSpatialDisplay) return;
+      viewer.setSpatialDisplay({
+        branches: !!(els.spatialShowBranches && els.spatialShowBranches.checked),
+        regions: !!(els.spatialShowRegions && els.spatialShowRegions.checked),
+        connections: !!(els.spatialShowConn && els.spatialShowConn.checked),
+      });
+    }
+
+    function paintSpatialOverlay() {
+      ensureViewer();
+      if (!viewer || !viewer.setSpatialOverlay) return;
+      if (!spatialRegions.length) {
+        viewer.setSpatialOverlay(null);
+        applySpatialHud();
+        return;
+      }
+      viewer.setSpatialOverlay({
+        regions: spatialRegions,
+        connections: connectionGuides(spatialRegions, spatialConnections),
+      });
+      applySpatialHud();
+    }
+
+    function packSpatialTranslation() {
+      if (!spatialRegions.length) return null;
+      return {
+        descriptor: spatialDescriptor,
+        category: spatialCategory,
+        descriptorLabel: spatialLabel,
+        regions: clonePlain(spatialRegions),
+        connections: clonePlain(spatialConnections),
+      };
+    }
+
+    function applySpatialSnapshot(snapshot) {
+      const trans = snapshot && (snapshot.spatialTranslation || snapshot.spatial);
+      if (trans && trans.regions && trans.regions.length) {
+        spatialRegions = clonePlain(trans.regions);
+        spatialConnections = clonePlain(trans.connections || []);
+        spatialDescriptor = trans.descriptor || "";
+        spatialCategory = trans.category || "";
+        spatialLabel = trans.descriptorLabel || spatialDescriptor;
+        paintSpatialOverlay();
+        setSpatialStatus(
+          spatialRegions.length + " spatial regions restored · " + (spatialLabel || spatialDescriptor || "loaded"),
+          "active"
+        );
+      } else {
+        spatialRegions = [];
+        spatialConnections = [];
+        if (viewer && viewer.setSpatialOverlay) viewer.setSpatialOverlay(null);
+      }
+      applySpatialHud();
+      paintButtons();
+    }
+
+    function currentDevelopNetwork() {
+      if (sim.nodes && sim.nodes.length >= 4) {
+        return { nodes: sim.nodes, branches: sim.branches };
+      }
+      const cand = selectedCandidate();
+      if (cand && cand.growthSnapshot && cand.growthSnapshot.nodes) {
+        return { nodes: cand.growthSnapshot.nodes, branches: cand.growthSnapshot.branches || [] };
+      }
+      return { nodes: [], branches: [] };
+    }
+
+    function generateSpatialRegions() {
+      const lib = global.D7SpatialDevelop;
+      if (!lib) {
+        setSpatialStatus("Spatial translation module did not load.", "error");
+        return;
+      }
+      const cand = selectedCandidate();
+      if (cand && cand.growthSnapshot && (!sim.nodes || sim.nodes.length < 4 || (descSelectedId && descLoaded && descLoaded.id !== cand.id))) {
+        loadCandidateExact(cand);
+      }
+      const net = currentDevelopNetwork();
+      if (!net.nodes.length) {
+        setSpatialStatus("Load or grow a branching iteration first.", "error");
+        return;
+      }
+      try {
+        const word = (descLoaded && descLoaded.descriptor) || descWord();
+        const category = (descLoaded && descLoaded.category) || descCategory();
+        const metrics = descAnalysis || (descLoaded && descLoaded.metrics) || null;
+        const result = lib.translate(net, {
+          metrics: metrics,
+          descriptor: word,
+          category: category,
+          descriptorLabel: (descLoaded && descLoaded.descriptorLabel) || (global.D7DescriptorProfiles && global.D7DescriptorProfiles.labelOf ? global.D7DescriptorProfiles.labelOf(category, word) : word),
+        });
+        spatialRegions = result.regions;
+        spatialConnections = result.connections;
+        spatialDescriptor = result.descriptor;
+        spatialCategory = result.category;
+        spatialLabel = result.descriptorLabel;
+        paintSpatialOverlay();
+        markIterationDirty();
+        paintButtons();
+        const summary = spatialRegions
+          .map((r) => r.id + " " + r.descriptorRole + " " + r.width.toFixed(1) + "×" + r.depth.toFixed(1) + "×" + r.height.toFixed(1))
+          .join(" · ");
+        setSpatialStatus(spatialRegions.length + " regions · " + (spatialLabel || word) + " · " + summary, "active");
+      } catch (err) {
+        setSpatialStatus(err && err.message ? err.message : String(err), "error");
+      }
+    }
+
+    function bindSpatialUi() {
+      if (els.spatialGenerate) els.spatialGenerate.addEventListener("click", () => generateSpatialRegions());
+      [els.spatialShowBranches, els.spatialShowRegions, els.spatialShowConn].forEach((box) => {
+        if (!box) return;
+        box.addEventListener("change", () => {
+          if (box === els.spatialShowBranches && els.showBranches) {
+            els.showBranches.checked = box.checked;
+            if (viewer) viewer.setShowBranches(box.checked);
+          }
+          applySpatialHud();
+        });
+      });
+    }
+
+    function bindDescriptorUi() {
+      fillDescriptorOptions();
+      if (els.descInflVal) els.descInflVal.textContent = String(descInfluence());
+      paintDescMode();
+      if (els.descMode) els.descMode.addEventListener("change", paintDescMode);
+      if (els.descCat) {
+        els.descCat.addEventListener("change", () => {
+          fillDescriptorOptions();
+        });
+      }
+      if (els.descInfl) {
+        els.descInfl.addEventListener("input", () => {
+          if (els.descInflVal) els.descInflVal.textContent = String(descInfluence());
+        });
+      }
+      if (els.descGenerate) els.descGenerate.addEventListener("click", () => generateDescriptorCandidates());
+      if (els.descLoad) els.descLoad.addEventListener("click", () => loadCandidateExact(selectedCandidate()));
+      if (els.descSave) els.descSave.addEventListener("click", () => saveSelectedCandidate());
+      if (els.descOverlay) els.descOverlay.addEventListener("change", applyDescOverlay);
+      if (els.descDebug) els.descDebug.addEventListener("change", paintDescDebug);
+      refreshSavedDescList();
+    }
+
     function initGridSliderBounds() {
       let stored = {};
       try {
@@ -5915,6 +7084,8 @@
     if (els.showBranches) {
       els.showBranches.addEventListener("change", () => {
         if (viewer) viewer.setShowBranches(els.showBranches.checked);
+        if (els.spatialShowBranches) els.spatialShowBranches.checked = els.showBranches.checked;
+        applySpatialHud();
       });
     }
     if (els.showSpaces) {
@@ -5925,6 +7096,7 @@
     [
       [els.modeGeometry, "geometry"],
       [els.modeSurface, "surface"],
+      [els.modePrep, "prep"],
       [els.modeBoth, "both"],
     ].forEach((pair) => {
       const btn = pair[0];
@@ -5959,22 +7131,23 @@
         runGenerateSpaces();
       });
     }
-    function onGlobalGeom() {
+    function onGlobalGeom(preview) {
       if (iterationLoadLock) return;
       if (!spaceResult) return;
-      rebuildGeometry();
+      geomSliderActive = !!preview;
+      rebuildGeometry({ preview: !!preview });
     }
     if (els.width) {
-      els.width.addEventListener("input", onGlobalGeom);
-      els.width.addEventListener("change", onGlobalGeom);
+      els.width.addEventListener("input", () => onGlobalGeom(true));
+      els.width.addEventListener("change", () => onGlobalGeom(false));
     }
     if (els.thickness) {
-      els.thickness.addEventListener("input", onGlobalGeom);
-      els.thickness.addEventListener("change", onGlobalGeom);
+      els.thickness.addEventListener("input", () => onGlobalGeom(true));
+      els.thickness.addEventListener("change", () => onGlobalGeom(false));
     }
     if (els.junction) {
-      els.junction.addEventListener("input", onGlobalGeom);
-      els.junction.addEventListener("change", onGlobalGeom);
+      els.junction.addEventListener("input", () => onGlobalGeom(true));
+      els.junction.addEventListener("change", () => onGlobalGeom(false));
     }
     function onElemGeom(dim) {
       if (applyingGeom || !selectedGeomId) return;
@@ -5992,7 +7165,7 @@
       geomFlexId = el.id;
       geomFlexKey = dim;
       mergeOverride(el.id, patch);
-      rebuildGeometry();
+      rebuildGeometry({ preview: geomSliderActive });
       const next = findElement(el.id);
       if (next) {
         const actual = dim === "width" ? next.width : dim === "thickness" ? next.thickness : next.length;
@@ -6095,6 +7268,7 @@
       const dim = pair[1];
       if (!input) return;
       input.addEventListener("pointerdown", () => {
+        geomSliderActive = true;
         if (!geomUndoOpen) {
           pushGeomHist();
           geomUndoOpen = true;
@@ -6102,6 +7276,7 @@
       });
       input.addEventListener("input", () => onElemGeom(dim));
       input.addEventListener("change", () => {
+        geomSliderActive = false;
         onElemGeom(dim);
         geomUndoOpen = false;
       });
@@ -6138,6 +7313,19 @@
       els.elemClear.addEventListener("click", resetSelectedBox);
     }
     if (els.resetGeom) els.resetGeom.addEventListener("click", resetAllGeometry);
+    if (els.prepMesh) els.prepMesh.addEventListener("click", () => runPrepareGrasshopper());
+    if (els.rebuildPrep) els.rebuildPrep.addEventListener("click", () => runPrepareGrasshopper());
+    if (els.prepRes) {
+      els.prepRes.addEventListener("change", () => {
+        prepResolution = String(els.prepRes.value || "medium").toLowerCase();
+        if (prepResolution !== "low" && prepResolution !== "high") prepResolution = "medium";
+        if (prepLiveMode && prepMesh) {
+          scheduleLivePrep({ preview: false, immediate: true });
+        } else if (prepMesh && prepMesh.resolution !== prepResolution) {
+          markPrepStale();
+        }
+      });
+    }
 
     async function exportIteration(which) {
       if (!spaceResult || !spaceResult.ok) {
@@ -6208,6 +7396,57 @@
     if (els.exportGeom) els.exportGeom.addEventListener("click", () => exportIteration("geometry"));
     if (els.exportSurf) els.exportSurf.addEventListener("click", () => exportIteration("surface"));
     if (els.exportBoth) els.exportBoth.addEventListener("click", () => exportIteration("both"));
+    async function exportGrasshopperPackage() {
+      if (!spaceResult || !spaceResult.ok) {
+        setSpaceStatus("Generate Geometry first.", "error");
+        return;
+      }
+      if (!prepMesh || !prepMesh.positions || !prepMesh.indices) {
+        setPrepStatus("Prepare for Grasshopper first.", "error");
+        return;
+      }
+      const lib = global.D7SpatialExport;
+      if (!lib || !lib.exportGrasshopperPackage3dm) {
+        setSpaceStatus("Exporter did not load.", "error");
+        return;
+      }
+      ensureViewer();
+      const display = viewer && viewer.captureDisplayGeometry ? viewer.captureDisplayGeometry() : null;
+      const guides =
+        display && display.branches && display.branches.length
+          ? display.branches
+          : captureSourceBranches();
+      const payload = {
+        ok: true,
+        elements: spaceResult.elements || [],
+        guides,
+        sourceBranches: guides,
+        prepMesh: packPrepMesh(prepMesh),
+        box: viewer && viewer.getSelectionBox ? viewer.getSelectionBox() : spaceResult.box,
+        geometryStateHash: geometryHash({
+          sourceBranches: guides,
+          generatedBoxes: spaceResult.elements || [],
+          elements: spaceResult.elements || [],
+          prepMesh,
+        }),
+      };
+      try {
+        setSpaceStatus("Writing Grasshopper 3DM…");
+        const out = await lib.exportGrasshopperPackage3dm(payload, "D7_Grasshopper_Package.3dm");
+        setSpaceStatus(
+          "Exported D7_Grasshopper_Package.3dm · Feet · 01_SOURCE_BRANCHES · 02_SOURCE_GEOMETRY · 03_PREP_MESH · 04_MODULE_BOUNDARY" +
+            (out && out.closed ? " · " + out.closed + " boxes" : "") +
+            (out && out.prepCount ? " · prep mesh" : "") +
+            (out && out.branchCount ? " · " + out.branchCount + " branches" : "") +
+            (prepMesh.outOfDate ? " · prep out of date" : "") +
+            (prepMesh.components != null ? " · Connected Components: " + prepMesh.components : ""),
+          prepMesh.outOfDate ? "error" : "active"
+        );
+      } catch (err) {
+        setSpaceStatus("Export failed: " + (err && err.message ? err.message : String(err)), "error");
+      }
+    }
+    if (els.exportGh) els.exportGh.addEventListener("click", () => exportGrasshopperPackage());
     if (els.exportBranchesSvg) {
       els.exportBranchesSvg.addEventListener("click", () => {
         const lib = global.D7SpatialExport;
@@ -6471,6 +7710,7 @@
         paintRoots();
         syncViewer();
         paintStatus();
+        clearSpatialState();
         setStatus("Network cleared. Attractors, roots, and SVG grid remain.", "active");
       });
     }
@@ -6534,9 +7774,12 @@
     });
 
     paintButtons();
+    paintPrepStatus();
     paintReadout();
     paintGridStats();
     paintFormModeButtons();
+    bindDescriptorUi();
+    bindSpatialUi();
     loadDefaultGrid();
     refreshSavedIterList();
 
@@ -6603,6 +7846,8 @@
         if (els.showHumanScale && v.setShowHumanScale) v.setShowHumanScale(els.showHumanScale.checked);
         if (els.hideOutside && v.setHideOutsideSelection) v.setHideOutsideSelection(els.hideOutside.checked);
         if (spaceResult) applyGeomResult(spaceResult);
+        applyPrepToViewer();
+        paintPrepStatus();
         v.setBoxGizmoLocked(editMode !== "idle");
         updateRootGizmo();
         syncViewer();
@@ -6708,5 +7953,6 @@
     snapshot,
     connectedNetworkSummary,
     buildGridFromSvg,
+    runHeadless,
   };
 })(window);

@@ -1021,6 +1021,82 @@
           <div class="row">
             <button id="grid3dReset" class="ghost" type="button">Reset Simulation</button>
           </div>
+          <details class="grid3d-desc" id="grid3dDescSection" open>
+            <summary class="section-head">Descriptor Analysis</summary>
+            <p class="grid-status">Descriptor Mode sits on top of the current growth engine. Off = the manual workflow is unchanged. On = generate many 3D networks, score them in XYZ, then load one. The word sets spatial criteria, not a predetermined form.</p>
+            <label class="check">
+              <input id="grid3dDescMode" type="checkbox" />
+              Descriptor Mode ON/OFF
+            </label>
+            <div id="grid3dDescTools" class="grid3d-desc-tools hidden">
+              <label class="ctrl">
+                Category
+                <select id="grid3dDescCat" aria-label="Descriptor category">
+                  <option value="lobby">Lobby</option>
+                  <option value="workspace" selected>Workspace</option>
+                  <option value="gathering">Gathering</option>
+                </select>
+              </label>
+              <label class="ctrl">
+                Descriptor
+                <select id="grid3dDescWord" aria-label="Descriptor"></select>
+              </label>
+              <label class="ctrl" title="0 = unguided branching. 100 = stronger biases, still random within those limits.">
+                Descriptor Influence
+                <span class="value" id="grid3dDescInflVal">65</span>
+                <input id="grid3dDescInfl" type="range" min="0" max="100" step="1" value="65" />
+              </label>
+              <label class="ctrl">
+                Candidate Count
+                <select id="grid3dDescCount" aria-label="Candidate count">
+                  <option value="10">10</option>
+                  <option value="25" selected>25</option>
+                  <option value="50">50</option>
+                </select>
+              </label>
+              <div class="row">
+                <button id="grid3dDescGenerate" class="primary" type="button">GENERATE CANDIDATES</button>
+              </div>
+              <p id="grid3dDescStatus" class="grid-status">Choose a descriptor, then generate candidates.</p>
+              <div class="section-head">Top Candidates</div>
+              <div id="grid3dDescCards" class="grid3d-desc-cards"></div>
+              <div class="row">
+                <button id="grid3dDescLoad" class="ghost" type="button" disabled>LOAD CANDIDATE</button>
+                <button id="grid3dDescSave" class="ghost" type="button" disabled>SAVE CANDIDATE</button>
+              </div>
+              <label class="check">
+                <input id="grid3dDescOverlay" type="checkbox" />
+                Show Descriptor Analysis
+              </label>
+              <label class="check">
+                <input id="grid3dDescDebug" type="checkbox" />
+                Show Metric Debug
+              </label>
+              <pre id="grid3dDescDebugPanel" class="grid3d-desc-debug hidden"></pre>
+              <div class="section-head">Saved Candidates</div>
+              <ul id="grid3dDescSavedList" class="grid3d-desc-saved"></ul>
+            </div>
+          </details>
+          <details class="grid3d-desc" id="grid3dSpatialSection" open>
+            <summary class="section-head">04 — Spatial Translation</summary>
+            <p class="grid-status">Reduce the selected branching iteration into 3–7 occupiable spatial regions. Branches stay as organization, not pipes.</p>
+            <div class="row">
+              <button id="grid3dSpatialGenerate" class="primary" type="button">GENERATE SPATIAL REGIONS</button>
+            </div>
+            <p id="grid3dSpatialStatus" class="grid-status">Load a branching iteration, then generate spatial regions.</p>
+            <label class="check">
+              <input id="grid3dSpatialShowBranches" type="checkbox" checked />
+              Show Branches
+            </label>
+            <label class="check">
+              <input id="grid3dSpatialShowRegions" type="checkbox" checked />
+              Show Spatial Regions
+            </label>
+            <label class="check">
+              <input id="grid3dSpatialShowConn" type="checkbox" checked />
+              Show Spatial Connections
+            </label>
+          </details>
           <div class="section-head">Rectangular Geometry</div>
           <p class="grid-status">The cyan box is a fixed 20' × 20' × 20' architectural module (1 unit = 1 foot). Place it on grown branches, then Generate Geometry. A smaller or larger chunk is fitted into that 20' cube; the box itself never changes its 20' meaning. Paths stay on a square module, turns become 90° steps, and touching cells merge into one box. Width is the module; thickness is the other side; junction size fattens forks. Boxes that cross the cyan selection are trimmed and capped so each solid stays closed. Thin Surfaces draws a connected zero-thickness strip along the branches, mitered at turns and welded at forks; Width is the strip width. Click a strip to select it.</p>
           <p id="grid3dSpaceStatus" class="grid-status">Grow branches, then Generate Geometry.</p>
@@ -1032,6 +1108,21 @@
             <button id="grid3dGenerateSpaces" class="primary" type="button">Generate Geometry</button>
             <button id="grid3dResetGeom" class="ghost" type="button">Reset Current</button>
           </div>
+          <div class="section-head">Prepare for Grasshopper</div>
+          <p class="grid-status">Build one unified mesh from the boxes currently on screen. After Prepare, Width, Thickness, Junction Size, and Prep Resolution update the mesh live. Dragging uses a fast preview; release rebuilds at the selected resolution. Grasshopper does the remesh and Kangaroo relaxation.</p>
+          <p id="grid3dPrepStatus" class="grid-status">Generate Geometry, then Prepare for Grasshopper.</p>
+          <div class="row">
+            <button id="grid3dPrepMesh" class="primary" type="button" disabled>Prepare for Grasshopper</button>
+            <button id="grid3dRebuildPrep" class="ghost hidden" type="button">Rebuild Prep Mesh</button>
+          </div>
+          <label class="ctrl">
+            Prep Resolution
+            <select id="grid3dPrepRes" aria-label="Prep Resolution">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
           <label class="ctrl">
             Width
             <span class="value" id="grid3dWidthVal">2.00'</span>
@@ -1153,10 +1244,11 @@
             <input id="grid3dShowSpaces" type="checkbox" checked />
             Show Geometry
           </label>
-          <p class="grid-status">GEOMETRY is the editable rectangular solids. SURFACE hides those boxes without deleting them. BOTH overlays transparent geometry on the developed surface.</p>
-          <div class="row grid3d-form-mode" id="grid3dFormModeRow" role="group" aria-label="Geometry or surface display">
+          <p class="grid-status">GEOMETRY is the editable rectangles. SURFACE is the developed strips. PREP MESH is the unified Grasshopper mesh. BOTH overlays wireframe rectangles on the solid white prep mesh.</p>
+          <div class="row grid3d-form-mode" id="grid3dFormModeRow" role="group" aria-label="Geometry display">
             <button type="button" class="ghost grid3d-mode-btn active" data-mode="geometry" id="grid3dModeGeometry">GEOMETRY</button>
             <button type="button" class="ghost grid3d-mode-btn" data-mode="surface" id="grid3dModeSurface">SURFACE</button>
+            <button type="button" class="ghost grid3d-mode-btn" data-mode="prep" id="grid3dModePrep">PREP MESH</button>
             <button type="button" class="ghost grid3d-mode-btn" data-mode="both" id="grid3dModeBoth">BOTH</button>
           </div>
           <label class="check">
@@ -1203,6 +1295,10 @@
           </div>
           <div class="row">
             <button id="grid3dExportBoth" class="ghost" type="button" disabled>Export Both</button>
+          </div>
+          <p class="grid-status">Export Grasshopper Package writes one Rhino 3DM: source branches, edited boxes, unified prep mesh, and the 20' module. Units = feet. The file matches the viewport. Open that 3DM in Rhino, then open grasshopper/D7_PrepMesh_To_Kangaroo.ghx to remesh and run a soap-film.</p>
+          <div class="row">
+            <button id="grid3dExportGh" class="ghost" type="button" disabled>Export Grasshopper Package</button>
           </div>
         </aside>
         <div class="space3d-main">
@@ -1255,6 +1351,11 @@
     <script src="spatial-custom-grid.js"></script>
     <script src="spatial-3d.js"></script>
     <script src="spatial-grid-spaces.js"></script>
+    <script src="spatial-prep-mesh.js"></script>
+    <script src="spatial-surface-develop.js"></script>
+    <script src="spatial-descriptor-metrics.js"></script>
+    <script src="spatial-descriptor-profiles.js"></script>
+    <script src="saved-descriptor-candidates-store.js"></script>
     <script src="spatial-grid-growth.js"></script>
     <script src="app.js"></script>
   </body>

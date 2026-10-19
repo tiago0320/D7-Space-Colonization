@@ -81,6 +81,13 @@
       feed(surfs[i] && surfs[i].id != null ? surfs[i].id : i);
       feedMesh(surfs[i]);
     }
+    const prep = src.prepMesh || (src.displayGeometry && src.displayGeometry.prepMesh) || null;
+    feed("p");
+    if (prep) {
+      feed(prep.resolution || "");
+      feed(prep.components != null ? prep.components : 0);
+      feedMesh(prep);
+    }
     return ("00000000" + h.toString(16)).slice(-8).toUpperCase();
   }
 
@@ -1223,6 +1230,88 @@
     return exportGridSpace3dm(result, filename, { which: "surface" });
   }
 
+  async function exportGrasshopperPackage3dm(result, filename) {
+    if (!result || !result.ok) throw new Error("Generate Geometry first.");
+    const prep = result.prepMesh;
+    if (!prep || !prep.positions || !prep.indices || !prep.indices.length) {
+      throw new Error("Prepare for Grasshopper first.");
+    }
+    const rhino = await loadRhino();
+    const doc = new rhino.File3dm();
+    setFeet(rhino, doc);
+    const objects = doc.objects();
+    const branchAttrs = addNamedLayer(rhino, doc, "01_SOURCE_BRANCHES");
+    const geomAttrs = addNamedLayer(rhino, doc, "02_SOURCE_GEOMETRY");
+    const prepAttrs = addNamedLayer(rhino, doc, "03_PREP_MESH");
+    const boxAttrs = addNamedLayer(rhino, doc, "04_MODULE_BOUNDARY");
+
+    const guides = result.guides || result.sourceBranches || [];
+    let branchCount = 0;
+    for (let i = 0; i < guides.length; i++) {
+      const g = guides[i];
+      if (addRhinoCurve(rhino, objects, branchAttrs, g.ax, g.ay, g.az, g.bx, g.by, g.bz)) branchCount += 1;
+    }
+
+    let brepCount = 0;
+    const elements = result.elements || [];
+    for (let i = 0; i < elements.length; i++) {
+      if (addSolidElement(rhino, objects, geomAttrs, elements[i]) === "brep") brepCount += 1;
+    }
+
+    let prepCount = 0;
+    if (addExactMesh(rhino, objects, prepAttrs, prep.positions, prep.indices)) prepCount = 1;
+
+    let boxCount = 0;
+    const box = result.box || { minx: 0, miny: 0, minz: 0, maxx: CUBE, maxy: CUBE, maxz: CUBE };
+    const min = [Number(box.minx) || 0, Number(box.miny) || 0, Number(box.minz) || 0];
+    const max = [
+      Number(box.maxx) != null ? Number(box.maxx) : CUBE,
+      Number(box.maxy) != null ? Number(box.maxy) : CUBE,
+      Number(box.maxz) != null ? Number(box.maxz) : CUBE,
+    ];
+    try {
+      const bounds = new rhino.BoundingBox(min, max);
+      const brep = rhino.Brep.createFromBoundingBox(bounds);
+      if (brep && (brep.isValid || brep.isSolid)) {
+        if (boxAttrs && objects.addBrep) objects.addBrep(brep, boxAttrs);
+        else if (objects.addBrep) objects.addBrep(brep);
+        boxCount = 1;
+      }
+    } catch (err) {}
+    if (!boxCount) {
+      const edges = selectionBoxEdges(box);
+      for (let i = 0; i < edges.length; i++) {
+        const g = edges[i];
+        addRhinoCurve(rhino, objects, boxAttrs, g.ax, g.ay, g.az, g.bx, g.by, g.bz);
+      }
+      boxCount = edges.length;
+    }
+
+    const geometryStateHash = result.geometryStateHash || hashGeometryState(result);
+    const bytes = (() => {
+      try {
+        return doc.toByteArray();
+      } catch (err) {
+        return doc.toByteArrayBuffer ? doc.toByteArrayBuffer() : null;
+      }
+    })();
+    try {
+      if (doc.delete) doc.delete();
+    } catch (err) {}
+    if (!bytes) throw new Error("Grasshopper 3DM export failed");
+    const copy = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes);
+    const name = sanitizeFilename(String(filename || "D7_Grasshopper_Package").replace(/\.3dm$/i, "")) + ".3dm";
+    downloadBlob(name, new Blob([copy], { type: "application/octet-stream" }));
+    return {
+      filename: name,
+      closed: brepCount,
+      prepCount,
+      branchCount,
+      boxCount,
+      geometryStateHash,
+    };
+  }
+
   function xmlEscape(s) {
     return String(s || "")
       .replace(/&/g, "&amp;")
@@ -1420,6 +1509,7 @@
     gridSurfacesToOBJ,
     exportGridSpace3dm,
     exportGridSurfaces3dm,
+    exportGrasshopperPackage3dm,
     clippedBranchesToSvg,
     exportClippedBranchesSvg,
     hashGeometryState,
