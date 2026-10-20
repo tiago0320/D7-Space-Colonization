@@ -133,9 +133,7 @@
     variantList: document.getElementById("variantList"),
     tabStudio: document.getElementById("tabStudio"),
     tabMatrix: document.getElementById("tabMatrix"),
-    tabSpace3d: document.getElementById("tabSpace3d"),
     tabGrid3d: document.getElementById("tabGrid3d"),
-    tabSurfBuilder: document.getElementById("tabSurfBuilder"),
     studioView: document.getElementById("studioView"),
     studioHud: document.getElementById("studioHud"),
     matrixView: document.getElementById("matrixView"),
@@ -172,11 +170,7 @@
     matrixSaveCats: document.getElementById("matrixSaveCats"),
     matrixConfirmSave: document.getElementById("matrixConfirmSave"),
     matrixCancelSave: document.getElementById("matrixCancelSave"),
-    space3dView: document.getElementById("space3dView"),
     grid3dView: document.getElementById("grid3dView"),
-    surfBuilderView: document.getElementById("surfBuilderView"),
-    space3dStage: document.getElementById("space3dStage"),
-    space3dStatus: document.getElementById("space3dStatus"),
   };
 
   const MAX_VARIANTS = 24;
@@ -191,9 +185,7 @@
   let matrixGenerating = false;
   let matrixExporting = false;
   let appPage = "studio";
-  let space3dStudio = null;
   let grid3dStudio = null;
-  let surfBuilderStudio = null;
   const MatrixLib = window.D7DescriptorMatrix;
   let matrixType = "lobby";
   let matrixDescriptor = "interlocking";
@@ -3147,14 +3139,10 @@
 
   function setAppPage(page) {
     if (page === "matrix") appPage = "matrix";
-    else if (page === "space3d") appPage = "space3d";
-    else if (page === "grid3d") appPage = "grid3d";
-    else if (page === "surfbuilder") appPage = "surfbuilder";
+    else if (page === "space3d" || page === "surfbuilder" || page === "grid3d") appPage = "grid3d";
     else appPage = "studio";
     const matrix = appPage === "matrix";
-    const space3d = appPage === "space3d";
     const grid3d = appPage === "grid3d";
-    const surfbuilder = appPage === "surfbuilder";
     if (ui.tabStudio) {
       ui.tabStudio.classList.toggle("active", appPage === "studio");
       ui.tabStudio.setAttribute("aria-selected", appPage === "studio" ? "true" : "false");
@@ -3163,43 +3151,24 @@
       ui.tabMatrix.classList.toggle("active", matrix);
       ui.tabMatrix.setAttribute("aria-selected", matrix ? "true" : "false");
     }
-    if (ui.tabSpace3d) {
-      ui.tabSpace3d.classList.toggle("active", space3d);
-      ui.tabSpace3d.setAttribute("aria-selected", space3d ? "true" : "false");
-    }
     if (ui.tabGrid3d) {
       ui.tabGrid3d.classList.toggle("active", grid3d);
       ui.tabGrid3d.setAttribute("aria-selected", grid3d ? "true" : "false");
     }
-    if (ui.tabSurfBuilder) {
-      ui.tabSurfBuilder.classList.toggle("active", surfbuilder);
-      ui.tabSurfBuilder.setAttribute("aria-selected", surfbuilder ? "true" : "false");
-    }
     if (ui.studioView) ui.studioView.classList.toggle("hidden", appPage !== "studio");
     if (ui.matrixView) ui.matrixView.classList.toggle("hidden", !matrix);
-    if (ui.space3dView) ui.space3dView.classList.toggle("hidden", !space3d);
     if (ui.grid3dView) ui.grid3dView.classList.toggle("hidden", !grid3d);
-    if (ui.surfBuilderView) ui.surfBuilderView.classList.toggle("hidden", !surfbuilder);
     const appEl = document.querySelector(".app");
     if (appEl) {
       appEl.classList.toggle("matrix-mode", matrix);
-      appEl.classList.toggle("space3d-mode", space3d);
       appEl.classList.toggle("grid3d-mode", grid3d);
-      appEl.classList.toggle("surfbuilder-mode", surfbuilder);
-    }
-    if (space3dStudio) {
-      if (space3d) space3dStudio.show();
-      else space3dStudio.hide();
+      appEl.classList.remove("surfbuilder-mode");
     }
     if (grid3dStudio) {
       if (grid3d) grid3dStudio.show();
       else grid3dStudio.hide();
     }
-    if (surfBuilderStudio) {
-      if (surfbuilder) surfBuilderStudio.show();
-      else surfBuilderStudio.hide();
-    }
-    if (matrix || grid3d || space3d || surfbuilder) {
+    if (matrix || grid3d) {
       playing = false;
       ui.play.textContent = "Grow";
     }
@@ -3385,9 +3354,7 @@
     if (ui.saveMatrix) ui.saveMatrix.disabled = !canExport;
     if (ui.tabStudio) ui.tabStudio.disabled = matrixGenerating || matrixExporting;
     if (ui.tabMatrix) ui.tabMatrix.disabled = matrixGenerating || matrixExporting;
-    if (ui.tabSpace3d) ui.tabSpace3d.disabled = matrixGenerating || matrixExporting;
     if (ui.tabGrid3d) ui.tabGrid3d.disabled = matrixGenerating || matrixExporting;
-    if (ui.tabSurfBuilder) ui.tabSurfBuilder.disabled = matrixGenerating || matrixExporting;
   }
 
   function captureStudioSession() {
@@ -3932,21 +3899,6 @@
     }
   }
 
-  async function syncSharedCustomGridFromStudioUpload(file, svgText) {
-    if (!window.D7CustomGrid || !file) return;
-    try {
-      await window.D7CustomGrid.init();
-      const name = file.name || "Custom grid";
-      const lower = name.toLowerCase();
-      if (svgText || lower.endsWith(".svg")) {
-        const text = svgText || (await file.text());
-        await window.D7CustomGrid.importSvgTextAndActivate(text, name, 1);
-      }
-    } catch (err) {
-      console.warn("Could not sync site drawing to shared 3D grid", err);
-    }
-  }
-
   async function importGridFile(file, slotIndex = pendingSlotIndex) {
     if (!file) return false;
     if (slotIndex == null || slotIndex < 0 || slotIndex >= GRID_SLOT_COUNT) {
@@ -3996,7 +3948,6 @@
       }
       if (previous) removeVariantsForGrid(previous.id);
       await persistGridSlot(slotIndex, file, entry);
-      await syncSharedCustomGridFromStudioUpload(file, svgText);
       return true;
     } catch (err) {
       setGridStatus(err.message || "Could not read that file.", "error");
@@ -5418,15 +5369,7 @@
   });
   if (ui.tabStudio) ui.tabStudio.addEventListener("click", () => setAppPage("studio"));
   if (ui.tabMatrix) ui.tabMatrix.addEventListener("click", () => setAppPage("matrix"));
-  if (ui.tabSpace3d) ui.tabSpace3d.addEventListener("click", () => setAppPage("space3d"));
   if (ui.tabGrid3d) ui.tabGrid3d.addEventListener("click", () => setAppPage("grid3d"));
-  if (ui.tabSurfBuilder) ui.tabSurfBuilder.addEventListener("click", () => setAppPage("surfbuilder"));
-  window.addEventListener("d7-surface-builder-import", (event) => {
-    if (surfBuilderStudio && typeof surfBuilderStudio.importPayload === "function") {
-      surfBuilderStudio.importPayload(event.detail);
-    }
-    setAppPage("surfbuilder");
-  });
   if (ui.matrixTypeRow) {
     ui.matrixTypeRow.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-matrix-type]");
@@ -5923,22 +5866,11 @@
   window.addEventListener("resize", resize);
   if (window.ResizeObserver) {
     new ResizeObserver(resize).observe(viewport);
-    if (ui.space3dStage) {
-      new ResizeObserver(() => {
-        if (appPage === "space3d" && space3dStudio) space3dStudio.resize();
-      }).observe(ui.space3dStage);
-    }
     const grid3dStage = document.getElementById("grid3dStage");
     if (grid3dStage) {
       new ResizeObserver(() => {
         if (appPage === "grid3d" && grid3dStudio) grid3dStudio.resize();
       }).observe(grid3dStage);
-    }
-    const sbStage = document.getElementById("sbStage");
-    if (sbStage) {
-      new ResizeObserver(() => {
-        if (appPage === "surfbuilder" && surfBuilderStudio) surfBuilderStudio.resize();
-      }).observe(sbStage);
     }
   }
   loadSavedIterationsFromStorage();
@@ -5955,85 +5887,11 @@
   renderDescriptorButtons();
   renderMatrixGrid();
   updateMatrixGenerateState();
-  if (window.D7Spatial3D && typeof window.D7Spatial3D.mount === "function") {
-    space3dStudio = window.D7Spatial3D.mount({
-      draw2dPreview(target) {
-        if (!target) return;
-        const ctx = target.getContext("2d");
-        if (!ctx) return;
-        const size = target.width || 240;
-        const site = currentSiteRect();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        renderStudioFrame(ctx, {
-          transparentBackground: false,
-          outputWidth: size,
-          outputHeight: size,
-          camera: cameraForSiteRect(site, size),
-          pixelRatio: 1,
-          clipToOutput: true,
-          hideInfluencePreview: true,
-          hideEditingChrome: true,
-          hideDraft: true,
-        });
-      },
-      capture2d() {
-        const site = currentSiteRect();
-        const indexOf = new Map();
-        sim.nodes.forEach((node, index) => indexOf.set(node, index));
-        return {
-          site: { x: site.x, y: site.y, w: site.w, h: site.h },
-          nodes: sim.nodes.map((node) => ({
-            x: node.pos.x,
-            y: node.pos.y,
-            parentIndex: node.parent ? indexOf.get(node.parent) : -1,
-            thickness: node.thickness,
-            order: node.order || 1,
-            rootId: node.rootId,
-            fused: !!node.fused,
-          })),
-          mergeLinks: (sim.mergeLinks || [])
-            .map((link) => ({
-              a: indexOf.get(link.a),
-              b: indexOf.get(link.b),
-            }))
-            .filter((link) => link.a != null && link.b != null),
-          roots: seeds.map((seed) => ({ id: seed.id, x: seed.x, y: seed.y })),
-          attractors: (sim.originalAttractors || currentAttractors() || []).map((p) => ({
-            x: p.x,
-            y: p.y,
-          })),
-        };
-      },
-    });
-  }
   if (window.D7GridGrowth && typeof window.D7GridGrowth.mount === "function") {
     grid3dStudio = window.D7GridGrowth.mount();
   }
-  if (window.D7SurfaceBuilder && typeof window.D7SurfaceBuilder.mount === "function") {
-    surfBuilderStudio = window.D7SurfaceBuilder.mount();
-  }
-  if (window.D7CustomGrid && typeof window.D7CustomGrid.init === "function") {
-    window.D7CustomGrid.init().catch((err) => console.warn("Shared grid load failed", err));
-  }
   resize();
-  async function maybeMigrateSharedCustomGridFromSlot0() {
-    if (!window.D7CustomGrid) return;
-    try {
-      await window.D7CustomGrid.init();
-      if (window.D7CustomGrid.isCustom()) return;
-      const entry = gridSlots[0]?.entry;
-      if (!entry?.svgText) return;
-      await window.D7CustomGrid.importSvgTextAndActivate(
-        entry.svgText,
-        entry.name || "Custom grid",
-        1
-      );
-    } catch (err) {
-      console.warn("Could not migrate site SVG to shared custom grid", err);
-    }
-  }
-
-  restoreGridSlots().then(() => maybeMigrateSharedCustomGridFromSlot0());
+  restoreGridSlots();
   refreshSavedSimulationLibrary();
   refreshSavedMatrixLibrary();
   loop();

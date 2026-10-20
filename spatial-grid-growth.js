@@ -2600,14 +2600,6 @@
       new THREE.LineBasicMaterial({ color: 0x9ad8ee, transparent: true, opacity: 0.95 })
     );
     scene.add(pickLines);
-    const sendSelGeom = new THREE.BufferGeometry();
-    sendSelGeom.setAttribute("position", new THREE.Float32BufferAttribute([], 3));
-    const sendSelLines = new THREE.LineSegments(
-      sendSelGeom,
-      new THREE.LineBasicMaterial({ color: 0xc45c5c, depthTest: false })
-    );
-    sendSelLines.visible = false;
-    scene.add(sendSelLines);
 
     let hLines = null;
     let vLines = null;
@@ -2658,20 +2650,6 @@
     analysisGroup.visible = false;
     scene.add(analysisGroup);
 
-    const spatialRegionGroup = new THREE.Group();
-    spatialRegionGroup.visible = false;
-    scene.add(spatialRegionGroup);
-    const spatialConnectGroup = new THREE.Group();
-    spatialConnectGroup.visible = false;
-    scene.add(spatialConnectGroup);
-    const spatialConnMat = new THREE.LineBasicMaterial({
-      color: 0xe8e2d4,
-      transparent: true,
-      opacity: 0.85,
-      depthWrite: false,
-    });
-    let spatialShow = { branches: true, regions: true, connections: true };
-
     function disposeAnalysis() {
       while (analysisGroup.children.length) {
         const ch = analysisGroup.children[0];
@@ -2682,95 +2660,6 @@
           else if (ch.material.dispose) ch.material.dispose();
         }
       }
-    }
-
-    function disposeGroupTree(group) {
-      while (group.children.length) {
-        const ch = group.children[0];
-        group.remove(ch);
-        if (ch.geometry) ch.geometry.dispose();
-        const mat = ch.material;
-        if (!mat || mat === spatialConnMat) continue;
-        if (Array.isArray(mat)) mat.forEach((m) => m && m !== spatialConnMat && m.dispose && m.dispose());
-        else if (mat.dispose) mat.dispose();
-      }
-    }
-
-    function applySpatialOverlayVis() {
-      spatialRegionGroup.visible = spatialShow.regions !== false && spatialRegionGroup.children.length > 0;
-      spatialConnectGroup.visible = spatialShow.connections !== false && spatialConnectGroup.children.length > 0;
-    }
-
-    function setSpatialOverlay(data, flags) {
-      disposeGroupTree(spatialRegionGroup);
-      disposeGroupTree(spatialConnectGroup);
-      if (flags) {
-        if (flags.branches != null) spatialShow.branches = !!flags.branches;
-        if (flags.regions != null) spatialShow.regions = !!flags.regions;
-        if (flags.connections != null) spatialShow.connections = !!flags.connections;
-      }
-      if (!data) {
-        applySpatialVis();
-        return;
-      }
-      const regions = data.regions || [];
-      const sphereSrc = THREE.SphereBufferGeometry || THREE.SphereGeometry;
-      for (let i = 0; i < regions.length; i++) {
-        const r = regions[i];
-        const rx = Math.max(0.4, (r.width || 4) * 0.5);
-        const ry = Math.max(0.4, (r.height || 4) * 0.5);
-        const rz = Math.max(0.4, (r.depth || 4) * 0.5);
-        const critical = !!r.critical || r.descriptorRole === "BOTTLENECK" || r.descriptorRole === "PRIMARY_CENTER";
-        const major = r.major !== false && !critical;
-        const mesh = new THREE.Mesh(
-          new sphereSrc(1, 18, 12),
-          new THREE.MeshBasicMaterial({
-            color: critical ? 0xb45a5a : 0x9a9a9a,
-            transparent: true,
-            opacity: critical ? 0.28 : major ? 0.2 : 0.14,
-            depthWrite: false,
-            side: THREE.DoubleSide,
-          })
-        );
-        mesh.position.set(r.center.x, r.center.y, r.center.z);
-        mesh.scale.set(rx, ry, rz);
-        mesh.userData.kind = "spatial-region";
-        spatialRegionGroup.add(mesh);
-      }
-      const connections = data.connections || [];
-      if (connections.length) {
-        const pos = new Float32Array(connections.length * 6);
-        for (let i = 0; i < connections.length; i++) {
-          const c = connections[i];
-          const o = i * 6;
-          pos[o] = c.ax;
-          pos[o + 1] = c.ay;
-          pos[o + 2] = c.az;
-          pos[o + 3] = c.bx;
-          pos[o + 4] = c.by;
-          pos[o + 5] = c.bz;
-        }
-        const geom = new THREE.BufferGeometry();
-        geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-        const lines = new THREE.LineSegments(geom, spatialConnMat);
-        lines.userData.kind = "spatial-connection";
-        spatialConnectGroup.add(lines);
-      }
-      applySpatialVis();
-    }
-
-    function setSpatialDisplay(state) {
-      if (!state) return;
-      if (state.branches != null) spatialShow.branches = !!state.branches;
-      if (state.regions != null) spatialShow.regions = !!state.regions;
-      if (state.connections != null) spatialShow.connections = !!state.connections;
-      applySpatialVis();
-    }
-
-    function clearSpatialDevelop() {
-      disposeGroupTree(spatialRegionGroup);
-      disposeGroupTree(spatialConnectGroup);
-      applySpatialVis();
     }
 
     function setDescriptorOverlay(viz, on) {
@@ -3113,9 +3002,8 @@
     }
 
     function applySpatialVis() {
-      applySpatialOverlayVis();
       if (!geomActive) {
-        branches.visible = spatialShow.branches !== false;
+        branches.visible = true;
         pickLines.visible = !!(pickGeom.attributes.position && pickGeom.attributes.position.count > 0);
         skeletonLines.visible = false;
         geomGroup.visible = false;
@@ -3127,7 +3015,7 @@
       branches.visible = false;
       connectHighlight.visible = false;
       pickLines.visible = false;
-      skeletonLines.visible = showBranches || spatialShow.branches !== false;
+      skeletonLines.visible = showBranches;
       const showForm = showSpaces;
       const mode = normalizeDisplayMode(displayMode);
       const solidsOn = showForm && (mode === "geometry" || mode === "both");
@@ -3814,76 +3702,6 @@
       rootGizmo.visible = true;
     }
 
-    function displayedBranchSegs() {
-      if (geomActive && lastSkeletonSegs.length) return lastSkeletonSegs;
-      return lastLiveBranchSegs;
-    }
-
-    function setSendSelection(ids) {
-      const want = ids instanceof Set ? ids : new Set(ids || []);
-      const segs = displayedBranchSegs().filter((s) => want.has(s.id));
-      const pos = new Float32Array(Math.max(1, segs.length) * 6);
-      for (let i = 0; i < segs.length; i++) {
-        const s = segs[i];
-        const o = i * 6;
-        pos[o] = s.ax;
-        pos[o + 1] = s.ay;
-        pos[o + 2] = s.az;
-        pos[o + 3] = s.bx;
-        pos[o + 4] = s.by;
-        pos[o + 5] = s.bz;
-      }
-      sendSelGeom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-      sendSelGeom.computeBoundingSphere();
-      sendSelLines.visible = segs.length > 0;
-    }
-
-    function pickBranch(clientX, clientY) {
-      const ray = getPointerRay(clientX, clientY);
-      if (!ray) return null;
-      const segs = displayedBranchSegs();
-      let best = null;
-      let bestD = 0.45;
-      for (let i = 0; i < segs.length; i++) {
-        const s = segs[i];
-        const ux = s.bx - s.ax;
-        const uy = s.by - s.ay;
-        const uz = s.bz - s.az;
-        const wx = s.ax - ray.origin.x;
-        const wy = s.ay - ray.origin.y;
-        const wz = s.az - ray.origin.z;
-        const a = ux * ux + uy * uy + uz * uz;
-        const b = ux * ray.dir.x + uy * ray.dir.y + uz * ray.dir.z;
-        const c = ray.dir.x * ray.dir.x + ray.dir.y * ray.dir.y + ray.dir.z * ray.dir.z;
-        const d = ux * wx + uy * wy + uz * wz;
-        const e = ray.dir.x * wx + ray.dir.y * wy + ray.dir.z * wz;
-        const denom = a * c - b * b;
-        let sc;
-        let tc;
-        if (Math.abs(denom) < 1e-12) {
-          sc = 0;
-          tc = c > 1e-12 ? e / c : 0;
-        } else {
-          sc = (b * e - c * d) / denom;
-          tc = (a * e - b * d) / denom;
-        }
-        sc = Math.max(0, Math.min(1, sc));
-        if (tc < 0) tc = 0;
-        const px = s.ax + ux * sc;
-        const py = s.ay + uy * sc;
-        const pz = s.az + uz * sc;
-        const qx = ray.origin.x + ray.dir.x * tc;
-        const qy = ray.origin.y + ray.dir.y * tc;
-        const qz = ray.origin.z + ray.dir.z * tc;
-        const dist = Math.hypot(px - qx, py - qy, pz - qz);
-        if (dist < bestD) {
-          bestD = dist;
-          best = s.id;
-        }
-      }
-      return best;
-    }
-
     function getPointerRay(clientX, clientY) {
       const rect = renderer.domElement.getBoundingClientRect();
       const pointer = new THREE.Vector2(
@@ -4140,9 +3958,6 @@
       setShowAttractors,
       setAttractors,
       setBranches,
-      pickBranch,
-      setSendSelection,
-      displayedBranchSegs,
       highlightConnections,
       setShowBranches,
       setSelectionPreview,
@@ -4222,9 +4037,6 @@
         onRootGizmoEnd = fn;
       },
       setDescriptorOverlay,
-      setSpatialOverlay,
-      setSpatialDisplay,
-      clearSpatialDevelop,
     };
   }
 
@@ -4293,11 +4105,6 @@
       exportSurf: document.getElementById("grid3dExportSurf"),
       exportBoth: document.getElementById("grid3dExportBoth"),
       exportBranchesSvg: document.getElementById("grid3dExportBranchesSvg"),
-      selectSendBranches: document.getElementById("grid3dSelectSendBranches"),
-      selectSendPath: document.getElementById("grid3dSelectSendPath"),
-      clearSendBranches: document.getElementById("grid3dClearSendBranches"),
-      sendSurfBuilder: document.getElementById("grid3dSendSurfBuilder"),
-      sendSurfStatus: document.getElementById("grid3dSendSurfStatus"),
       savedIterStatus: document.getElementById("grid3dSavedIterStatus"),
       saveIter: document.getElementById("grid3dSaveIter"),
       saveIterUpdate: document.getElementById("grid3dSaveIterUpdate"),
@@ -4349,11 +4156,6 @@
       descDebug: document.getElementById("grid3dDescDebug"),
       descDebugPanel: document.getElementById("grid3dDescDebugPanel"),
       descSavedList: document.getElementById("grid3dDescSavedList"),
-      spatialGenerate: document.getElementById("grid3dSpatialGenerate"),
-      spatialStatus: document.getElementById("grid3dSpatialStatus"),
-      spatialShowBranches: document.getElementById("grid3dSpatialShowBranches"),
-      spatialShowRegions: document.getElementById("grid3dSpatialShowRegions"),
-      spatialShowConn: document.getElementById("grid3dSpatialShowConn"),
     };
 
     let viewer = null;
@@ -4362,10 +4164,6 @@
     let rootPlacements = [];
     let nextPlacementUid = 1;
     let editMode = "idle";
-    let sendSelectMode = false;
-    let sendPathMode = false;
-    let sendPathAnchor = null;
-    const sendBranchIds = new Set();
     let networkOutdated = false;
     let applyingFields = false;
     let placeHover = null;
@@ -4394,11 +4192,6 @@
     let descSelectedId = null;
     let descLoaded = null;
     let descAnalysis = null;
-    let spatialRegions = [];
-    let spatialConnections = [];
-    let spatialDescriptor = "";
-    let spatialCategory = "";
-    let spatialLabel = "";
     let geomSliderActive = false;
     let openedIterationId = null;
     let openedIterationName = "";
@@ -4546,158 +4339,8 @@
         const clipped = currentClippedGraph();
         els.exportBranchesSvg.disabled = spaceBusy || !clipped.segs.length;
       }
-      const hasLive = sim.branches && sim.branches.length > 0;
-      if (els.sendSurfBuilder) els.sendSurfBuilder.disabled = !hasLive && !(viewer && viewer.displayedBranchSegs && viewer.displayedBranchSegs().length);
-      if (els.selectSendBranches) {
-        els.selectSendBranches.classList.toggle("active", sendSelectMode);
-        els.selectSendBranches.classList.toggle("primary", sendSelectMode);
-        els.selectSendBranches.classList.toggle("ghost", !sendSelectMode);
-      }
-      if (els.selectSendPath) {
-        els.selectSendPath.classList.toggle("active", sendPathMode);
-        els.selectSendPath.classList.toggle("primary", sendPathMode);
-        els.selectSendPath.classList.toggle("ghost", !sendPathMode);
-      }
       paintSavedIterButtons();
       paintConnectControls();
-    }
-
-    function paintSendSurfStatus() {
-      if (!els.sendSurfStatus) return;
-      const n = sendBranchIds.size;
-      if (sendPathMode) {
-        els.sendSurfStatus.textContent = sendPathAnchor
-          ? n + " branch" + (n === 1 ? "" : "es") + " on path so far. Click the end branch."
-          : "Select Continuous Path is on. Click a start branch, then an end branch.";
-      } else if (sendSelectMode) {
-        els.sendSurfStatus.textContent = n
-          ? n + " branch" + (n === 1 ? "" : "es") + " selected. Shift+click to add. Send to Surface Builder when ready."
-          : "Select Branches is on. Click a branch. Shift+click adds more. Or send the cyan-box chunk with nothing selected.";
-      } else if (n) {
-        els.sendSurfStatus.textContent = n + " branch" + (n === 1 ? "" : "es") + " marked to send.";
-      } else {
-        els.sendSurfStatus.textContent = "Grow branches, then select a path or send the chunk inside the cyan 20' module.";
-      }
-    }
-
-    function pointInSelBox(x, y, z, box, pad) {
-      const p = pad || 0.05;
-      return (
-        x >= box.minx - p &&
-        x <= box.maxx + p &&
-        y >= box.miny - p &&
-        y <= box.maxy + p &&
-        z >= box.minz - p &&
-        z <= box.maxz + p
-      );
-    }
-
-    function pathIdsBetweenDisplayed(startId, endId) {
-      const segs = viewer && viewer.displayedBranchSegs ? viewer.displayedBranchSegs() : [];
-      const adj = new Map();
-      function nodeK(x, y, z) {
-        return Math.round(x * 1000) + "," + Math.round(y * 1000) + "," + Math.round(z * 1000);
-      }
-      for (let i = 0; i < segs.length; i++) {
-        const s = segs[i];
-        if (!adj.has(s.id)) adj.set(s.id, []);
-        const ka = nodeK(s.ax, s.ay, s.az);
-        const kb = nodeK(s.bx, s.by, s.bz);
-        for (let j = 0; j < segs.length; j++) {
-          if (i === j) continue;
-          const o = segs[j];
-          const oa = nodeK(o.ax, o.ay, o.az);
-          const ob = nodeK(o.bx, o.by, o.bz);
-          if (ka === oa || ka === ob || kb === oa || kb === ob) adj.get(s.id).push(o.id);
-        }
-      }
-      const prev = new Map();
-      const q = [startId];
-      prev.set(startId, null);
-      while (q.length) {
-        const id = q.shift();
-        if (id === endId) break;
-        const links = adj.get(id) || [];
-        for (let i = 0; i < links.length; i++) {
-          if (prev.has(links[i])) continue;
-          prev.set(links[i], id);
-          q.push(links[i]);
-        }
-      }
-      if (!prev.has(endId)) return null;
-      const ids = [];
-      let cur = endId;
-      while (cur) {
-        ids.push(cur);
-        cur = prev.get(cur);
-      }
-      ids.reverse();
-      return ids;
-    }
-
-    function getSurfaceBuilderPayload() {
-      const segs = viewer && viewer.displayedBranchSegs ? viewer.displayedBranchSegs() : [];
-      const box = viewer && viewer.getSelectionBox ? viewer.getSelectionBox() : { minx: 0, maxx: CUBE, miny: 0, maxy: CUBE, minz: 0, maxz: CUBE };
-      let chosen = segs.slice();
-      if (sendBranchIds.size) {
-        chosen = segs.filter((s) => sendBranchIds.has(s.id));
-      } else {
-        chosen = segs.filter(
-          (s) =>
-            pointInSelBox(s.ax, s.ay, s.az, box) ||
-            pointInSelBox(s.bx, s.by, s.bz, box) ||
-            pointInSelBox((s.ax + s.bx) * 0.5, (s.ay + s.by) * 0.5, (s.az + s.bz) * 0.5, box)
-        );
-      }
-      const nodeMap = new Map();
-      function takeNode(id, x, y, z) {
-        const key = id != null ? String(id) : x.toFixed(3) + "," + y.toFixed(3) + "," + z.toFixed(3);
-        if (nodeMap.has(key)) return;
-        const live = sim.nodeById && id != null ? sim.nodeById.get(id) : null;
-        nodeMap.set(key, {
-          id: id,
-          x: x,
-          y: y,
-          z: z,
-          isRoot: !!(live && live.isRoot),
-          order: live && live.order,
-          networkId: live && live.networkId,
-          degree: live && live.degree,
-        });
-      }
-      for (let i = 0; i < chosen.length; i++) {
-        const s = chosen[i];
-        takeNode(s.startNodeId, s.ax, s.ay, s.az);
-        takeNode(s.endNodeId, s.bx, s.by, s.bz);
-      }
-      const roots = (sim.rootDrafts && sim.rootDrafts.length ? sim.rootDrafts : []).map((n) => ({
-        id: n.uid != null ? n.uid : n.id,
-        x: n.x,
-        y: n.y,
-        z: n.z,
-        rootIndex: n.rootIndex,
-      }));
-      return {
-        cube: CUBE,
-        units: "feet",
-        upAxis: "Y",
-        box: box,
-        branches: chosen.map((s) => ({
-          id: s.id,
-          fromId: s.startNodeId,
-          toId: s.endNodeId,
-          ax: s.ax,
-          ay: s.ay,
-          az: s.az,
-          bx: s.bx,
-          by: s.by,
-          bz: s.bz,
-          networkId: s.networkId,
-          connection: !!s.connection,
-        })),
-        nodes: Array.from(nodeMap.values()),
-        roots: roots,
-      };
     }
 
     function paintConnectControls() {
@@ -5604,7 +5247,6 @@
         width: els.width ? Number(els.width.value) : 2,
         thickness: els.thickness ? Number(els.thickness.value) : 2,
         junction: els.junction ? Number(els.junction.value) : 2,
-        spatialTranslation: packSpatialTranslation(),
       };
       canonical.geometryStateHash = geometryHash({
         sourceBranches,
@@ -5627,6 +5269,13 @@
         delete snapshot.prepResolution;
         delete snapshot.prepComponents;
         delete snapshot.prepOutOfDate;
+        delete snapshot.spatialTranslation;
+        delete snapshot.spatial;
+        delete snapshot.spatialRegions;
+        delete snapshot.regionConnections;
+        delete snapshot.regionRoles;
+        delete snapshot.generatedSpatialVolumes;
+        delete snapshot.spatialTranslationState;
         if (snapshot.displayState) {
           delete snapshot.displayState.ghReady;
           delete snapshot.displayState.ghMode;
@@ -5742,7 +5391,6 @@
         if (selectedGeomId) selectGeom(selectedGeomId);
         const cam = snapshot.cameraState || snapshot.camera;
         if (cam && viewer && viewer.setCameraState) viewer.setCameraState(cam);
-        applySpatialSnapshot(snapshot);
         paintSelection();
         paintViewButtons();
       } finally {
@@ -6297,40 +5945,6 @@
           );
           return;
         }
-        if ((sendSelectMode || sendPathMode) && viewer.pickBranch) {
-          const bid = viewer.pickBranch(event.clientX, event.clientY);
-          if (bid) {
-            if (sendPathMode) {
-              if (!sendPathAnchor) {
-                sendPathAnchor = bid;
-                sendBranchIds.clear();
-                sendBranchIds.add(bid);
-              } else {
-                const ids = pathIdsBetweenDisplayed(sendPathAnchor, bid);
-                sendBranchIds.clear();
-                if (ids) {
-                  for (let i = 0; i < ids.length; i++) sendBranchIds.add(ids[i]);
-                  setStatus("Path of " + ids.length + " branches. Send to Surface Builder when ready.", "active");
-                } else {
-                  sendBranchIds.add(sendPathAnchor);
-                  sendBranchIds.add(bid);
-                  setStatus("No connected path between those branches.", "error");
-                }
-                sendPathAnchor = null;
-              }
-            } else if (event.shiftKey) {
-              if (sendBranchIds.has(bid)) sendBranchIds.delete(bid);
-              else sendBranchIds.add(bid);
-            } else {
-              sendBranchIds.clear();
-              sendBranchIds.add(bid);
-            }
-            if (viewer.setSendSelection) viewer.setSendSelection(sendBranchIds);
-            paintSendSurfStatus();
-            paintButtons();
-            return;
-          }
-        }
         if (spaceResult && editMode === "idle" && viewer.pickGeometry) {
           const geomId = viewer.pickGeometry(event.clientX, event.clientY);
           if (geomId) {
@@ -6670,7 +6284,6 @@
       descLoaded = cand;
       descSelectedId = cand.id;
       descAnalysis = cand.metrics;
-      clearSpatialState();
       if (els.showBranches) {
         els.showBranches.checked = true;
         if (viewer) viewer.setShowBranches(true);
@@ -6816,171 +6429,6 @@
       }
     }
 
-    function setSpatialStatus(msg, kind) {
-      if (!els.spatialStatus) return;
-      els.spatialStatus.textContent = msg;
-      els.spatialStatus.classList.toggle("error", kind === "error");
-      els.spatialStatus.classList.toggle("active", kind === "active");
-    }
-
-    function clearSpatialState() {
-      spatialRegions = [];
-      spatialConnections = [];
-      spatialDescriptor = "";
-      spatialCategory = "";
-      spatialLabel = "";
-      if (viewer && viewer.clearSpatialDevelop) viewer.clearSpatialDevelop();
-      paintButtons();
-    }
-
-    function connectionGuides(regions, connections) {
-      const byId = {};
-      for (let i = 0; i < (regions || []).length; i++) byId[regions[i].id] = regions[i];
-      const out = [];
-      for (let i = 0; i < (connections || []).length; i++) {
-        const c = connections[i];
-        const a = byId[c.fromId];
-        const b = byId[c.toId];
-        if (!a || !b) continue;
-        out.push({
-          id: c.id,
-          ax: a.center.x,
-          ay: a.center.y,
-          az: a.center.z,
-          bx: b.center.x,
-          by: b.center.y,
-          bz: b.center.z,
-          critical: !!c.critical,
-        });
-      }
-      return out;
-    }
-
-    function applySpatialHud() {
-      ensureViewer();
-      if (!viewer || !viewer.setSpatialDisplay) return;
-      viewer.setSpatialDisplay({
-        branches: !!(els.spatialShowBranches && els.spatialShowBranches.checked),
-        regions: !!(els.spatialShowRegions && els.spatialShowRegions.checked),
-        connections: !!(els.spatialShowConn && els.spatialShowConn.checked),
-      });
-    }
-
-    function paintSpatialOverlay() {
-      ensureViewer();
-      if (!viewer || !viewer.setSpatialOverlay) return;
-      if (!spatialRegions.length) {
-        viewer.setSpatialOverlay(null);
-        applySpatialHud();
-        return;
-      }
-      viewer.setSpatialOverlay({
-        regions: spatialRegions,
-        connections: connectionGuides(spatialRegions, spatialConnections),
-      });
-      applySpatialHud();
-    }
-
-    function packSpatialTranslation() {
-      if (!spatialRegions.length) return null;
-      return {
-        descriptor: spatialDescriptor,
-        category: spatialCategory,
-        descriptorLabel: spatialLabel,
-        regions: clonePlain(spatialRegions),
-        connections: clonePlain(spatialConnections),
-      };
-    }
-
-    function applySpatialSnapshot(snapshot) {
-      const trans = snapshot && (snapshot.spatialTranslation || snapshot.spatial);
-      if (trans && trans.regions && trans.regions.length) {
-        spatialRegions = clonePlain(trans.regions);
-        spatialConnections = clonePlain(trans.connections || []);
-        spatialDescriptor = trans.descriptor || "";
-        spatialCategory = trans.category || "";
-        spatialLabel = trans.descriptorLabel || spatialDescriptor;
-        paintSpatialOverlay();
-        setSpatialStatus(
-          spatialRegions.length + " spatial regions restored · " + (spatialLabel || spatialDescriptor || "loaded"),
-          "active"
-        );
-      } else {
-        spatialRegions = [];
-        spatialConnections = [];
-        if (viewer && viewer.setSpatialOverlay) viewer.setSpatialOverlay(null);
-      }
-      applySpatialHud();
-      paintButtons();
-    }
-
-    function currentDevelopNetwork() {
-      if (sim.nodes && sim.nodes.length >= 4) {
-        return { nodes: sim.nodes, branches: sim.branches };
-      }
-      const cand = selectedCandidate();
-      if (cand && cand.growthSnapshot && cand.growthSnapshot.nodes) {
-        return { nodes: cand.growthSnapshot.nodes, branches: cand.growthSnapshot.branches || [] };
-      }
-      return { nodes: [], branches: [] };
-    }
-
-    function generateSpatialRegions() {
-      const lib = global.D7SpatialDevelop;
-      if (!lib) {
-        setSpatialStatus("Spatial translation module did not load.", "error");
-        return;
-      }
-      const cand = selectedCandidate();
-      if (cand && cand.growthSnapshot && (!sim.nodes || sim.nodes.length < 4 || (descSelectedId && descLoaded && descLoaded.id !== cand.id))) {
-        loadCandidateExact(cand);
-      }
-      const net = currentDevelopNetwork();
-      if (!net.nodes.length) {
-        setSpatialStatus("Load or grow a branching iteration first.", "error");
-        return;
-      }
-      try {
-        const word = (descLoaded && descLoaded.descriptor) || descWord();
-        const category = (descLoaded && descLoaded.category) || descCategory();
-        const metrics = descAnalysis || (descLoaded && descLoaded.metrics) || null;
-        const result = lib.translate(net, {
-          metrics: metrics,
-          descriptor: word,
-          category: category,
-          descriptorLabel: (descLoaded && descLoaded.descriptorLabel) || (global.D7DescriptorProfiles && global.D7DescriptorProfiles.labelOf ? global.D7DescriptorProfiles.labelOf(category, word) : word),
-        });
-        spatialRegions = result.regions;
-        spatialConnections = result.connections;
-        spatialDescriptor = result.descriptor;
-        spatialCategory = result.category;
-        spatialLabel = result.descriptorLabel;
-        paintSpatialOverlay();
-        markIterationDirty();
-        paintButtons();
-        const summary = spatialRegions
-          .map((r) => r.id + " " + r.descriptorRole + " " + r.width.toFixed(1) + "×" + r.depth.toFixed(1) + "×" + r.height.toFixed(1))
-          .join(" · ");
-        setSpatialStatus(spatialRegions.length + " regions · " + (spatialLabel || word) + " · " + summary, "active");
-      } catch (err) {
-        setSpatialStatus(err && err.message ? err.message : String(err), "error");
-      }
-    }
-
-    function bindSpatialUi() {
-      if (els.spatialGenerate) els.spatialGenerate.addEventListener("click", () => generateSpatialRegions());
-      [els.spatialShowBranches, els.spatialShowRegions, els.spatialShowConn].forEach((box) => {
-        if (!box) return;
-        box.addEventListener("change", () => {
-          if (box === els.spatialShowBranches && els.showBranches) {
-            els.showBranches.checked = box.checked;
-            if (viewer) viewer.setShowBranches(box.checked);
-          }
-          applySpatialHud();
-        });
-      });
-    }
-
     function bindDescriptorUi() {
       fillDescriptorOptions();
       if (els.descInflVal) els.descInflVal.textContent = String(descInfluence());
@@ -7055,8 +6503,6 @@
     if (els.showBranches) {
       els.showBranches.addEventListener("change", () => {
         if (viewer) viewer.setShowBranches(els.showBranches.checked);
-        if (els.spatialShowBranches) els.spatialShowBranches.checked = els.showBranches.checked;
-        applySpatialHud();
       });
     }
     if (els.showSpaces) {
@@ -7097,61 +6543,6 @@
       });
     }
     if (els.boxMove) {
-      if (els.selectSendBranches) {
-        els.selectSendBranches.addEventListener("click", () => {
-          sendSelectMode = !sendSelectMode;
-          sendPathMode = false;
-          sendPathAnchor = null;
-          if (sendSelectMode) {
-            if (els.showBranches && !els.showBranches.checked) {
-              els.showBranches.checked = true;
-              if (viewer && viewer.setShowBranches) viewer.setShowBranches(true);
-            }
-            setStatus("Select branches to send. Click a branch; Shift+click adds. Then Send to Surface Builder.", "active");
-          }
-          paintSendSurfStatus();
-          paintButtons();
-        });
-      }
-      if (els.selectSendPath) {
-        els.selectSendPath.addEventListener("click", () => {
-          sendPathMode = !sendPathMode;
-          sendSelectMode = false;
-          sendPathAnchor = null;
-          if (sendPathMode) {
-            if (els.showBranches && !els.showBranches.checked) {
-              els.showBranches.checked = true;
-              if (viewer && viewer.setShowBranches) viewer.setShowBranches(true);
-            }
-            setStatus("Select a continuous path: click start branch, then end branch.", "active");
-          }
-          paintSendSurfStatus();
-          paintButtons();
-        });
-      }
-      if (els.clearSendBranches) {
-        els.clearSendBranches.addEventListener("click", () => {
-          sendBranchIds.clear();
-          sendPathAnchor = null;
-          if (viewer && viewer.setSendSelection) viewer.setSendSelection(sendBranchIds);
-          paintSendSurfStatus();
-        });
-      }
-      if (els.sendSurfBuilder) {
-        els.sendSurfBuilder.addEventListener("click", () => {
-          const payload = getSurfaceBuilderPayload();
-          if (!payload.branches.length) {
-            setStatus("No branches to send. Grow first, or select branches inside the cyan box.", "error");
-            if (els.sendSurfStatus) els.sendSurfStatus.textContent = "Nothing to send.";
-            return;
-          }
-          window.dispatchEvent(new CustomEvent("d7-surface-builder-import", { detail: payload }));
-          setStatus("Sent " + payload.branches.length + " branches at exact coordinates to Surface Builder.", "active");
-          if (els.sendSurfStatus) {
-            els.sendSurfStatus.textContent = "Sent " + payload.branches.length + " branches. Open Surface Builder to create plates.";
-          }
-        });
-      }
       els.boxMove.addEventListener("click", () => setBoxMode("translate"));
     }
     if (els.boxScale) {
@@ -7686,7 +7077,6 @@
         paintRoots();
         syncViewer();
         paintStatus();
-        clearSpatialState();
         setStatus("Network cleared. Attractors, roots, and SVG grid remain.", "active");
       });
     }
@@ -7754,7 +7144,6 @@
     paintGridStats();
     paintFormModeButtons();
     bindDescriptorUi();
-    bindSpatialUi();
     loadDefaultGrid();
     refreshSavedIterList();
 
