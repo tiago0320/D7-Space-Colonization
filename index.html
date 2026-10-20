@@ -331,6 +331,9 @@
         <button id="tabGrid3d" type="button" class="page-tab" role="tab" aria-selected="false">
           3D Grid Growth
         </button>
+        <button id="tabSurfBuilder" type="button" class="page-tab" role="tab" aria-selected="false">
+          Surface Builder
+        </button>
       </nav>
 
       <div class="viewport" id="studioView">
@@ -1108,21 +1111,6 @@
             <button id="grid3dGenerateSpaces" class="primary" type="button">Generate Geometry</button>
             <button id="grid3dResetGeom" class="ghost" type="button">Reset Current</button>
           </div>
-          <div class="section-head">Prepare for Grasshopper</div>
-          <p class="grid-status">Build one unified mesh from the boxes currently on screen. After Prepare, Width, Thickness, Junction Size, and Prep Resolution update the mesh live. Dragging uses a fast preview; release rebuilds at the selected resolution. Grasshopper does the remesh and Kangaroo relaxation.</p>
-          <p id="grid3dPrepStatus" class="grid-status">Generate Geometry, then Prepare for Grasshopper.</p>
-          <div class="row">
-            <button id="grid3dPrepMesh" class="primary" type="button" disabled>Prepare for Grasshopper</button>
-            <button id="grid3dRebuildPrep" class="ghost hidden" type="button">Rebuild Prep Mesh</button>
-          </div>
-          <label class="ctrl">
-            Prep Resolution
-            <select id="grid3dPrepRes" aria-label="Prep Resolution">
-              <option value="low">Low</option>
-              <option value="medium" selected>Medium</option>
-              <option value="high">High</option>
-            </select>
-          </label>
           <label class="ctrl">
             Width
             <span class="value" id="grid3dWidthVal">2.00'</span>
@@ -1244,13 +1232,16 @@
             <input id="grid3dShowSpaces" type="checkbox" checked />
             Show Geometry
           </label>
-          <p class="grid-status">GEOMETRY is the editable rectangles. SURFACE is the developed strips. PREP MESH is the unified Grasshopper mesh. BOTH overlays wireframe rectangles on the solid white prep mesh.</p>
+          <p class="grid-status">GEOMETRY is the editable rectangles. SURFACE is the developed strips. BOTH shows rectangles and strips together.</p>
           <div class="row grid3d-form-mode" id="grid3dFormModeRow" role="group" aria-label="Geometry display">
             <button type="button" class="ghost grid3d-mode-btn active" data-mode="geometry" id="grid3dModeGeometry">GEOMETRY</button>
             <button type="button" class="ghost grid3d-mode-btn" data-mode="surface" id="grid3dModeSurface">SURFACE</button>
-            <button type="button" class="ghost grid3d-mode-btn" data-mode="prep" id="grid3dModePrep">PREP MESH</button>
             <button type="button" class="ghost grid3d-mode-btn" data-mode="both" id="grid3dModeBoth">BOTH</button>
           </div>
+          <label class="check">
+            <input id="grid3dShowSurfEdges" type="checkbox" checked />
+            Show Surface Edges
+          </label>
           <label class="check">
             <input id="grid3dShowSelBox" type="checkbox" checked />
             Show Selection Box
@@ -1263,6 +1254,19 @@
             <input id="grid3dHideOutside" type="checkbox" />
             Hide Outside Selection
           </label>
+          <div class="section-head">Surface Builder</div>
+          <p class="grid-status">Select branches in the viewport, or send the branches currently inside the cyan 20' module. Coordinates stay exact (1 unit = 1 foot). Surface Builder does not regenerate the network.</p>
+          <p id="grid3dSendSurfStatus" class="grid-status">Grow branches, then select a path or send the chunk.</p>
+          <div class="row">
+            <button id="grid3dSelectSendBranches" class="ghost" type="button">Select Branches</button>
+            <button id="grid3dSelectSendPath" class="ghost" type="button">Select Continuous Path</button>
+          </div>
+          <div class="row">
+            <button id="grid3dClearSendBranches" class="ghost" type="button">Clear Selection</button>
+          </div>
+          <div class="row">
+            <button id="grid3dSendSurfBuilder" class="primary" type="button">Send to Surface Builder</button>
+          </div>
           <div class="section-head">Saved Iterations</div>
           <p id="grid3dSavedIterStatus" class="grid-status">Save the actual geometry currently in the viewport (branches, boxes, surfaces, edits). Loading restores that same state without regenerating. Iterations stay on this computer until you delete them.</p>
           <div class="row">
@@ -1296,10 +1300,6 @@
           <div class="row">
             <button id="grid3dExportBoth" class="ghost" type="button" disabled>Export Both</button>
           </div>
-          <p class="grid-status">Export Grasshopper Package writes one Rhino 3DM: source branches, edited boxes, unified prep mesh, and the 20' module. Units = feet. The file matches the viewport. Open that 3DM in Rhino, then open grasshopper/D7_PrepMesh_To_Kangaroo.ghx to remesh and run a soap-film.</p>
-          <div class="row">
-            <button id="grid3dExportGh" class="ghost" type="button" disabled>Export Grasshopper Package</button>
-          </div>
         </aside>
         <div class="space3d-main">
           <div class="grid3d-viewport-bar" id="grid3dViewBar">
@@ -1327,6 +1327,166 @@
           </div>
         </div>
       </div>
+
+      <div id="surfBuilderView" class="space3d-view surf-builder-view hidden" aria-label="Surface Builder">
+        <aside class="space3d-hud" aria-label="Surface Builder controls">
+          <div class="section-head">Surface Builder</div>
+          <p class="grid-status">Architectural translation of selected branches. Create a few zero-thickness planar plates, then connect them with matching edge topology. Grasshopper / Kangaroo relaxation is not in this tab.</p>
+          <p id="sbStatus" class="grid-status">Send a branch path from 3D Grid Growth, then Create Surface.</p>
+          <p id="sbStats" class="grid-status">Branches: 0 · Planar: 0 · Connections: 0</p>
+
+          <div class="section-head">Branch Selection</div>
+          <p class="grid-status">Reference lines are not architecture until you create a surface. Click a branch. Shift+click adds or removes. Path mode finds the connected route between two clicks.</p>
+          <div class="row">
+            <button id="sbSelectBranch" class="ghost" type="button">Select Branch</button>
+            <button id="sbSelectPath" class="ghost" type="button">Select Continuous Path</button>
+          </div>
+          <div class="row">
+            <button id="sbClearBranchSel" class="ghost" type="button">Clear Branch Selection</button>
+          </div>
+          <div class="row">
+            <button id="sbCreateSurface" class="primary" type="button">Create Surface</button>
+          </div>
+
+          <div class="section-head">Surface</div>
+          <p id="sbSurfStatus" class="grid-status">Click a plate in the viewport.</p>
+          <label class="ctrl">
+            Surface Orientation
+            <select id="sbOrient">
+              <option value="AUTO" selected>AUTO</option>
+              <option value="HORIZONTAL">HORIZONTAL</option>
+              <option value="VERTICAL">VERTICAL</option>
+              <option value="PERPENDICULAR">PERPENDICULAR TO PATH</option>
+              <option value="MANUAL">MANUAL</option>
+            </select>
+          </label>
+          <label class="ctrl" id="sbManualWrap">
+            Manual Angle
+            <span class="value" id="sbManualVal">0°</span>
+            <input id="sbManual" type="range" min="-180" max="180" step="1" value="0" />
+          </label>
+          <label class="ctrl">
+            Width
+            <span class="value" id="sbWidthVal">2.00'</span>
+            <input id="sbWidth" type="range" min="0.5" max="10" step="0.05" value="2" />
+          </label>
+          <label class="ctrl">
+            Offset
+            <span class="value" id="sbOffsetVal">0.00'</span>
+            <input id="sbOffset" type="range" min="-8" max="8" step="0.05" value="0" />
+          </label>
+          <div class="row">
+            <button id="sbMove" class="ghost" type="button">Move</button>
+            <button id="sbRotate" class="ghost" type="button">Rotate</button>
+          </div>
+          <div class="row">
+            <button id="sbFlip" class="ghost" type="button">Flip</button>
+            <button id="sbSimplify" class="ghost" type="button">Simplify</button>
+          </div>
+          <div class="row">
+            <button id="sbSplit" class="ghost" type="button">Split Surface</button>
+            <button id="sbDelete" class="ghost" type="button">Delete Surface</button>
+          </div>
+
+          <div class="section-head">Connect Surfaces</div>
+          <p class="grid-status">Click a boundary edge on plate A, then a boundary edge on plate B. Matching subdivisions are applied automatically. Connection plates stay separate so they can later relax in Grasshopper.</p>
+          <p id="sbConnStatus" class="grid-status">No edges selected.</p>
+          <div class="row">
+            <button id="sbConnectMode" class="ghost" type="button">Connect Surfaces</button>
+          </div>
+          <div class="row">
+            <button id="sbCreateConnection" class="primary" type="button">Create Connection</button>
+          </div>
+          <label class="ctrl">
+            Connection Segments
+            <select id="sbConnSegs">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3" selected>3</option>
+              <option value="4">4</option>
+              <option value="6">6</option>
+              <option value="8">8</option>
+            </select>
+          </label>
+          <div class="row">
+            <button id="sbReverseConn" class="ghost" type="button">Reverse Connection</button>
+            <button id="sbDisconnect" class="ghost" type="button">Disconnect</button>
+          </div>
+
+          <div class="section-head">Display</div>
+          <label class="check">
+            <input id="sbShowBranches" type="checkbox" checked />
+            Show Reference Branches
+          </label>
+          <label class="check">
+            <input id="sbShowPlanar" type="checkbox" checked />
+            Show Planar Surfaces
+          </label>
+          <label class="check">
+            <input id="sbShowConn" type="checkbox" checked />
+            Show Connection Surfaces
+          </label>
+          <label class="check">
+            <input id="sbShowEdges" type="checkbox" checked />
+            Show Surface Edges
+          </label>
+          <label class="check">
+            <input id="sbShowBox" type="checkbox" checked />
+            Show Module Boundary
+          </label>
+
+          <div class="section-head">Saved Surface Models</div>
+          <p id="sbSaveStatus" class="grid-status">Save restores the exact plates, connections, and branches. Nothing is regenerated. Models stay on this computer until you delete them.</p>
+          <div class="row">
+            <button id="sbSave" class="ghost" type="button">Save Surface Model</button>
+          </div>
+          <div id="sbSavePanel" class="save-sim-panel hidden">
+            <label class="ctrl save-sim-name">
+              Name
+              <input id="sbSaveName" type="text" maxlength="80" autocomplete="off" placeholder="Surface Model 01" />
+            </label>
+            <div class="row">
+              <button id="sbSaveConfirm" class="primary" type="button">Save</button>
+              <button id="sbSaveCancel" class="ghost" type="button">Cancel</button>
+            </div>
+          </div>
+          <ul id="sbSavedList" class="saved-sim-list space3d-saved-list"></ul>
+          <div class="row">
+            <button id="sbReset" class="ghost" type="button">Reset Current</button>
+          </div>
+
+          <div class="section-head">Export</div>
+          <p class="grid-status">Rhino 3DM, units = Feet. Planar plates stay zero-thickness Brep faces. Connections export as matching quad meshes. Shared boundaries are the Grasshopper anchors.</p>
+          <div class="row">
+            <button id="sbExport" class="primary" type="button">Export to Rhino</button>
+          </div>
+        </aside>
+        <div class="space3d-main">
+          <div class="grid3d-viewport-bar" id="sbViewBar">
+            <button type="button" class="ghost grid3d-view-btn" data-view="isometric">ISO</button>
+            <button type="button" class="ghost grid3d-view-btn" data-view="front">FRONT</button>
+            <button type="button" class="ghost grid3d-view-btn" data-view="back">BACK</button>
+            <button type="button" class="ghost grid3d-view-btn" data-view="left">LEFT</button>
+            <button type="button" class="ghost grid3d-view-btn" data-view="right">RIGHT</button>
+            <button type="button" class="ghost grid3d-view-btn" data-view="top">TOP</button>
+            <button type="button" class="ghost grid3d-view-btn" data-view="bottom">BOTTOM</button>
+            <button type="button" class="ghost grid3d-view-btn active primary" data-view="perspective">PERSP</button>
+            <span class="space3d-workspace-readout" id="sbReadout">Workspace: 20' W × 20' D × 20' H · Y up · 1 unit = 1 foot</span>
+          </div>
+          <div class="space3d-stage" id="sbStage"></div>
+          <p class="view-hint" id="sbHint">Left-drag orbit · Right-drag pan · Scroll zoom · Shift+click add to selection</p>
+        </div>
+        <div id="sbDeleteDialog" class="space3d-reset-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="sbDeleteTitle">
+          <div class="space3d-reset-dialog-card">
+            <h2 id="sbDeleteTitle">Delete this saved surface model?</h2>
+            <p>This permanently removes the saved model. Reset Current does not delete saved models.</p>
+            <div class="row">
+              <button id="sbDeleteCancel" class="ghost" type="button">Cancel</button>
+              <button id="sbDeleteConfirm" class="ghost space3d-reset-confirm" type="button">Delete Model</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
   </div>
@@ -1341,22 +1501,23 @@
     <script src="saved-matrices-store.js"></script>
     <script src="saved-3d-variations-store.js"></script>
     <script src="saved-grid-iterations-store.js"></script>
+    <script src="saved-surface-builder-store.js"></script>
     <script src="descriptor-matrix.js"></script>
     <script src="spatial-loft.js"></script>
     <script src="spatial-generate.js"></script>
     <script src="spatial-voxels.js"></script>
-    <script src="spatial-export.js"></script>
+    <script src="spatial-export.js?v=sb2"></script>
     <script src="spatial-turntable.js"></script>
     <script src="saved-custom-grid-store.js"></script>
     <script src="spatial-custom-grid.js"></script>
     <script src="spatial-3d.js"></script>
-    <script src="spatial-grid-spaces.js"></script>
-    <script src="spatial-prep-mesh.js"></script>
+    <script src="spatial-grid-spaces.js?v=surfconn2"></script>
     <script src="spatial-surface-develop.js"></script>
     <script src="spatial-descriptor-metrics.js"></script>
     <script src="spatial-descriptor-profiles.js"></script>
     <script src="saved-descriptor-candidates-store.js"></script>
-    <script src="spatial-grid-growth.js"></script>
+    <script src="spatial-grid-growth.js?v=sb2"></script>
+    <script src="spatial-surface-builder.js?v=sb3"></script>
     <script src="app.js"></script>
   </body>
 </html>

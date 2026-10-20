@@ -135,6 +135,7 @@
     tabMatrix: document.getElementById("tabMatrix"),
     tabSpace3d: document.getElementById("tabSpace3d"),
     tabGrid3d: document.getElementById("tabGrid3d"),
+    tabSurfBuilder: document.getElementById("tabSurfBuilder"),
     studioView: document.getElementById("studioView"),
     studioHud: document.getElementById("studioHud"),
     matrixView: document.getElementById("matrixView"),
@@ -173,6 +174,7 @@
     matrixCancelSave: document.getElementById("matrixCancelSave"),
     space3dView: document.getElementById("space3dView"),
     grid3dView: document.getElementById("grid3dView"),
+    surfBuilderView: document.getElementById("surfBuilderView"),
     space3dStage: document.getElementById("space3dStage"),
     space3dStatus: document.getElementById("space3dStatus"),
   };
@@ -191,6 +193,7 @@
   let appPage = "studio";
   let space3dStudio = null;
   let grid3dStudio = null;
+  let surfBuilderStudio = null;
   const MatrixLib = window.D7DescriptorMatrix;
   let matrixType = "lobby";
   let matrixDescriptor = "interlocking";
@@ -3146,10 +3149,12 @@
     if (page === "matrix") appPage = "matrix";
     else if (page === "space3d") appPage = "space3d";
     else if (page === "grid3d") appPage = "grid3d";
+    else if (page === "surfbuilder") appPage = "surfbuilder";
     else appPage = "studio";
     const matrix = appPage === "matrix";
     const space3d = appPage === "space3d";
     const grid3d = appPage === "grid3d";
+    const surfbuilder = appPage === "surfbuilder";
     if (ui.tabStudio) {
       ui.tabStudio.classList.toggle("active", appPage === "studio");
       ui.tabStudio.setAttribute("aria-selected", appPage === "studio" ? "true" : "false");
@@ -3166,15 +3171,21 @@
       ui.tabGrid3d.classList.toggle("active", grid3d);
       ui.tabGrid3d.setAttribute("aria-selected", grid3d ? "true" : "false");
     }
+    if (ui.tabSurfBuilder) {
+      ui.tabSurfBuilder.classList.toggle("active", surfbuilder);
+      ui.tabSurfBuilder.setAttribute("aria-selected", surfbuilder ? "true" : "false");
+    }
     if (ui.studioView) ui.studioView.classList.toggle("hidden", appPage !== "studio");
     if (ui.matrixView) ui.matrixView.classList.toggle("hidden", !matrix);
     if (ui.space3dView) ui.space3dView.classList.toggle("hidden", !space3d);
     if (ui.grid3dView) ui.grid3dView.classList.toggle("hidden", !grid3d);
+    if (ui.surfBuilderView) ui.surfBuilderView.classList.toggle("hidden", !surfbuilder);
     const appEl = document.querySelector(".app");
     if (appEl) {
       appEl.classList.toggle("matrix-mode", matrix);
       appEl.classList.toggle("space3d-mode", space3d);
       appEl.classList.toggle("grid3d-mode", grid3d);
+      appEl.classList.toggle("surfbuilder-mode", surfbuilder);
     }
     if (space3dStudio) {
       if (space3d) space3dStudio.show();
@@ -3184,7 +3195,11 @@
       if (grid3d) grid3dStudio.show();
       else grid3dStudio.hide();
     }
-    if (matrix || grid3d || space3d) {
+    if (surfBuilderStudio) {
+      if (surfbuilder) surfBuilderStudio.show();
+      else surfBuilderStudio.hide();
+    }
+    if (matrix || grid3d || space3d || surfbuilder) {
       playing = false;
       ui.play.textContent = "Grow";
     }
@@ -3372,6 +3387,7 @@
     if (ui.tabMatrix) ui.tabMatrix.disabled = matrixGenerating || matrixExporting;
     if (ui.tabSpace3d) ui.tabSpace3d.disabled = matrixGenerating || matrixExporting;
     if (ui.tabGrid3d) ui.tabGrid3d.disabled = matrixGenerating || matrixExporting;
+    if (ui.tabSurfBuilder) ui.tabSurfBuilder.disabled = matrixGenerating || matrixExporting;
   }
 
   function captureStudioSession() {
@@ -5404,6 +5420,13 @@
   if (ui.tabMatrix) ui.tabMatrix.addEventListener("click", () => setAppPage("matrix"));
   if (ui.tabSpace3d) ui.tabSpace3d.addEventListener("click", () => setAppPage("space3d"));
   if (ui.tabGrid3d) ui.tabGrid3d.addEventListener("click", () => setAppPage("grid3d"));
+  if (ui.tabSurfBuilder) ui.tabSurfBuilder.addEventListener("click", () => setAppPage("surfbuilder"));
+  window.addEventListener("d7-surface-builder-import", (event) => {
+    if (surfBuilderStudio && typeof surfBuilderStudio.importPayload === "function") {
+      surfBuilderStudio.importPayload(event.detail);
+    }
+    setAppPage("surfbuilder");
+  });
   if (ui.matrixTypeRow) {
     ui.matrixTypeRow.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-matrix-type]");
@@ -5911,6 +5934,12 @@
         if (appPage === "grid3d" && grid3dStudio) grid3dStudio.resize();
       }).observe(grid3dStage);
     }
+    const sbStage = document.getElementById("sbStage");
+    if (sbStage) {
+      new ResizeObserver(() => {
+        if (appPage === "surfbuilder" && surfBuilderStudio) surfBuilderStudio.resize();
+      }).observe(sbStage);
+    }
   }
   loadSavedIterationsFromStorage();
   setInteractionMode("select");
@@ -5979,6 +6008,9 @@
   }
   if (window.D7GridGrowth && typeof window.D7GridGrowth.mount === "function") {
     grid3dStudio = window.D7GridGrowth.mount();
+  }
+  if (window.D7SurfaceBuilder && typeof window.D7SurfaceBuilder.mount === "function") {
+    surfBuilderStudio = window.D7SurfaceBuilder.mount();
   }
   if (window.D7CustomGrid && typeof window.D7CustomGrid.init === "function") {
     window.D7CustomGrid.init().catch((err) => console.warn("Shared grid load failed", err));

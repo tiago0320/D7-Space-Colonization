@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 3D Space studio: place selected 2D chunks in a 20 x 20 x 20 volume
  * and convert their branch geometry into solid / void studies.
  */
@@ -6510,6 +6510,9 @@
 
     function restoreWorkspaceFromRecord(record) {
       const workspace = (record && record.workspace) || {};
+      delete workspace.flatSurfaces;
+      delete workspace.ghSurfaces;
+      delete workspace.ghReady;
       applyingSaved3d = true;
       try {
         resetWorkspace({ silent: true, skipCamera: true, keepSaved: true });

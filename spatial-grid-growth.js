@@ -2524,24 +2524,9 @@
     const surfGroup = new THREE.Group();
     surfGroup.visible = false;
     scene.add(surfGroup);
-    const prepGroup = new THREE.Group();
-    prepGroup.visible = false;
-    scene.add(prepGroup);
-    const prepMat = new THREE.MeshLambertMaterial({
-      color: 0xf4f4f4,
-      emissive: 0x101010,
-      side: THREE.DoubleSide,
-      transparent: false,
-      opacity: 1,
-      depthWrite: true,
-    });
-    const prepEdgeMat = new THREE.LineBasicMaterial({
-      color: 0xb8b8b8,
-      transparent: true,
-      opacity: 0.55,
-    });
     let showSpaces = true;
     let showMeshEdges = true;
+    let showSurfEdges = true;
     let showBranches = false;
     let geomActive = false;
     let displayMode = "geometry";
@@ -2615,6 +2600,14 @@
       new THREE.LineBasicMaterial({ color: 0x9ad8ee, transparent: true, opacity: 0.95 })
     );
     scene.add(pickLines);
+    const sendSelGeom = new THREE.BufferGeometry();
+    sendSelGeom.setAttribute("position", new THREE.Float32BufferAttribute([], 3));
+    const sendSelLines = new THREE.LineSegments(
+      sendSelGeom,
+      new THREE.LineBasicMaterial({ color: 0xc45c5c, depthTest: false })
+    );
+    sendSelLines.visible = false;
+    scene.add(sendSelLines);
 
     let hLines = null;
     let vLines = null;
@@ -3115,7 +3108,6 @@
     function normalizeDisplayMode(mode) {
       const m = String(mode || "").toLowerCase();
       if (m === "surface") return "surface";
-      if (m === "prep" || m === "prepmesh" || m === "prep-mesh") return "prep";
       if (m === "both") return "both";
       return "geometry";
     }
@@ -3128,7 +3120,6 @@
         skeletonLines.visible = false;
         geomGroup.visible = false;
         surfGroup.visible = false;
-        prepGroup.visible = false;
         if (spaceMesh) spaceMesh.visible = false;
         if (spaceEdges) spaceEdges.visible = false;
         return;
@@ -3139,13 +3130,10 @@
       skeletonLines.visible = showBranches || spatialShow.branches !== false;
       const showForm = showSpaces;
       const mode = normalizeDisplayMode(displayMode);
-      const hasPrep = prepGroup.children.length > 0;
-      const solidsOn = showForm && (mode === "geometry" || mode === "both" || (mode === "prep" && !hasPrep));
-      const surfaceOn = showForm && mode === "surface";
-      const prepOn = showForm && hasPrep && (mode === "prep" || mode === "both");
+      const solidsOn = showForm && (mode === "geometry" || mode === "both");
+      const surfaceOn = showForm && (mode === "surface" || mode === "both");
       geomGroup.visible = solidsOn;
       surfGroup.visible = surfaceOn;
-      prepGroup.visible = prepOn;
       if (spaceMesh) spaceMesh.visible = false;
       if (spaceEdges) spaceEdges.visible = false;
       if (solidsOn) {
@@ -3155,7 +3143,7 @@
       }
       if (surfaceOn) {
         surfGroup.traverse((obj) => {
-          if (obj.isLineSegments) obj.visible = showMeshEdges;
+          if (obj.isLineSegments) obj.visible = showSurfEdges;
         });
       }
     }
@@ -3178,6 +3166,11 @@
 
     function setShowMeshEdges(on) {
       showMeshEdges = on == null ? true : !!on;
+      applySpatialVis();
+    }
+
+    function setShowSurfEdges(on) {
+      showSurfEdges = on == null ? true : !!on;
       applySpatialVis();
     }
 
@@ -3273,7 +3266,25 @@
         boxGeom.computeVertexNormals();
         boxGeom.computeBoundingBox();
         boxGeom.computeBoundingSphere();
-        edgeGeom = new THREE.EdgesGeometry(boxGeom);
+        if (isSurf && el.corners && el.corners.length >= 3) {
+          const c = el.corners;
+          const edgePos = new Float32Array(c.length * 6);
+          for (let i = 0; i < c.length; i++) {
+            const a = c[i];
+            const b = c[(i + 1) % c.length];
+            const o = i * 6;
+            edgePos[o] = a.x - el.center.x;
+            edgePos[o + 1] = a.y - el.center.y;
+            edgePos[o + 2] = a.z - el.center.z;
+            edgePos[o + 3] = b.x - el.center.x;
+            edgePos[o + 4] = b.y - el.center.y;
+            edgePos[o + 5] = b.z - el.center.z;
+          }
+          edgeGeom = new THREE.BufferGeometry();
+          edgeGeom.setAttribute("position", new THREE.BufferAttribute(edgePos, 3));
+        } else {
+          edgeGeom = new THREE.EdgesGeometry(boxGeom);
+        }
       }
       const mesh = new THREE.Mesh(boxGeom, mat);
       mesh.userData.elementId = el.id;
@@ -3351,9 +3362,8 @@
       const mode = normalizeDisplayMode(displayMode);
       const both = mode === "both";
       paintGroupHighlight(geomGroup, both ? compareMat : spaceMat, both ? compareEdgeMat : spaceEdgeMat, both);
-      paintGroupHighlight(surfGroup, ribbonMat, spaceEdgeMat, false);
-      if (mode === "prep") detachElemGizmo();
-      else attachElemGizmo(selectedElementId);
+      paintGroupHighlight(surfGroup, ribbonMat, spaceEdgeMat, showSurfEdges);
+      attachElemGizmo(selectedElementId);
     }
 
     function disposeGroupMeshes(group) {
@@ -3366,40 +3376,6 @@
           }
         });
       }
-    }
-
-    function disposePrepGroup() {
-      disposeGroupMeshes(prepGroup);
-    }
-
-    function setPrepMeshDisplay(mesh) {
-      disposePrepGroup();
-      if (!mesh || !mesh.positions || !mesh.indices || !mesh.indices.length) {
-        applySpatialVis();
-        return null;
-      }
-      const geom = new THREE.BufferGeometry();
-      const pos = mesh.positions instanceof Float32Array ? mesh.positions : new Float32Array(mesh.positions);
-      geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-      const maxIndex = mesh.indices.reduce((m, v) => (v > m ? v : m), 0);
-      geom.setIndex(new THREE.BufferAttribute(maxIndex > 65535 ? new Uint32Array(mesh.indices) : new Uint16Array(mesh.indices), 1));
-      if (mesh.normals && mesh.normals.length === pos.length) {
-        const nrm = mesh.normals instanceof Float32Array ? mesh.normals : new Float32Array(mesh.normals);
-        geom.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
-      } else {
-        geom.computeVertexNormals();
-      }
-      geom.computeBoundingBox();
-      geom.computeBoundingSphere();
-      const obj = new THREE.Mesh(geom, prepMat);
-      obj.userData.kind = "prep";
-      obj.frustumCulled = false;
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 30), prepEdgeMat);
-      edges.userData.kind = "prep";
-      obj.add(edges);
-      prepGroup.add(obj);
-      applySpatialVis();
-      return obj;
     }
 
     function disposeGeomGroup() {
@@ -3539,18 +3515,11 @@
       const surfaces = bakeGroupMeshes(surfGroup);
       const branches = captureDisplayedBranches();
       const roots = captureDisplayedRoots();
-      const prep = [];
-      for (let i = 0; i < prepGroup.children.length; i++) {
-        const baked = bakeWorldMesh(prepGroup.children[i]);
-        if (baked) prep.push(baked);
-      }
       const payload = {
         boxes,
         surfaces,
         branches,
         roots,
-        prep,
-        prepMesh: prep[0] || null,
         elements: boxes,
         generatedBoxes: boxes,
         surfaceGeometry: surfaces,
@@ -3745,7 +3714,6 @@
     function pickGeometry(clientX, clientY) {
       if (!geomActive || !showSpaces) return null;
       const mode = normalizeDisplayMode(displayMode);
-      if (mode === "prep") return null;
       const group = mode === "surface" ? surfGroup : geomGroup;
       if (!group.children.length) return null;
       const rect = renderer.domElement.getBoundingClientRect();
@@ -3844,6 +3812,76 @@
       rootHandle.position.set(pos.x, pos.y, pos.z);
       rootGizmo.enabled = true;
       rootGizmo.visible = true;
+    }
+
+    function displayedBranchSegs() {
+      if (geomActive && lastSkeletonSegs.length) return lastSkeletonSegs;
+      return lastLiveBranchSegs;
+    }
+
+    function setSendSelection(ids) {
+      const want = ids instanceof Set ? ids : new Set(ids || []);
+      const segs = displayedBranchSegs().filter((s) => want.has(s.id));
+      const pos = new Float32Array(Math.max(1, segs.length) * 6);
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i];
+        const o = i * 6;
+        pos[o] = s.ax;
+        pos[o + 1] = s.ay;
+        pos[o + 2] = s.az;
+        pos[o + 3] = s.bx;
+        pos[o + 4] = s.by;
+        pos[o + 5] = s.bz;
+      }
+      sendSelGeom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      sendSelGeom.computeBoundingSphere();
+      sendSelLines.visible = segs.length > 0;
+    }
+
+    function pickBranch(clientX, clientY) {
+      const ray = getPointerRay(clientX, clientY);
+      if (!ray) return null;
+      const segs = displayedBranchSegs();
+      let best = null;
+      let bestD = 0.45;
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i];
+        const ux = s.bx - s.ax;
+        const uy = s.by - s.ay;
+        const uz = s.bz - s.az;
+        const wx = s.ax - ray.origin.x;
+        const wy = s.ay - ray.origin.y;
+        const wz = s.az - ray.origin.z;
+        const a = ux * ux + uy * uy + uz * uz;
+        const b = ux * ray.dir.x + uy * ray.dir.y + uz * ray.dir.z;
+        const c = ray.dir.x * ray.dir.x + ray.dir.y * ray.dir.y + ray.dir.z * ray.dir.z;
+        const d = ux * wx + uy * wy + uz * wz;
+        const e = ray.dir.x * wx + ray.dir.y * wy + ray.dir.z * wz;
+        const denom = a * c - b * b;
+        let sc;
+        let tc;
+        if (Math.abs(denom) < 1e-12) {
+          sc = 0;
+          tc = c > 1e-12 ? e / c : 0;
+        } else {
+          sc = (b * e - c * d) / denom;
+          tc = (a * e - b * d) / denom;
+        }
+        sc = Math.max(0, Math.min(1, sc));
+        if (tc < 0) tc = 0;
+        const px = s.ax + ux * sc;
+        const py = s.ay + uy * sc;
+        const pz = s.az + uz * sc;
+        const qx = ray.origin.x + ray.dir.x * tc;
+        const qy = ray.origin.y + ray.dir.y * tc;
+        const qz = ray.origin.z + ray.dir.z * tc;
+        const dist = Math.hypot(px - qx, py - qy, pz - qz);
+        if (dist < bestD) {
+          bestD = dist;
+          best = s.id;
+        }
+      }
+      return best;
     }
 
     function getPointerRay(clientX, clientY) {
@@ -4102,6 +4140,9 @@
       setShowAttractors,
       setAttractors,
       setBranches,
+      pickBranch,
+      setSendSelection,
+      displayedBranchSegs,
       highlightConnections,
       setShowBranches,
       setSelectionPreview,
@@ -4109,15 +4150,11 @@
       setDisplayMode,
       getDisplayMode,
       setShowMeshEdges,
+      setShowSurfEdges,
       setShowSelectionBox,
       setHideOutsideSelection,
       setCutaway,
       setSpacesMesh,
-      setPrepMesh: setPrepMeshDisplay,
-      clearPrepMesh() {
-        disposePrepGroup();
-        applySpatialVis();
-      },
       setSkeleton,
       setSpatialActive,
       captureDisplayGeometry,
@@ -4247,13 +4284,8 @@
       showSpaces: document.getElementById("grid3dShowSpaces"),
       modeGeometry: document.getElementById("grid3dModeGeometry"),
       modeSurface: document.getElementById("grid3dModeSurface"),
-      modePrep: document.getElementById("grid3dModePrep"),
       modeBoth: document.getElementById("grid3dModeBoth"),
-      prepMesh: document.getElementById("grid3dPrepMesh"),
-      rebuildPrep: document.getElementById("grid3dRebuildPrep"),
-      prepRes: document.getElementById("grid3dPrepRes"),
-      prepStatus: document.getElementById("grid3dPrepStatus"),
-      exportGh: document.getElementById("grid3dExportGh"),
+      showSurfEdges: document.getElementById("grid3dShowSurfEdges"),
       showSelBox: document.getElementById("grid3dShowSelBox"),
       showHumanScale: document.getElementById("grid3dShowHumanScale"),
       hideOutside: document.getElementById("grid3dHideOutside"),
@@ -4261,6 +4293,11 @@
       exportSurf: document.getElementById("grid3dExportSurf"),
       exportBoth: document.getElementById("grid3dExportBoth"),
       exportBranchesSvg: document.getElementById("grid3dExportBranchesSvg"),
+      selectSendBranches: document.getElementById("grid3dSelectSendBranches"),
+      selectSendPath: document.getElementById("grid3dSelectSendPath"),
+      clearSendBranches: document.getElementById("grid3dClearSendBranches"),
+      sendSurfBuilder: document.getElementById("grid3dSendSurfBuilder"),
+      sendSurfStatus: document.getElementById("grid3dSendSurfStatus"),
       savedIterStatus: document.getElementById("grid3dSavedIterStatus"),
       saveIter: document.getElementById("grid3dSaveIter"),
       saveIterUpdate: document.getElementById("grid3dSaveIterUpdate"),
@@ -4325,6 +4362,10 @@
     let rootPlacements = [];
     let nextPlacementUid = 1;
     let editMode = "idle";
+    let sendSelectMode = false;
+    let sendPathMode = false;
+    let sendPathAnchor = null;
+    const sendBranchIds = new Set();
     let networkOutdated = false;
     let applyingFields = false;
     let placeHover = null;
@@ -4347,10 +4388,6 @@
     let geomFuture = [];
     let geomHistLock = false;
     let formMode = "geometry";
-    let prepMesh = null;
-    let prepBusy = false;
-    let prepLiveMode = false;
-    let prepBuilding = false;
     let descModeOn = false;
     let descBusy = false;
     let descCandidates = [];
@@ -4362,15 +4399,7 @@
     let spatialDescriptor = "";
     let spatialCategory = "";
     let spatialLabel = "";
-    let prepGenId = 0;
-    let prepPending = null;
-    let prepPreviewTimer = 0;
-    let prepFinalTimer = 0;
-    let prepSwitchView = false;
     let geomSliderActive = false;
-    let prepResolution = "medium";
-    const PREP_PREVIEW_MS = 110;
-    const PREP_FINAL_MS = 250;
     let openedIterationId = null;
     let openedIterationName = "";
     let iterationDirty = false;
@@ -4509,24 +4538,166 @@
       }
       if (els.generateSpaces) els.generateSpaces.disabled = spaceBusy || !ready;
       if (els.resetGeom) els.resetGeom.disabled = spaceBusy || !spaceResult;
-      if (els.prepMesh) els.prepMesh.disabled = spaceBusy || !spaceResult;
-      if (els.rebuildPrep) {
-        const stale = !!(prepMesh && prepMesh.outOfDate && !prepLiveMode);
-        els.rebuildPrep.disabled = spaceBusy || !stale;
-        els.rebuildPrep.classList.toggle("hidden", prepLiveMode || !stale);
-      }
-      if (els.prepRes) els.prepRes.disabled = spaceBusy;
       const canExport = !spaceBusy && !!spaceResult;
       if (els.exportGeom) els.exportGeom.disabled = !canExport;
       if (els.exportSurf) els.exportSurf.disabled = !canExport;
       if (els.exportBoth) els.exportBoth.disabled = !canExport;
-      if (els.exportGh) els.exportGh.disabled = !canExport || !prepMesh;
       if (els.exportBranchesSvg) {
         const clipped = currentClippedGraph();
         els.exportBranchesSvg.disabled = spaceBusy || !clipped.segs.length;
       }
+      const hasLive = sim.branches && sim.branches.length > 0;
+      if (els.sendSurfBuilder) els.sendSurfBuilder.disabled = !hasLive && !(viewer && viewer.displayedBranchSegs && viewer.displayedBranchSegs().length);
+      if (els.selectSendBranches) {
+        els.selectSendBranches.classList.toggle("active", sendSelectMode);
+        els.selectSendBranches.classList.toggle("primary", sendSelectMode);
+        els.selectSendBranches.classList.toggle("ghost", !sendSelectMode);
+      }
+      if (els.selectSendPath) {
+        els.selectSendPath.classList.toggle("active", sendPathMode);
+        els.selectSendPath.classList.toggle("primary", sendPathMode);
+        els.selectSendPath.classList.toggle("ghost", !sendPathMode);
+      }
       paintSavedIterButtons();
       paintConnectControls();
+    }
+
+    function paintSendSurfStatus() {
+      if (!els.sendSurfStatus) return;
+      const n = sendBranchIds.size;
+      if (sendPathMode) {
+        els.sendSurfStatus.textContent = sendPathAnchor
+          ? n + " branch" + (n === 1 ? "" : "es") + " on path so far. Click the end branch."
+          : "Select Continuous Path is on. Click a start branch, then an end branch.";
+      } else if (sendSelectMode) {
+        els.sendSurfStatus.textContent = n
+          ? n + " branch" + (n === 1 ? "" : "es") + " selected. Shift+click to add. Send to Surface Builder when ready."
+          : "Select Branches is on. Click a branch. Shift+click adds more. Or send the cyan-box chunk with nothing selected.";
+      } else if (n) {
+        els.sendSurfStatus.textContent = n + " branch" + (n === 1 ? "" : "es") + " marked to send.";
+      } else {
+        els.sendSurfStatus.textContent = "Grow branches, then select a path or send the chunk inside the cyan 20' module.";
+      }
+    }
+
+    function pointInSelBox(x, y, z, box, pad) {
+      const p = pad || 0.05;
+      return (
+        x >= box.minx - p &&
+        x <= box.maxx + p &&
+        y >= box.miny - p &&
+        y <= box.maxy + p &&
+        z >= box.minz - p &&
+        z <= box.maxz + p
+      );
+    }
+
+    function pathIdsBetweenDisplayed(startId, endId) {
+      const segs = viewer && viewer.displayedBranchSegs ? viewer.displayedBranchSegs() : [];
+      const adj = new Map();
+      function nodeK(x, y, z) {
+        return Math.round(x * 1000) + "," + Math.round(y * 1000) + "," + Math.round(z * 1000);
+      }
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i];
+        if (!adj.has(s.id)) adj.set(s.id, []);
+        const ka = nodeK(s.ax, s.ay, s.az);
+        const kb = nodeK(s.bx, s.by, s.bz);
+        for (let j = 0; j < segs.length; j++) {
+          if (i === j) continue;
+          const o = segs[j];
+          const oa = nodeK(o.ax, o.ay, o.az);
+          const ob = nodeK(o.bx, o.by, o.bz);
+          if (ka === oa || ka === ob || kb === oa || kb === ob) adj.get(s.id).push(o.id);
+        }
+      }
+      const prev = new Map();
+      const q = [startId];
+      prev.set(startId, null);
+      while (q.length) {
+        const id = q.shift();
+        if (id === endId) break;
+        const links = adj.get(id) || [];
+        for (let i = 0; i < links.length; i++) {
+          if (prev.has(links[i])) continue;
+          prev.set(links[i], id);
+          q.push(links[i]);
+        }
+      }
+      if (!prev.has(endId)) return null;
+      const ids = [];
+      let cur = endId;
+      while (cur) {
+        ids.push(cur);
+        cur = prev.get(cur);
+      }
+      ids.reverse();
+      return ids;
+    }
+
+    function getSurfaceBuilderPayload() {
+      const segs = viewer && viewer.displayedBranchSegs ? viewer.displayedBranchSegs() : [];
+      const box = viewer && viewer.getSelectionBox ? viewer.getSelectionBox() : { minx: 0, maxx: CUBE, miny: 0, maxy: CUBE, minz: 0, maxz: CUBE };
+      let chosen = segs.slice();
+      if (sendBranchIds.size) {
+        chosen = segs.filter((s) => sendBranchIds.has(s.id));
+      } else {
+        chosen = segs.filter(
+          (s) =>
+            pointInSelBox(s.ax, s.ay, s.az, box) ||
+            pointInSelBox(s.bx, s.by, s.bz, box) ||
+            pointInSelBox((s.ax + s.bx) * 0.5, (s.ay + s.by) * 0.5, (s.az + s.bz) * 0.5, box)
+        );
+      }
+      const nodeMap = new Map();
+      function takeNode(id, x, y, z) {
+        const key = id != null ? String(id) : x.toFixed(3) + "," + y.toFixed(3) + "," + z.toFixed(3);
+        if (nodeMap.has(key)) return;
+        const live = sim.nodeById && id != null ? sim.nodeById.get(id) : null;
+        nodeMap.set(key, {
+          id: id,
+          x: x,
+          y: y,
+          z: z,
+          isRoot: !!(live && live.isRoot),
+          order: live && live.order,
+          networkId: live && live.networkId,
+          degree: live && live.degree,
+        });
+      }
+      for (let i = 0; i < chosen.length; i++) {
+        const s = chosen[i];
+        takeNode(s.startNodeId, s.ax, s.ay, s.az);
+        takeNode(s.endNodeId, s.bx, s.by, s.bz);
+      }
+      const roots = (sim.rootDrafts && sim.rootDrafts.length ? sim.rootDrafts : []).map((n) => ({
+        id: n.uid != null ? n.uid : n.id,
+        x: n.x,
+        y: n.y,
+        z: n.z,
+        rootIndex: n.rootIndex,
+      }));
+      return {
+        cube: CUBE,
+        units: "feet",
+        upAxis: "Y",
+        box: box,
+        branches: chosen.map((s) => ({
+          id: s.id,
+          fromId: s.startNodeId,
+          toId: s.endNodeId,
+          ax: s.ax,
+          ay: s.ay,
+          az: s.az,
+          bx: s.bx,
+          by: s.by,
+          bz: s.bz,
+          networkId: s.networkId,
+          connection: !!s.connection,
+        })),
+        nodes: Array.from(nodeMap.values()),
+        roots: roots,
+      };
     }
 
     function paintConnectControls() {
@@ -4554,227 +4725,6 @@
       els.spaceStatus.textContent = message;
       els.spaceStatus.classList.toggle("active", kind === "active");
       els.spaceStatus.classList.toggle("error", kind === "error");
-    }
-
-    function setPrepStatus(message, kind) {
-      if (!els.prepStatus) return;
-      els.prepStatus.textContent = message;
-      els.prepStatus.classList.toggle("active", kind === "active");
-      els.prepStatus.classList.toggle("error", kind === "error");
-    }
-
-    function currentBoxSourceHash() {
-      const lib = global.D7PrepMesh;
-      const elsList = spaceResult && spaceResult.elements ? spaceResult.elements : [];
-      if (lib && lib.sourceHash) return lib.sourceHash(elsList);
-      return "";
-    }
-
-    function livePrepPending() {
-      return !!(geomSliderActive || prepPreviewTimer || prepFinalTimer || prepPending || prepBuilding);
-    }
-
-    function prepStatusText() {
-      if (geomSliderActive && prepLiveMode) return "Updating Geometry…";
-      if (prepBuilding || prepBusy || (prepLiveMode && livePrepPending())) return "Updating Prep Mesh…";
-      if (!prepMesh) return "Generate Geometry, then Prepare for Grasshopper.";
-      const n = prepMesh.components != null ? prepMesh.components : 0;
-      if (prepMesh.outOfDate) return "Prep Mesh Out of Date · Connected Components: " + n + " · Rebuild Prep Mesh";
-      const issues = prepMesh.validation && prepMesh.validation.issues ? prepMesh.validation.issues : [];
-      const resLabel = String(prepMesh.resolution || prepResolution || "").toUpperCase();
-      let msg = "Prep Mesh Ready · Connected Components: " + n;
-      if (resLabel) msg += " · " + resLabel;
-      if (issues.length) msg += " · " + issues[0];
-      return msg;
-    }
-
-    function paintPrepStatus() {
-      if (geomSliderActive && prepLiveMode) setPrepStatus("Updating Geometry…", "active");
-      else if (prepBuilding || prepBusy || (prepLiveMode && livePrepPending())) setPrepStatus("Updating Prep Mesh…", "active");
-      else if (prepMesh && prepMesh.outOfDate) setPrepStatus(prepStatusText(), "error");
-      else if (prepMesh) setPrepStatus(prepStatusText(), "active");
-      else setPrepStatus(prepStatusText());
-    }
-
-    function paintPrepButtonLabel() {
-      if (!els.prepMesh) return;
-      els.prepMesh.textContent = prepLiveMode ? "Rebuild Prep Mesh" : "Prepare for Grasshopper";
-    }
-
-    function applyPrepToViewer() {
-      if (!viewer) return;
-      if (prepMesh && viewer.setPrepMesh) viewer.setPrepMesh(prepMesh);
-      else if (viewer.clearPrepMesh) viewer.clearPrepMesh();
-    }
-
-    function cancelLivePrep(invalidate) {
-      if (prepPreviewTimer) {
-        clearTimeout(prepPreviewTimer);
-        prepPreviewTimer = 0;
-      }
-      if (prepFinalTimer) {
-        clearTimeout(prepFinalTimer);
-        prepFinalTimer = 0;
-      }
-      prepPending = null;
-      geomSliderActive = false;
-      if (invalidate) prepGenId += 1;
-    }
-
-    function resetPrepSession() {
-      cancelLivePrep(true);
-      prepLiveMode = false;
-      prepSwitchView = false;
-      prepBusy = false;
-      prepBuilding = false;
-      paintPrepButtonLabel();
-    }
-
-    function clearPrepMeshState() {
-      resetPrepSession();
-      prepMesh = null;
-      if (viewer && viewer.clearPrepMesh) viewer.clearPrepMesh();
-      paintPrepStatus();
-      paintButtons();
-    }
-
-    function markPrepStale() {
-      if (!prepMesh) return;
-      if (prepLiveMode) {
-        scheduleLivePrep({ preview: false });
-        return;
-      }
-      const hash = currentBoxSourceHash();
-      if (hash && prepMesh.sourceHash && hash === prepMesh.sourceHash && prepMesh.resolution === prepResolution) return;
-      prepMesh.outOfDate = true;
-      paintPrepStatus();
-      paintButtons();
-    }
-
-    function scheduleLivePrep(opts) {
-      const o = opts || {};
-      if (!prepLiveMode && !o.force) return;
-      if (!spaceResult || !spaceResult.elements || !spaceResult.elements.length) return;
-      const preview = !!o.preview;
-      const resolution = preview ? "low" : prepResolution;
-      prepGenId += 1;
-      const id = prepGenId;
-      if (prepPreviewTimer) {
-        clearTimeout(prepPreviewTimer);
-        prepPreviewTimer = 0;
-      }
-      if (prepFinalTimer) {
-        clearTimeout(prepFinalTimer);
-        prepFinalTimer = 0;
-      }
-      const delay = o.immediate ? 0 : preview ? PREP_PREVIEW_MS : PREP_FINAL_MS;
-      const kick = () => {
-        if (preview) prepPreviewTimer = 0;
-        else prepFinalTimer = 0;
-        beginPrepBuild(id, resolution, preview, !!o.force);
-      };
-      if (delay <= 0) kick();
-      else if (preview) prepPreviewTimer = setTimeout(kick, delay);
-      else prepFinalTimer = setTimeout(kick, delay);
-      paintPrepStatus();
-    }
-
-    function beginPrepBuild(id, resolution, preview, force) {
-      if (id !== prepGenId) return;
-      if (prepBuilding) {
-        prepPending = { id, resolution, preview, force };
-        return;
-      }
-      runPrepBuild(id, resolution, preview, force);
-    }
-
-    function packPrepMesh(mesh) {
-      if (!mesh) return null;
-      return {
-        positions: Array.from(mesh.positions || []),
-        indices: Array.from(mesh.indices || []),
-        normals: mesh.normals ? Array.from(mesh.normals) : [],
-        resolution: mesh.resolution || prepResolution,
-        components: mesh.components || 0,
-        sourceHash: mesh.sourceHash || "",
-        outOfDate: !!mesh.outOfDate,
-        validation: mesh.validation ? clonePlain(mesh.validation) : null,
-        box: mesh.box ? clonePlain(mesh.box) : null,
-      };
-    }
-
-    async function runPrepBuild(id, resolution, preview, force) {
-      if (id !== prepGenId) return;
-      const lib = global.D7PrepMesh;
-      if (!lib || !lib.buildAsync) {
-        setPrepStatus("Prep mesh builder did not load.", "error");
-        return;
-      }
-      const elements = spaceResult && spaceResult.elements ? spaceResult.elements.slice() : [];
-      if (!elements.length) {
-        setPrepStatus("Generate Geometry first.", "error");
-        return;
-      }
-      const hash = lib.sourceHash(elements);
-      if (
-        !force &&
-        prepMesh &&
-        !prepMesh.outOfDate &&
-        prepMesh.sourceHash === hash &&
-        prepMesh.resolution === resolution
-      ) {
-        paintPrepStatus();
-        paintButtons();
-        return;
-      }
-      prepBuilding = true;
-      paintPrepStatus();
-      try {
-        const box = viewer && viewer.getSelectionBox ? viewer.getSelectionBox() : spaceResult.box;
-        const result = await lib.buildAsync(elements, {
-          resolution,
-          box: box || { minx: 0, miny: 0, minz: 0, maxx: CUBE, maxy: CUBE, maxz: CUBE },
-        });
-        if (id !== prepGenId) return;
-        result.outOfDate = false;
-        result.sourceHash = hash;
-        prepMesh = result;
-        prepLiveMode = true;
-        paintPrepButtonLabel();
-        applyPrepToViewer();
-        markIterationDirty();
-        if (prepSwitchView) {
-          if (formMode === "geometry" || formMode === "prep") applyFormMode("prep", { keepSelection: true });
-          prepSwitchView = false;
-        }
-        setSpaceStatus(geomStatusText(spaceResult), "active");
-      } catch (err) {
-        if (id !== prepGenId) return;
-        setPrepStatus("Prep mesh failed: " + (err && err.message ? err.message : String(err)), "error");
-        setSpaceStatus("Prep mesh failed: " + (err && err.message ? err.message : String(err)), "error");
-      } finally {
-        const pending = prepPending;
-        prepPending = null;
-        prepBuilding = false;
-        if (pending && pending.id === prepGenId) {
-          beginPrepBuild(pending.id, pending.resolution, pending.preview, pending.force);
-        } else {
-          paintPrepStatus();
-          paintButtons();
-        }
-      }
-    }
-
-    function runPrepareGrasshopper() {
-      if (!spaceResult || !spaceResult.elements || !spaceResult.elements.length) {
-        setPrepStatus("Generate Geometry first.", "error");
-        return;
-      }
-      prepSwitchView = !prepLiveMode && (formMode === "geometry" || formMode === "prep");
-      prepLiveMode = true;
-      paintPrepButtonLabel();
-      cancelLivePrep(true);
-      scheduleLivePrep({ preview: false, immediate: true, force: true });
     }
 
     function currentClippedGraph() {
@@ -5275,10 +5225,7 @@
       if (result.didConstrain) msg += " · capped at selection";
       if (result.invalidCount) msg += " · " + result.invalidCount + " open";
       if (formMode === "surface") msg += " · surface";
-      else if (formMode === "prep") msg += " · prep mesh";
-      else if (formMode === "both") msg += prepMesh ? " · geometry + prep mesh" : " · geometry + surface";
-      if (prepMesh && prepMesh.outOfDate) msg += " · prep out of date";
-      else if (prepMesh) msg += " · Connected Components: " + (prepMesh.components || 0);
+      else if (formMode === "both") msg += " · geometry + surface";
       return msg;
     }
 
@@ -5289,17 +5236,13 @@
       nextDupId = 1;
       geomHist = [];
       geomFuture = [];
-      resetPrepSession();
-      prepMesh = null;
       if (viewer) {
         if (viewer.setSelectedElement) viewer.setSelectedElement(null);
         if (viewer.setSpacesMesh) viewer.setSpacesMesh(null);
-        if (viewer.clearPrepMesh) viewer.clearPrepMesh();
         if (viewer.setSkeleton) viewer.setSkeleton([]);
         if (viewer.setSpatialActive) viewer.setSpatialActive(false);
       }
       paintElemPanel();
-      paintPrepStatus();
       paintButtons();
     }
 
@@ -5385,7 +5328,7 @@
     }
 
     function paintFormModeButtons() {
-      const buttons = [els.modeGeometry, els.modeSurface, els.modePrep, els.modeBoth];
+      const buttons = [els.modeGeometry, els.modeSurface, els.modeBoth];
       for (let i = 0; i < buttons.length; i++) {
         const btn = buttons[i];
         if (!btn) continue;
@@ -5397,8 +5340,7 @@
     }
 
     function applyFormMode(mode, opts) {
-      const next =
-        mode === "surface" ? "surface" : mode === "prep" ? "prep" : mode === "both" ? "both" : "geometry";
+      const next = mode === "surface" ? "surface" : mode === "both" ? "both" : "geometry";
       formMode = next;
       if (!opts || !opts.keepSelection) selectGeom(null);
       if (viewer && viewer.setDisplayMode) viewer.setDisplayMode(formMode);
@@ -5634,15 +5576,11 @@
           displayMode: formMode,
           showBranches: !!(els.showBranches && els.showBranches.checked),
           showSpaces: !(els.showSpaces) || !!els.showSpaces.checked,
+          showSurfEdges: !(els.showSurfEdges) || !!els.showSurfEdges.checked,
           showSelBox: !(els.showSelBox) || !!els.showSelBox.checked,
           showHumanScale: !!(els.showHumanScale && els.showHumanScale.checked),
           hideOutside: !!(els.hideOutside && els.hideOutside.checked),
-          prepResolution,
         },
-        prepMesh: packPrepMesh(prepMesh),
-        prepResolution,
-        prepComponents: prepMesh ? prepMesh.components : 0,
-        prepOutOfDate: !!(prepMesh && prepMesh.outOfDate),
         cameraState: viewer && viewer.getCameraState ? viewer.getCameraState() : null,
         randomSeed: sim.seed,
         humanScale: viewer && viewer.getHumanScaleState ? viewer.getHumanScaleState() : null,
@@ -5659,6 +5597,7 @@
         displayMode: formMode,
         showBranches: !!(els.showBranches && els.showBranches.checked),
         showSpaces: !(els.showSpaces) || !!els.showSpaces.checked,
+        showSurfEdges: !(els.showSurfEdges) || !!els.showSurfEdges.checked,
         showSelBox: !(els.showSelBox) || !!els.showSelBox.checked,
         showHumanScale: !!(els.showHumanScale && els.showHumanScale.checked),
         hideOutside: !!(els.hideOutside && els.hideOutside.checked),
@@ -5675,12 +5614,33 @@
         elements: display && display.boxes ? display.boxes : generatedBoxes,
         surfaces: display && display.surfaces ? display.surfaces : surfaceGeometry,
         displayGeometry: display,
-        prepMesh: packPrepMesh(prepMesh),
       });
       return canonical;
     }
 
     function applyWorkingSnapshot(snapshot) {
+      if (snapshot) {
+        delete snapshot.ghReady;
+        delete snapshot.flatSurfaces;
+        delete snapshot.ghSurfaces;
+        delete snapshot.prepMesh;
+        delete snapshot.prepResolution;
+        delete snapshot.prepComponents;
+        delete snapshot.prepOutOfDate;
+        if (snapshot.displayState) {
+          delete snapshot.displayState.ghReady;
+          delete snapshot.displayState.ghMode;
+          delete snapshot.displayState.ghSharedEdges;
+          delete snapshot.displayState.ghPatchResolution;
+          delete snapshot.displayState.prepResolution;
+          if (snapshot.displayState.displayMode === "prep" || snapshot.displayState.displayMode === "prepmesh" || snapshot.displayState.displayMode === "prep-mesh") {
+            snapshot.displayState.displayMode = "geometry";
+          }
+        }
+        if (snapshot.displayMode === "prep" || snapshot.displayMode === "prepmesh" || snapshot.displayMode === "prep-mesh") {
+          snapshot.displayMode = "geometry";
+        }
+      }
       if (!snapshot) return;
       iterationLoadLock = true;
       try {
@@ -5717,6 +5677,10 @@
           els.showSpaces.checked = displayState.showSpaces !== false;
           if (viewer) viewer.setShowSpaces(els.showSpaces.checked);
         }
+        if (els.showSurfEdges) {
+          els.showSurfEdges.checked = displayState.showSurfEdges !== false;
+          if (viewer && viewer.setShowSurfEdges) viewer.setShowSurfEdges(els.showSurfEdges.checked);
+        }
         if (els.showSelBox) {
           els.showSelBox.checked = displayState.showSelBox !== false;
           if (viewer && viewer.setShowSelectionBox) viewer.setShowSelectionBox(els.showSelBox.checked);
@@ -5748,11 +5712,6 @@
           applyGrowthSnapshot({ roots: snapshot.roots, attractors: snapshot.attractors, seed: snapshot.randomSeed });
           syncViewer();
         }
-        if (snapshot.prepResolution || (snapshot.displayState && snapshot.displayState.prepResolution)) {
-          prepResolution = String(snapshot.prepResolution || snapshot.displayState.prepResolution || "medium").toLowerCase();
-          if (prepResolution !== "low" && prepResolution !== "high") prepResolution = "medium";
-          if (els.prepRes) els.prepRes.value = prepResolution;
-        }
         applyFormMode(displayState.displayMode || snapshot.displayMode || "geometry", { keepSelection: true });
         const packed = clonePlain(snapshot.spaceResult);
         if (packed && packed.ok) {
@@ -5780,21 +5739,6 @@
             viewer.setSkeleton(snapshot.sourceBranches);
           }
         }
-        if (snapshot.prepMesh && snapshot.prepMesh.positions && snapshot.prepMesh.indices) {
-          prepMesh = packPrepMesh(snapshot.prepMesh);
-          const liveHash = currentBoxSourceHash();
-          if (liveHash && prepMesh.sourceHash && liveHash !== prepMesh.sourceHash) prepMesh.outOfDate = true;
-          else if (snapshot.prepOutOfDate) prepMesh.outOfDate = true;
-          prepLiveMode = true;
-          paintPrepButtonLabel();
-          applyPrepToViewer();
-        } else {
-          prepMesh = null;
-          prepLiveMode = false;
-          paintPrepButtonLabel();
-          if (viewer && viewer.clearPrepMesh) viewer.clearPrepMesh();
-        }
-        paintPrepStatus();
         if (selectedGeomId) selectGeom(selectedGeomId);
         const cam = snapshot.cameraState || snapshot.camera;
         if (cam && viewer && viewer.setCameraState) viewer.setCameraState(cam);
@@ -6094,7 +6038,7 @@
         el.kind === "duplicate"
           ? "Copy"
           : el.kind === "surface"
-            ? "Strip " + (el.source && el.source.runIndex != null ? el.source.runIndex + 1 : "")
+            ? el.id || "SURFACE"
             : el.kind === "junction"
               ? "Junction"
               : "Bar " + (el.source && el.source.runIndex != null ? el.source.runIndex + 1 : "");
@@ -6138,16 +6082,10 @@
     function rebuildGeometry(liveOpts) {
       if (!spaceResult || !spaceResult.graph || !global.D7GridSpaces) return;
       try {
-        if (prepLiveMode && liveOpts && liveOpts.preview) setPrepStatus("Updating Geometry…", "active");
         const next = global.D7GridSpaces.rebuild(spaceResult.graph, geomOpts());
         applyGeomResult(next);
         markIterationDirty();
         setSpaceStatus(geomStatusText(next), "active");
-        if (prepLiveMode) {
-          scheduleLivePrep({ preview: !!(liveOpts && liveOpts.preview) });
-        } else {
-          markPrepStale();
-        }
       } catch (err) {
         setSpaceStatus("Rebuild failed: " + (err && err.message ? err.message : String(err)), "error");
       }
@@ -6191,7 +6129,6 @@
         nextDupId = nextDupFromStore();
         geomHist = [];
         geomFuture = [];
-        clearPrepMeshState();
         if (selectedGeomId && !findElement(selectedGeomId)) selectGeom(null);
         markIterationDirty();
         setSpaceStatus(geomStatusText(result), "active");
@@ -6359,6 +6296,40 @@
             "active"
           );
           return;
+        }
+        if ((sendSelectMode || sendPathMode) && viewer.pickBranch) {
+          const bid = viewer.pickBranch(event.clientX, event.clientY);
+          if (bid) {
+            if (sendPathMode) {
+              if (!sendPathAnchor) {
+                sendPathAnchor = bid;
+                sendBranchIds.clear();
+                sendBranchIds.add(bid);
+              } else {
+                const ids = pathIdsBetweenDisplayed(sendPathAnchor, bid);
+                sendBranchIds.clear();
+                if (ids) {
+                  for (let i = 0; i < ids.length; i++) sendBranchIds.add(ids[i]);
+                  setStatus("Path of " + ids.length + " branches. Send to Surface Builder when ready.", "active");
+                } else {
+                  sendBranchIds.add(sendPathAnchor);
+                  sendBranchIds.add(bid);
+                  setStatus("No connected path between those branches.", "error");
+                }
+                sendPathAnchor = null;
+              }
+            } else if (event.shiftKey) {
+              if (sendBranchIds.has(bid)) sendBranchIds.delete(bid);
+              else sendBranchIds.add(bid);
+            } else {
+              sendBranchIds.clear();
+              sendBranchIds.add(bid);
+            }
+            if (viewer.setSendSelection) viewer.setSendSelection(sendBranchIds);
+            paintSendSurfStatus();
+            paintButtons();
+            return;
+          }
         }
         if (spaceResult && editMode === "idle" && viewer.pickGeometry) {
           const geomId = viewer.pickGeometry(event.clientX, event.clientY);
@@ -7096,7 +7067,6 @@
     [
       [els.modeGeometry, "geometry"],
       [els.modeSurface, "surface"],
-      [els.modePrep, "prep"],
       [els.modeBoth, "both"],
     ].forEach((pair) => {
       const btn = pair[0];
@@ -7104,6 +7074,12 @@
       if (!btn) return;
       btn.addEventListener("click", () => applyFormMode(mode));
     });
+    if (els.showSurfEdges) {
+      els.showSurfEdges.addEventListener("change", () => {
+        if (viewer && viewer.setShowSurfEdges) viewer.setShowSurfEdges(els.showSurfEdges.checked);
+        markIterationDirty();
+      });
+    }
     if (els.showSelBox) {
       els.showSelBox.addEventListener("change", () => {
         if (viewer) viewer.setShowSelectionBox(els.showSelBox.checked);
@@ -7121,6 +7097,61 @@
       });
     }
     if (els.boxMove) {
+      if (els.selectSendBranches) {
+        els.selectSendBranches.addEventListener("click", () => {
+          sendSelectMode = !sendSelectMode;
+          sendPathMode = false;
+          sendPathAnchor = null;
+          if (sendSelectMode) {
+            if (els.showBranches && !els.showBranches.checked) {
+              els.showBranches.checked = true;
+              if (viewer && viewer.setShowBranches) viewer.setShowBranches(true);
+            }
+            setStatus("Select branches to send. Click a branch; Shift+click adds. Then Send to Surface Builder.", "active");
+          }
+          paintSendSurfStatus();
+          paintButtons();
+        });
+      }
+      if (els.selectSendPath) {
+        els.selectSendPath.addEventListener("click", () => {
+          sendPathMode = !sendPathMode;
+          sendSelectMode = false;
+          sendPathAnchor = null;
+          if (sendPathMode) {
+            if (els.showBranches && !els.showBranches.checked) {
+              els.showBranches.checked = true;
+              if (viewer && viewer.setShowBranches) viewer.setShowBranches(true);
+            }
+            setStatus("Select a continuous path: click start branch, then end branch.", "active");
+          }
+          paintSendSurfStatus();
+          paintButtons();
+        });
+      }
+      if (els.clearSendBranches) {
+        els.clearSendBranches.addEventListener("click", () => {
+          sendBranchIds.clear();
+          sendPathAnchor = null;
+          if (viewer && viewer.setSendSelection) viewer.setSendSelection(sendBranchIds);
+          paintSendSurfStatus();
+        });
+      }
+      if (els.sendSurfBuilder) {
+        els.sendSurfBuilder.addEventListener("click", () => {
+          const payload = getSurfaceBuilderPayload();
+          if (!payload.branches.length) {
+            setStatus("No branches to send. Grow first, or select branches inside the cyan box.", "error");
+            if (els.sendSurfStatus) els.sendSurfStatus.textContent = "Nothing to send.";
+            return;
+          }
+          window.dispatchEvent(new CustomEvent("d7-surface-builder-import", { detail: payload }));
+          setStatus("Sent " + payload.branches.length + " branches at exact coordinates to Surface Builder.", "active");
+          if (els.sendSurfStatus) {
+            els.sendSurfStatus.textContent = "Sent " + payload.branches.length + " branches. Open Surface Builder to create plates.";
+          }
+        });
+      }
       els.boxMove.addEventListener("click", () => setBoxMode("translate"));
     }
     if (els.boxScale) {
@@ -7165,6 +7196,12 @@
       geomFlexId = el.id;
       geomFlexKey = dim;
       mergeOverride(el.id, patch);
+      if (el.kind === "surface" && el.source && el.source.chainId && dim === "width") {
+        mergeOverride(el.source.chainId, { width: patch.width });
+      }
+      if (el.kind === "surface" && el.source && el.source.quadKey) {
+        mergeOverride(el.source.quadKey, patch);
+      }
       rebuildGeometry({ preview: geomSliderActive });
       const next = findElement(el.id);
       if (next) {
@@ -7206,6 +7243,8 @@
         patch.rz = pose.rz;
       }
       mergeOverride(selectedGeomId, patch);
+      const el = findElement(selectedGeomId);
+      if (el && el.source && el.source.quadKey) mergeOverride(el.source.quadKey, patch);
       rebuildGeometry();
     }
 
@@ -7229,6 +7268,7 @@
       if (!el) return;
       pushGeomHist();
       mergeOverride(selectedGeomId, { deleted: true });
+      if (el.source && el.source.quadKey) mergeOverride(el.source.quadKey, { deleted: true });
       const gone = selectedGeomId;
       selectGeom(null);
       rebuildGeometry();
@@ -7313,19 +7353,6 @@
       els.elemClear.addEventListener("click", resetSelectedBox);
     }
     if (els.resetGeom) els.resetGeom.addEventListener("click", resetAllGeometry);
-    if (els.prepMesh) els.prepMesh.addEventListener("click", () => runPrepareGrasshopper());
-    if (els.rebuildPrep) els.rebuildPrep.addEventListener("click", () => runPrepareGrasshopper());
-    if (els.prepRes) {
-      els.prepRes.addEventListener("change", () => {
-        prepResolution = String(els.prepRes.value || "medium").toLowerCase();
-        if (prepResolution !== "low" && prepResolution !== "high") prepResolution = "medium";
-        if (prepLiveMode && prepMesh) {
-          scheduleLivePrep({ preview: false, immediate: true });
-        } else if (prepMesh && prepMesh.resolution !== prepResolution) {
-          markPrepStale();
-        }
-      });
-    }
 
     async function exportIteration(which) {
       if (!spaceResult || !spaceResult.ok) {
@@ -7396,57 +7423,6 @@
     if (els.exportGeom) els.exportGeom.addEventListener("click", () => exportIteration("geometry"));
     if (els.exportSurf) els.exportSurf.addEventListener("click", () => exportIteration("surface"));
     if (els.exportBoth) els.exportBoth.addEventListener("click", () => exportIteration("both"));
-    async function exportGrasshopperPackage() {
-      if (!spaceResult || !spaceResult.ok) {
-        setSpaceStatus("Generate Geometry first.", "error");
-        return;
-      }
-      if (!prepMesh || !prepMesh.positions || !prepMesh.indices) {
-        setPrepStatus("Prepare for Grasshopper first.", "error");
-        return;
-      }
-      const lib = global.D7SpatialExport;
-      if (!lib || !lib.exportGrasshopperPackage3dm) {
-        setSpaceStatus("Exporter did not load.", "error");
-        return;
-      }
-      ensureViewer();
-      const display = viewer && viewer.captureDisplayGeometry ? viewer.captureDisplayGeometry() : null;
-      const guides =
-        display && display.branches && display.branches.length
-          ? display.branches
-          : captureSourceBranches();
-      const payload = {
-        ok: true,
-        elements: spaceResult.elements || [],
-        guides,
-        sourceBranches: guides,
-        prepMesh: packPrepMesh(prepMesh),
-        box: viewer && viewer.getSelectionBox ? viewer.getSelectionBox() : spaceResult.box,
-        geometryStateHash: geometryHash({
-          sourceBranches: guides,
-          generatedBoxes: spaceResult.elements || [],
-          elements: spaceResult.elements || [],
-          prepMesh,
-        }),
-      };
-      try {
-        setSpaceStatus("Writing Grasshopper 3DM…");
-        const out = await lib.exportGrasshopperPackage3dm(payload, "D7_Grasshopper_Package.3dm");
-        setSpaceStatus(
-          "Exported D7_Grasshopper_Package.3dm · Feet · 01_SOURCE_BRANCHES · 02_SOURCE_GEOMETRY · 03_PREP_MESH · 04_MODULE_BOUNDARY" +
-            (out && out.closed ? " · " + out.closed + " boxes" : "") +
-            (out && out.prepCount ? " · prep mesh" : "") +
-            (out && out.branchCount ? " · " + out.branchCount + " branches" : "") +
-            (prepMesh.outOfDate ? " · prep out of date" : "") +
-            (prepMesh.components != null ? " · Connected Components: " + prepMesh.components : ""),
-          prepMesh.outOfDate ? "error" : "active"
-        );
-      } catch (err) {
-        setSpaceStatus("Export failed: " + (err && err.message ? err.message : String(err)), "error");
-      }
-    }
-    if (els.exportGh) els.exportGh.addEventListener("click", () => exportGrasshopperPackage());
     if (els.exportBranchesSvg) {
       els.exportBranchesSvg.addEventListener("click", () => {
         const lib = global.D7SpatialExport;
@@ -7774,7 +7750,6 @@
     });
 
     paintButtons();
-    paintPrepStatus();
     paintReadout();
     paintGridStats();
     paintFormModeButtons();
@@ -7840,14 +7815,13 @@
         if (els.showRoots && v.setShowRoots) v.setShowRoots(els.showRoots.checked);
         if (els.showBranches) v.setShowBranches(els.showBranches.checked);
         if (els.showSpaces) v.setShowSpaces(els.showSpaces.checked);
+        if (els.showSurfEdges && v.setShowSurfEdges) v.setShowSurfEdges(els.showSurfEdges.checked);
         if (v.setDisplayMode) v.setDisplayMode(formMode);
         paintFormModeButtons();
         if (els.showSelBox && v.setShowSelectionBox) v.setShowSelectionBox(els.showSelBox.checked);
         if (els.showHumanScale && v.setShowHumanScale) v.setShowHumanScale(els.showHumanScale.checked);
         if (els.hideOutside && v.setHideOutsideSelection) v.setHideOutsideSelection(els.hideOutside.checked);
         if (spaceResult) applyGeomResult(spaceResult);
-        applyPrepToViewer();
-        paintPrepStatus();
         v.setBoxGizmoLocked(editMode !== "idle");
         updateRootGizmo();
         syncViewer();

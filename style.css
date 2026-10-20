@@ -230,6 +230,11 @@ button.active {
   color: var(--gold);
 }
 
+button.primary.active {
+  color: #111;
+  border-color: var(--gold);
+}
+
 .check {
   display: flex;
   align-items: center;
@@ -534,13 +539,15 @@ label.ctrl.compact select {
 
 .app.matrix-mode .hud,
 .app.space3d-mode .hud,
-.app.grid3d-mode .hud {
+.app.grid3d-mode .hud,
+.app.surfbuilder-mode .hud {
   display: none;
 }
 
 .matrix-view.hidden,
 .space3d-view.hidden,
-.grid3d-view.hidden {
+.grid3d-view.hidden,
+.surf-builder-view.hidden {
   display: none !important;
   pointer-events: none !important;
 }

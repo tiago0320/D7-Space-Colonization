@@ -7,6 +7,10 @@
   const CUBE = 20;
   const MERGE_EPS = 0.04;
   const WELD_EPS = 0.001;
+  const SURF_SNAP = 0.005;
+  const FACE_MIN_AREA = 0.08;
+  const SURF_COLLINEAR_DOT = 0.94;
+  const SURF_COPLANAR_DOT = 0.98;
   const AREA_MIN = 1e-6;
   const VOL_MIN = 1e-8;
   const ON_EPS = 1e-6;
@@ -1456,7 +1460,7 @@
     };
   }
 
-  function buildStripElement(id, positions, indices, ov, stripW) {
+  function buildStripElement(id, positions, indices, ov, stripW, extra) {
     if (!positions || positions.length < 9 || !indices || indices.length < 3) return null;
     const frame = frameFromPositions(positions);
     const posed = applyOverridePose(ov, frame, frame.center, frame.hu, frame.hw, frame.ht);
@@ -1464,6 +1468,28 @@
     const euler = eulerDegFromFrame(posed.U, posed.W, posed.T);
     const worldPos = localToWorldPositions(localPositions, posed.center, posed.U, posed.W, posed.T, posed.hu, posed.hw, posed.ht);
     const shownW = ov && ov.width != null ? dim(ov.width, stripW) : stripW;
+    const corners = [];
+    const srcCorners = extra && extra.corners ? extra.corners : null;
+    const posedOverride = ov && (ov.cx != null || ov.cy != null || ov.cz != null || ov.rx != null || ov.ry != null || ov.rz != null);
+    if (srcCorners && srcCorners.length >= 3 && !posedOverride) {
+      for (let i = 0; i < srcCorners.length; i++) corners.push(v(srcCorners[i].x, srcCorners[i].y, srcCorners[i].z));
+    } else {
+      const seen = new Set();
+      for (let i = 0; i + 2 < worldPos.length && corners.length < 4; i += 3) {
+        const k = weldKey(worldPos[i], worldPos[i + 1], worldPos[i + 2]);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        corners.push(v(worldPos[i], worldPos[i + 1], worldPos[i + 2]));
+      }
+    }
+    let outPos = worldPos;
+    let outIdx = indices.slice();
+    if (corners.length >= 3 && srcCorners && !posedOverride) {
+      outPos = [];
+      for (let i = 0; i < corners.length; i++) outPos.push(corners[i].x, corners[i].y, corners[i].z);
+      outIdx = [];
+      for (let t = 1; t < corners.length - 1; t++) outIdx.push(0, t, t + 1);
+    }
     return {
       id,
       kind: "surface",
@@ -1475,18 +1501,22 @@
       hw: posed.hw,
       ht: posed.ht,
       width: shownW,
-      thickness: posed.ht * 2,
+      thickness: 0,
       length: posed.hu * 2,
       rx: euler.rx,
       ry: euler.ry,
       rz: euler.rz,
       clipped: true,
-      source: { strip: true, runIndex: 0 },
-      positions: worldPos,
-      indices: indices.slice(),
+      source: extra && extra.source ? extra.source : { strip: true, runIndex: 0 },
+      positions: outPos,
+      indices: outIdx,
       localPositions,
-      localIndices: indices.slice(),
-      triangleCount: indices.length / 3,
+      localIndices: outIdx.slice(),
+      triangleCount: outIdx.length / 3,
+      corners,
+      vertexIds: extra && extra.vertexIds ? extra.vertexIds.slice() : [],
+      edgeIds: extra && extra.edgeIds ? extra.edgeIds.slice() : [],
+      exportName: extra && extra.exportName ? extra.exportName : id,
     };
   }
 
@@ -1494,121 +1524,791 @@
     const mesh = new MeshBuilder();
     for (let i = 0; i < (strips || []).length; i++) {
       const el = strips[i];
+      const corners = el.corners;
+      if (corners && corners.length >= 3) {
+        const map = [];
+        for (let k = 0; k < corners.length; k++) map.push(mesh.vert(corners[k], true));
+        for (let t = 1; t < corners.length - 1; t++) {
+          mesh.indices.push(map[0], map[t], map[t + 1]);
+        }
+        continue;
+      }
       const pos = el.positions;
       const idx = el.indices || el.localIndices;
       if (!pos || !idx) continue;
       const map = [];
       for (let k = 0; k < pos.length; k += 3) {
-        map.push(mesh.vert(v(pos[k], pos[k + 1], pos[k + 2]), false));
+        map.push(mesh.vert(v(pos[k], pos[k + 1], pos[k + 2]), true));
       }
       for (let k = 0; k < idx.length; k++) mesh.indices.push(map[idx[k]]);
     }
     return { positions: mesh.positions.slice(), indices: mesh.indices.slice() };
   }
 
+  function VertexRegistry(tol) {
+    this.tol = tol > 0 ? tol : SURF_SNAP;
+    this.inv = 1 / this.tol;
+    this.pts = [];
+    this.map = new Map();
+  }
+
+  VertexRegistry.prototype.add = function (p) {
+    const inv = this.inv;
+    const ix = Math.round(p.x * inv);
+    const iy = Math.round(p.y * inv);
+    const iz = Math.round(p.z * inv);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const k = ix + dx + "," + (iy + dy) + "," + (iz + dz);
+          if (this.map.has(k)) {
+            const id = this.map.get(k);
+            const e = this.pts[id];
+            if (Math.hypot(e.x - p.x, e.y - p.y, e.z - p.z) <= this.tol * 1.6) return id;
+          }
+        }
+      }
+    }
+    const id = this.pts.length;
+    this.pts.push(v(p.x, p.y, p.z));
+    this.map.set(ix + "," + iy + "," + iz, id);
+    return id;
+  };
+
+  function edgeKey(a, b) {
+    return a < b ? a + "|" + b : b + "|" + a;
+  }
+
+  function distPointSeg(p, a, b) {
+    const ab = sub(b, a);
+    const L2 = dot(ab, ab);
+    if (L2 < 1e-16) return { dist: len(sub(p, a)), t: 0, q: v(a.x, a.y, a.z) };
+    let t = dot(sub(p, a), ab) / L2;
+    t = clamp(t, 0, 1);
+    const q = add(a, scale(ab, t));
+    return { dist: len(sub(p, q)), t: t, q: q };
+  }
+
+  function segSeg3(a0, a1, b0, b1) {
+    const d1 = sub(a1, a0);
+    const d2 = sub(b1, b0);
+    const r = sub(a0, b0);
+    const a = dot(d1, d1);
+    const e = dot(d2, d2);
+    const b = dot(d1, d2);
+    const c = dot(d1, r);
+    const f = dot(d2, r);
+    const denom = a * e - b * b;
+    let s;
+    let t;
+    if (Math.abs(denom) < 1e-14) {
+      s = 0;
+      t = e > 1e-14 ? clamp(f / e, 0, 1) : 0;
+    } else {
+      s = clamp((b * f - c * e) / denom, 0, 1);
+      t = clamp((a * f - b * c) / denom, 0, 1);
+    }
+    const p = add(a0, scale(d1, s));
+    const q = add(b0, scale(d2, t));
+    return { s: s, t: t, p: p, q: q, dist: len(sub(p, q)) };
+  }
+
+  function polyNormal(pts) {
+    let nx = 0;
+    let ny = 0;
+    let nz = 0;
+    const n = pts.length;
+    for (let i = 0; i < n; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % n];
+      nx += (a.y - b.y) * (a.z + b.z);
+      ny += (a.z - b.z) * (a.x + b.x);
+      nz += (a.x - b.x) * (a.y + b.y);
+    }
+    const N = v(nx, ny, nz);
+    const L = len(N);
+    if (L < 1e-12) {
+      if (n >= 3) {
+        const c = cross(sub(pts[1], pts[0]), sub(pts[2], pts[0]));
+        return len(c) > 1e-12 ? norm(c) : v(0, 1, 0);
+      }
+      return v(0, 1, 0);
+    }
+    return scale(N, 1 / L);
+  }
+
+  function pointInConvexPoly(p, pts, nrm) {
+    if (!pts || pts.length < 3) return false;
+    const n = nrm || polyNormal(pts);
+    let sign = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const cr = cross(sub(b, a), sub(p, a));
+      const s = dot(cr, n);
+      if (Math.abs(s) <= SURF_SNAP * len(sub(b, a))) continue;
+      if (!sign) sign = s > 0 ? 1 : -1;
+      else if ((s > 0 ? 1 : -1) !== sign) return false;
+    }
+    return true;
+  }
+
+  function quadArea(pts) {
+    if (!pts || pts.length < 3) return 0;
+    let a = 0;
+    for (let i = 1; i < pts.length - 1; i++) a += triArea(pts[0], pts[i], pts[i + 1]);
+    return a;
+  }
+
+  function cornersFromIds(reg, ids) {
+    const out = [];
+    for (let i = 0; i < ids.length; i++) out.push(reg.pts[ids[i]]);
+    return out;
+  }
+
+  function uniqueSortedT(list) {
+    const arr = list.slice().sort((a, b) => a.t - b.t);
+    const out = [];
+    for (let i = 0; i < arr.length; i++) {
+      if (!out.length || Math.abs(arr[i].t - out[out.length - 1].t) > 1e-5) out.push(arr[i]);
+    }
+    return out;
+  }
+
+  function tessellateRegisteredQuad(reg, cornerIds, splits) {
+    const sides = [];
+    for (let i = 0; i < 4; i++) {
+      const a = cornerIds[i];
+      const b = cornerIds[(i + 1) % 4];
+      const edge = uniqueSortedT(splits[i] || []);
+      const side = [a];
+      for (let k = 0; k < edge.length; k++) {
+        if (edge[k].t > 1e-5 && edge[k].t < 1 - 1e-5 && edge[k].id !== a && edge[k].id !== b) side.push(edge[k].id);
+      }
+      side.push(b);
+      sides.push(side);
+    }
+    function lerpEdge(ia, ib, t) {
+      const pa = reg.pts[ia];
+      const pb = reg.pts[ib];
+      return reg.add(add(pa, scale(sub(pb, pa), t)));
+    }
+    function matchOpp(side, opp) {
+      const rev = opp.slice().reverse();
+      if (side.length === rev.length) return { top: side, bot: rev };
+      const n = Math.max(side.length, rev.length);
+      function resample(src, count) {
+        if (src.length === count) return src.slice();
+        const out = [src[0]];
+        const last = src.length - 1;
+        for (let i = 1; i < count - 1; i++) {
+          const t = i / (count - 1);
+          const f = t * last;
+          const j = Math.min(last - 1, Math.floor(f));
+          const lt = f - j;
+          out.push(lerpEdge(src[j], src[j + 1], lt));
+        }
+        out.push(src[last]);
+        return out;
+      }
+      return { top: resample(side, n), bot: resample(rev, n) };
+    }
+    const uPair = matchOpp(sides[0], sides[2]);
+    const vPair = matchOpp(sides[3].slice().reverse(), sides[1].slice().reverse());
+    const top = uPair.top;
+    const bot = uPair.bot;
+    const left = vPair.top;
+    const right = vPair.bot;
+    const nu = top.length - 1;
+    const nv = Math.max(1, left.length - 1);
+    const grid = [];
+    for (let i = 0; i <= nu; i++) {
+      grid[i] = [];
+      const u = nu ? i / nu : 0;
+      for (let j = 0; j <= nv; j++) {
+        const vv = nv ? j / nv : 0;
+        if (j === 0) grid[i][j] = top[i];
+        else if (j === nv) grid[i][j] = bot[i];
+        else if (i === 0) grid[i][j] = left[j];
+        else if (i === nu) grid[i][j] = right[j];
+        else {
+          const A = reg.pts[cornerIds[0]];
+          const B = reg.pts[cornerIds[1]];
+          const C = reg.pts[cornerIds[2]];
+          const D = reg.pts[cornerIds[3]];
+          const p = add(
+            add(scale(A, (1 - u) * (1 - vv)), scale(B, u * (1 - vv))),
+            add(scale(C, u * vv), scale(D, (1 - u) * vv))
+          );
+          grid[i][j] = reg.add(p);
+        }
+      }
+    }
+    const quads = [];
+    for (let i = 0; i < nu; i++) {
+      for (let j = 0; j < nv; j++) {
+        const q = [grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]];
+        const uniq = [];
+        const seen = new Set();
+        for (let k = 0; k < 4; k++) {
+          if (seen.has(q[k])) continue;
+          seen.add(q[k]);
+          uniq.push(q[k]);
+        }
+        if (uniq.length !== 4) continue;
+        const pts = cornersFromIds(reg, q);
+        let longest = 0;
+        for (let e = 0; e < 4; e++) longest = Math.max(longest, len(sub(pts[e], pts[(e + 1) % 4])));
+        if (quadArea(pts) > 0.04 && longest > 0.12) quads.push(q);
+      }
+    }
+    return quads;
+  }
+
+  function quadKeyFromCorners(corners) {
+    const keys = [];
+    for (let i = 0; i < corners.length; i++) {
+      keys.push(round2(corners[i].x) + "," + round2(corners[i].y) + "," + round2(corners[i].z));
+    }
+    keys.sort();
+    return "q:" + keys.join("|");
+  }
+
+  function padSurfId(n) {
+    const s = String(n);
+    return s.length >= 3 ? s : ("000" + s).slice(-3);
+  }
+
+  function collinearIds(reg, a, b, c) {
+    const pa = reg.pts[a];
+    const pb = reg.pts[b];
+    const pc = reg.pts[c];
+    const ab = sub(pb, pa);
+    const ac = sub(pc, pa);
+    const L = len(ab) * len(ac);
+    if (L < 1e-12) return true;
+    return Math.abs(dot(norm(ab), norm(ac))) > 0.995 && len(cross(ab, ac)) <= SURF_SNAP * 4 * Math.max(len(ab), len(ac), 1);
+  }
+
+  function mergeCollinearQuads(reg, list) {
+    for (let pass = 0; pass < 8; pass++) {
+      const edgeUse = new Map();
+      for (let i = 0; i < list.length; i++) {
+        const ids = list[i].ids;
+        for (let e = 0; e < 4; e++) {
+          const k = edgeKey(ids[e], ids[(e + 1) % 4]);
+          if (!edgeUse.has(k)) edgeUse.set(k, []);
+          edgeUse.get(k).push({ face: i, e: e });
+        }
+      }
+      let merged = false;
+      const skip = new Set();
+      for (let i = 0; i < list.length; i++) {
+        if (skip.has(i) || !list[i]) continue;
+        const A = list[i].ids;
+        for (let e = 0; e < 4; e++) {
+          const a0 = A[e];
+          const a1 = A[(e + 1) % 4];
+          const uses = edgeUse.get(edgeKey(a0, a1)) || [];
+          if (uses.length !== 2) continue;
+          const other = uses[0].face === i ? uses[1] : uses[0];
+          if (other.face === i || skip.has(other.face) || !list[other.face]) continue;
+          const B = list[other.face].ids;
+          const b0 = B[other.e];
+          const b1 = B[(other.e + 1) % 4];
+          const aPrev = A[(e + 3) % 4];
+          const aNext = A[(e + 2) % 4];
+          const bPrev = B[(other.e + 3) % 4];
+          const bNext = B[(other.e + 2) % 4];
+          const sameDir = a0 === b1 && a1 === b0;
+          if (!sameDir && !(a0 === b0 && a1 === b1)) continue;
+          const outer0 = sameDir ? bNext : bPrev;
+          const outer1 = sameDir ? bPrev : bNext;
+          if (!collinearIds(reg, aPrev, a0, outer0)) continue;
+          if (!collinearIds(reg, aNext, a1, outer1)) continue;
+          const nA = polyNormal(cornersFromIds(reg, A));
+          const nB = polyNormal(cornersFromIds(reg, B));
+          if (Math.abs(dot(nA, nB)) < 0.98) continue;
+          list[i] = {
+            ids: [aPrev, outer0, outer1, aNext],
+            chainId: list[i].chainId,
+            stripW: list[i].stripW,
+            chainOv: list[i].chainOv,
+            seg: list[i].seg,
+          };
+          skip.add(other.face);
+          list[other.face] = null;
+          merged = true;
+          break;
+        }
+      }
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (!list[i]) list.splice(i, 1);
+      }
+      if (!merged) break;
+    }
+  }
+
+  function validateMatchingSurfaces(strips, reg) {
+    const issues = [];
+    const edgeFaces = new Map();
+    for (let i = 0; i < strips.length; i++) {
+      const el = strips[i];
+      const corners = el.corners || [];
+      if (corners.length < 3) issues.push(el.id + " has no valid boundary");
+      if (corners.length >= 3) {
+        const n = polyNormal(corners);
+        let maxOff = 0;
+        const c = el.center;
+        for (let k = 0; k < corners.length; k++) {
+          maxOff = Math.max(maxOff, Math.abs(dot(sub(corners[k], c), n)));
+        }
+        if (maxOff > SURF_SNAP * 8) issues.push(el.id + " is not planar");
+      }
+      const ids = el.vertexIds || [];
+      for (let e = 0; e < ids.length; e++) {
+        const a = ids[e];
+        const b = ids[(e + 1) % ids.length];
+        const k = edgeKey(a, b);
+        if (!edgeFaces.has(k)) edgeFaces.set(k, []);
+        edgeFaces.get(k).push(el.id);
+      }
+    }
+    for (let i = 0; i < (reg ? reg.pts.length : 0); i++) {
+      const p = reg.pts[i];
+      for (let s = 0; s < strips.length; s++) {
+        const ids = strips[s].vertexIds || [];
+        if (ids.indexOf(i) >= 0) continue;
+        const corners = strips[s].corners || [];
+        for (let e = 0; e < corners.length; e++) {
+          const hit = distPointSeg(p, corners[e], corners[(e + 1) % corners.length]);
+          if (hit.t > 0.02 && hit.t < 0.98 && hit.dist < SURF_SNAP * 2) {
+            issues.push("T-junction on " + strips[s].id);
+            e = corners.length;
+          }
+        }
+      }
+    }
+    const seen = new Set();
+    for (let i = 0; i < strips.length; i++) {
+      const k = (strips[i].source && strips[i].source.quadKey) || strips[i].id;
+      if (seen.has(k)) issues.push("duplicate " + strips[i].id);
+      seen.add(k);
+    }
+    let shared = 0;
+    edgeFaces.forEach(function (ids) {
+      if (ids.length >= 2) shared += 1;
+    });
+    if (typeof console !== "undefined" && console.info) {
+      console.info("SURFACE network: " + strips.length + " faces, " + shared + " shared edges");
+    }
+    if (issues.length && typeof console !== "undefined" && console.warn) {
+      console.warn("SURFACE topology: " + issues.slice(0, 8).join(" · "));
+    }
+    return issues;
+  }
+
   function surfaceFromBranches(graph, width, box, overrides) {
     const ovs = overrides || {};
     const nodes = graph.nodes || [];
-    const chains = extractSurfaceChains(graph);
-    const strips = [];
+    const runs = extractRuns(graph);
+    const reg = new VertexRegistry(SURF_SNAP);
+    const hw0 = Math.max(DIM_MIN * 0.5, Number(width) * 0.5);
+    const MIN_AREA = FACE_MIN_AREA;
 
-    function endInset(nodeId, segLen, hw) {
-      const n = nodes[nodeId];
-      if (!n || n.degree < 3) return 0;
-      return Math.min(hw, Math.max(0, segLen * 0.45));
+    const incident = [];
+    for (let i = 0; i < nodes.length; i++) incident.push([]);
+    for (let r = 0; r < runs.length; r++) {
+      const run = runs[r];
+      if (run.a != null && incident[run.a]) incident[run.a].push(r);
+      if (run.b != null && incident[run.b]) incident[run.b].push(r);
     }
 
-    for (let c = 0; c < chains.length; c++) {
-      const chain = chains[c];
-      const id = chainStableId(chain);
+    function runHw(run) {
+      const id = runStableId(run);
+      const ov = ovs[id] || {};
+      if (ov.width != null) return Math.max(DIM_MIN * 0.5, dim(ov.width, width) * 0.5);
+      return hw0;
+    }
+
+    function runDir(run) {
+      return v(run.dx, run.dy, run.dz);
+    }
+
+    function awayDir(run, node) {
+      const d = runDir(run);
+      return node === run.a ? d : v(-d.x, -d.y, -d.z);
+    }
+
+    function alongDir(run) {
+      return runDir(run);
+    }
+
+    function addPt(p) {
+      return reg.add(p);
+    }
+
+    function capFromNormal(P, along, hw, nrmHint) {
+      let W;
+      if (nrmHint && len(nrmHint) > 0.2) {
+        W = cross(nrmHint, along);
+        if (len(W) < 1e-8) W = frameForDir(along).W;
+        else W = norm(W);
+      } else {
+        W = frameForDir(along).W;
+      }
+      return { L: add(P, scale(W, hw)), R: add(P, scale(W, -hw)) };
+    }
+
+    function miterPair(P, dirIn, dirOut, hw) {
+      const n0 = frameForDir(dirIn).W;
+      const n1 = nextStripLeft(dirIn, n0, dirOut);
+      if (dot(dirIn, dirOut) > SURF_COLLINEAR_DOT) {
+        return { L: add(P, scale(n0, hw)), R: add(P, scale(n0, -hw)) };
+      }
+      let Lpt = lineClosestPoint(add(P, scale(n0, hw)), dirIn, add(P, scale(n1, hw)), dirOut);
+      let Rpt = lineClosestPoint(add(P, scale(n0, -hw)), dirIn, add(P, scale(n1, -hw)), dirOut);
+      if (!Lpt) Lpt = add(P, scale(n0, hw));
+      if (!Rpt) Rpt = add(P, scale(n0, -hw));
+      const maxMiter = hw * 3;
+      return { L: limitMiter(Lpt, P, maxMiter), R: limitMiter(Rpt, P, maxMiter) };
+    }
+
+    function storeCap(map, node, runIndex, L, R) {
+      if (!map[node]) map[node] = {};
+      map[node][runIndex] = { L: addPt(L), R: addPt(R) };
+    }
+
+    const caps = {};
+    const hubs = [];
+
+    function hubNormal(list, node) {
+      let nrm = v(0, 0, 0);
+      for (let i = 0; i < list.length; i++) {
+        const di = awayDir(runs[list[i]], node);
+        for (let j = i + 1; j < list.length; j++) {
+          nrm = add(nrm, cross(di, awayDir(runs[list[j]], node)));
+        }
+      }
+      if (len(nrm) < 0.2) nrm = frameForDir(awayDir(runs[list[0]], node)).T;
+      return norm(nrm);
+    }
+
+    function mapHubEdge(n, P, nrm, ri, ia, ib) {
+      const along = alongDir(runs[ri]);
+      const pa = reg.pts[ia];
+      const pb = reg.pts[ib];
+      const leftN = cross(nrm, along);
+      const sA = dot(sub(pa, P), leftN);
+      const sB = dot(sub(pb, P), leftN);
+      if (!caps[n]) caps[n] = {};
+      caps[n][ri] = sA >= sB ? { L: ia, R: ib } : { L: ib, R: ia };
+    }
+
+    for (let n = 0; n < nodes.length; n++) {
+      const list = incident[n] || [];
+      if (list.length < 3) continue;
+      const P = v(nodes[n].x, nodes[n].y, nodes[n].z);
+      const hw = runHw(runs[list[0]]);
+      const nrm = hubNormal(list, n);
+      let U = awayDir(runs[list[0]], n);
+      U = sub(U, scale(nrm, dot(U, nrm)));
+      if (len(U) < 1e-8) U = frameForDir(nrm).W;
+      else U = norm(U);
+      let W = cross(nrm, U);
+      if (len(W) < 1e-8) W = frameForDir(U).W;
+      else W = norm(W);
+
+      if (list.length <= 4) {
+        const corners = [
+          add(P, add(scale(U, hw), scale(W, hw))),
+          add(P, add(scale(U, hw), scale(W, -hw))),
+          add(P, add(scale(U, -hw), scale(W, -hw))),
+          add(P, add(scale(U, -hw), scale(W, hw))),
+        ];
+        const ids = [addPt(corners[0]), addPt(corners[1]), addPt(corners[2]), addPt(corners[3])];
+        const edgeAway = [U, scale(W, -1), scale(U, -1), W];
+        const edgePair = [
+          [ids[0], ids[1]],
+          [ids[1], ids[2]],
+          [ids[2], ids[3]],
+          [ids[3], ids[0]],
+        ];
+        const used = new Set();
+        for (let i = 0; i < list.length; i++) {
+          const ri = list[i];
+          const away = awayDir(runs[ri], n);
+          let best = -4;
+          let bi = 0;
+          for (let e = 0; e < 4; e++) {
+            if (used.has(e)) continue;
+            const d = dot(away, edgeAway[e]);
+            if (d > best) {
+              best = d;
+              bi = e;
+            }
+          }
+          used.add(bi);
+          mapHubEdge(n, P, nrm, ri, edgePair[bi][0], edgePair[bi][1]);
+        }
+        hubs.push({ ids: ids, hw: hw, node: n });
+        continue;
+      }
+
+      const spokes = [];
+      for (let i = 0; i < list.length; i++) {
+        const away = awayDir(runs[list[i]], n);
+        let d = sub(away, scale(nrm, dot(away, nrm)));
+        if (len(d) < 1e-8) d = away;
+        else d = norm(d);
+        spokes.push({
+          ri: list[i],
+          ang: Math.atan2(dot(d, W), dot(d, U)),
+        });
+      }
+      spokes.sort(function (a, b) {
+        return a.ang - b.ang;
+      });
+      const verts = [];
+      for (let i = 0; i < spokes.length; i++) {
+        const a = spokes[i];
+        const b = spokes[(i + 1) % spokes.length];
+        let gap = b.ang - a.ang;
+        if (gap <= 0) gap += Math.PI * 2;
+        const mid = a.ang + gap * 0.5;
+        const s = Math.sin(gap * 0.5);
+        const dist = s > 0.15 ? hw / s : hw * 2.5;
+        const dir = add(scale(U, Math.cos(mid)), scale(W, Math.sin(mid)));
+        verts.push(add(P, scale(len(dir) > 1e-8 ? norm(dir) : U, dist)));
+      }
+      const ids = [];
+      for (let i = 0; i < verts.length; i++) ids.push(addPt(verts[i]));
+      for (let i = 0; i < spokes.length; i++) {
+        const ia = ids[(i - 1 + ids.length) % ids.length];
+        const ib = ids[i];
+        mapHubEdge(n, P, nrm, spokes[i].ri, ia, ib);
+      }
+      hubs.push({ ids: ids, hw: hw, node: n });
+    }
+
+    for (let n = 0; n < nodes.length; n++) {
+      const list = incident[n] || [];
+      if (list.length !== 2) continue;
+      const P = v(nodes[n].x, nodes[n].y, nodes[n].z);
+      const hw = runHw(runs[list[0]]);
+      const r0 = list[0];
+      const r1 = list[1];
+      const run0 = runs[r0];
+      const run1 = runs[r1];
+      const dirIn = n === run0.b ? alongDir(run0) : scale(alongDir(run0), -1);
+      const dirOut = n === run1.a ? alongDir(run1) : scale(alongDir(run1), -1);
+      const pair = miterPair(P, dirIn, dirOut, hw);
+      const L = pair.L;
+      const R = pair.R;
+      function assignRun(ri, run) {
+        const along = alongDir(run);
+        const leftN = frameForDir(along).W;
+        const sL = dot(sub(L, P), leftN);
+        const sR = dot(sub(R, P), leftN);
+        if (sL >= sR) storeCap(caps, n, ri, L, R);
+        else storeCap(caps, n, ri, R, L);
+      }
+      assignRun(r0, run0);
+      assignRun(r1, run1);
+    }
+
+    for (let n = 0; n < nodes.length; n++) {
+      const list = incident[n] || [];
+      if (list.length !== 1) continue;
+      const ri = list[0];
+      const run = runs[ri];
+      const P = v(nodes[n].x, nodes[n].y, nodes[n].z);
+      const hw = runHw(run);
+      const along = alongDir(run);
+      const other = n === run.a ? run.b : run.a;
+      let nrmHint = null;
+      if (caps[other] && caps[other][ri]) {
+        const cap = caps[other][ri];
+        nrmHint = cross(along, sub(reg.pts[cap.L], reg.pts[cap.R]));
+      }
+      const cap = capFromNormal(P, along, hw, nrmHint);
+      storeCap(caps, n, ri, cap.L, cap.R);
+    }
+
+    function fanIndices(n) {
+      const idx = [];
+      for (let i = 1; i < n - 1; i++) idx.push(0, i, i + 1);
+      return idx;
+    }
+
+    function pushFace(raw, ids, chainId, stripW, chainOv, kind) {
+      const uniq = [];
+      for (let i = 0; i < ids.length; i++) {
+        if (uniq.length && uniq[uniq.length - 1] === ids[i]) continue;
+        uniq.push(ids[i]);
+      }
+      if (uniq.length >= 2 && uniq[0] === uniq[uniq.length - 1]) uniq.pop();
+      if (uniq.length < 3) return;
+      const pts = cornersFromIds(reg, uniq);
+      if (quadArea(pts) < MIN_AREA) return;
+      raw.push({ ids: uniq, chainId: chainId, stripW: stripW, chainOv: chainOv, kind: kind || "strip" });
+    }
+
+    const rawFaces = [];
+
+    for (let r = 0; r < runs.length; r++) {
+      const run = runs[r];
+      const id = runStableId(run);
       const ov = ovs[id] || {};
       if (ov.deleted) continue;
-      const stripW = ov.width != null ? dim(ov.width, width) : width;
-      const hw = Math.max(DIM_MIN * 0.5, Number(stripW) * 0.5);
-      const maxMiter = hw * 3;
-      const mesh = new MeshBuilder();
-      const pts = chain.points;
-      const ids = chain.nodeIds;
-      const nPts = pts.length;
-      if (nPts < 2) continue;
-      const closed = !!chain.closed && nPts >= 3;
-      const nSeg = closed ? nPts : nPts - 1;
-      const dirs = [];
-      const seglens = [];
-      for (let i = 0; i < nSeg; i++) {
-        const a = pts[i];
-        const b = pts[(i + 1) % nPts];
-        const d = sub(b, a);
-        const L = len(d);
-        seglens.push(L);
-        dirs.push(L < 1e-8 ? v(1, 0, 0) : scale(d, 1 / L));
+      const hw = runHw(run);
+      const clipped = clipSegToBox(run.ax, run.ay, run.az, run.bx, run.by, run.bz, box);
+      if (!clipped) continue;
+      const A = v(clipped.ax, clipped.ay, clipped.az);
+      const B = v(clipped.bx, clipped.by, clipped.bz);
+      if (len(sub(B, A)) < MERGE_EPS) continue;
+      const along = alongDir(run);
+      let sL;
+      let sR;
+      let eL;
+      let eR;
+      if (caps[run.a] && caps[run.a][r]) {
+        sL = caps[run.a][r].L;
+        sR = caps[run.a][r].R;
+      } else {
+        const cap = capFromNormal(A, along, hw, null);
+        sL = addPt(cap.L);
+        sR = addPt(cap.R);
       }
-      const leftN = [];
-      leftN[0] = frameForDir(dirs[0]).W;
-      for (let i = 1; i < nSeg; i++) {
-        leftN[i] = nextStripLeft(dirs[i - 1], leftN[i - 1], dirs[i]);
+      if (caps[run.b] && caps[run.b][r]) {
+        eL = caps[run.b][r].L;
+        eR = caps[run.b][r].R;
+      } else {
+        const cap = capFromNormal(B, along, hw, null);
+        eL = addPt(cap.L);
+        eR = addPt(cap.R);
       }
-      if (closed) {
-        leftN[0] = nextStripLeft(dirs[nSeg - 1], leftN[nSeg - 1], dirs[0]);
-        for (let i = 1; i < nSeg; i++) {
-          leftN[i] = nextStripLeft(dirs[i - 1], leftN[i - 1], dirs[i]);
-        }
-      }
-
-      function offsetAt(i) {
-        const P = pts[i];
-        if (!closed && i === 0) {
-          const n = leftN[0];
-          const Q = add(P, scale(dirs[0], endInset(ids[0], seglens[0], hw)));
-          return { L: add(Q, scale(n, hw)), R: add(Q, scale(n, -hw)) };
-        }
-        if (!closed && i === nPts - 1) {
-          const si = nSeg - 1;
-          const n = leftN[si];
-          const Q = add(P, scale(dirs[si], -endInset(ids[i], seglens[si], hw)));
-          return { L: add(Q, scale(n, hw)), R: add(Q, scale(n, -hw)) };
-        }
-        const i0 = closed ? (i - 1 + nSeg) % nSeg : i - 1;
-        const i1 = closed ? i % nSeg : i;
-        const d0 = dirs[i0];
-        const d1 = dirs[i1];
-        const n0 = leftN[i0];
-        const n1 = leftN[i1];
-        if (dot(d0, d1) > COLLINEAR_DOT) {
-          return { L: add(P, scale(n0, hw)), R: add(P, scale(n0, -hw)) };
-        }
-        let Lpt = lineClosestPoint(add(P, scale(n0, hw)), d0, add(P, scale(n1, hw)), d1);
-        let Rpt = lineClosestPoint(add(P, scale(n0, -hw)), d0, add(P, scale(n1, -hw)), d1);
-        if (!Lpt) Lpt = add(P, scale(n0, hw));
-        if (!Rpt) Rpt = add(P, scale(n0, -hw));
-        Lpt = limitMiter(Lpt, P, maxMiter);
-        Rpt = limitMiter(Rpt, P, maxMiter);
-        return { L: Lpt, R: Rpt };
-      }
-
-      function addClippedQuad(a, b, c, d) {
-        const n = cross(sub(b, a), sub(d, a));
-        if (len(n) < 1e-10) return;
-        const poly = clipPolyToBox([a, b, c, d], box);
-        if (poly.length < 3) return;
-        mesh.addPoly(poly, n, true);
-      }
-
-      const offs = [];
-      for (let i = 0; i < nPts; i++) offs.push(offsetAt(i));
-      const last = closed ? nPts : nPts - 1;
-      for (let i = 0; i < last; i++) {
-        const a = offs[i];
-        const b = offs[(i + 1) % nPts];
-        addClippedQuad(a.L, b.L, b.R, a.R);
-      }
-      const el = buildStripElement(id, mesh.positions.slice(), mesh.indices.slice(), ov, stripW);
-      if (!el) continue;
-      el.source.runIndex = strips.length;
-      strips.push(el);
+      const pSL = reg.pts[sL];
+      const pSR = reg.pts[sR];
+      const pER = reg.pts[eR];
+      const pEL = reg.pts[eL];
+      const nA = cross(sub(pSR, pSL), sub(pER, pSL));
+      const nB = cross(sub(pER, pSL), sub(pEL, pSL));
+      const ordered = dot(nA, nB) < 0 ? [sL, sR, eL, eR] : [sL, sR, eR, eL];
+      pushFace(rawFaces, ordered, id, hw * 2, ov, "strip");
     }
+
+    for (let h = 0; h < hubs.length; h++) {
+      const hub = hubs[h];
+      const P = v(nodes[hub.node].x, nodes[hub.node].y, nodes[hub.node].z);
+      if (
+        P.x < box.minx - 0.05 ||
+        P.x > box.maxx + 0.05 ||
+        P.y < box.miny - 0.05 ||
+        P.y > box.maxy + 0.05 ||
+        P.z < box.minz - 0.05 ||
+        P.z > box.maxz + 0.05
+      ) {
+        continue;
+      }
+      pushFace(rawFaces, hub.ids, "j:" + hub.node, hub.hw * 2, {}, "hub");
+    }
+
+    const kept = [];
+    for (let i = 0; i < rawFaces.length; i++) {
+      const pts = cornersFromIds(reg, rawFaces[i].ids);
+      if (quadArea(pts) < MIN_AREA) continue;
+      kept.push(rawFaces[i]);
+    }
+
+    const parent = [];
+    for (let i = 0; i < kept.length; i++) parent.push(i);
+    function find(a) {
+      while (parent[a] !== a) {
+        parent[a] = parent[parent[a]];
+        a = parent[a];
+      }
+      return a;
+    }
+    function unite(a, b) {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent[rb] = ra;
+    }
+    const edgeOwner = new Map();
+    for (let i = 0; i < kept.length; i++) {
+      const ids = kept[i].ids;
+      for (let e = 0; e < ids.length; e++) {
+        const k = edgeKey(ids[e], ids[(e + 1) % ids.length]);
+        if (edgeOwner.has(k)) unite(i, edgeOwner.get(k));
+        else edgeOwner.set(k, i);
+      }
+    }
+    const sheetMap = new Map();
+    let nextSheet = 1;
+    for (let i = 0; i < kept.length; i++) {
+      const root = find(i);
+      if (!sheetMap.has(root)) sheetMap.set(root, "SHEET_" + padSurfId(nextSheet++));
+      kept[i].sheetId = sheetMap.get(root);
+    }
+
+    kept.sort(function (a, b) {
+      if (a.sheetId !== b.sheetId) return a.sheetId < b.sheetId ? -1 : 1;
+      return quadArea(cornersFromIds(reg, b.ids)) - quadArea(cornersFromIds(reg, a.ids));
+    });
+
+    const edgeReg = new Map();
+    let nextEdge = 1;
+    function useEdge(a, b) {
+      const k = edgeKey(a, b);
+      if (edgeReg.has(k)) return edgeReg.get(k);
+      const id = "EDGE_" + padSurfId(nextEdge++);
+      edgeReg.set(k, id);
+      return id;
+    }
+
+    const strips = [];
+    const sheets = [];
+    const sheetFaces = new Map();
+    for (let i = 0; i < kept.length; i++) {
+      const q = kept[i];
+      const corners = cornersFromIds(reg, q.ids);
+      const qk = quadKeyFromCorners(corners);
+      const ov = ovs[qk] || ovs[q.chainId] || q.chainOv || {};
+      if (ov.deleted) continue;
+      const positions = [];
+      for (let k = 0; k < corners.length; k++) positions.push(corners[k].x, corners[k].y, corners[k].z);
+      const indices = fanIndices(corners.length);
+      if (indices.length < 3) continue;
+      const sid = "SURFACE_" + padSurfId(strips.length + 1);
+      const edgeIds = [];
+      for (let e = 0; e < q.ids.length; e++) edgeIds.push(useEdge(q.ids[e], q.ids[(e + 1) % q.ids.length]));
+      const el = buildStripElement(sid, positions, indices, ov, q.stripW, {
+        corners: corners,
+        vertexIds: q.ids.slice(),
+        edgeIds: edgeIds,
+        exportName: sid,
+        source: {
+          strip: true,
+          runIndex: strips.length,
+          chainId: q.chainId,
+          quadKey: qk,
+          sheetId: q.sheetId,
+          kind: q.kind,
+        },
+      });
+      if (!el) continue;
+      el.sheetId = q.sheetId;
+      strips.push(el);
+      if (!sheetFaces.has(q.sheetId)) sheetFaces.set(q.sheetId, []);
+      sheetFaces.get(q.sheetId).push(el);
+    }
+    sheetFaces.forEach(function (faces, id) {
+      sheets.push({ id: id, faces: faces.map(function (f) { return f.id; }) });
+    });
+    validateMatchingSurfaces(strips, reg);
     const fused = fuseStrips(strips);
-    return { positions: fused.positions, indices: fused.indices, strips };
+    return { positions: fused.positions, indices: fused.indices, strips: strips, sheets: sheets };
   }
 
   function applyOverridePose(ov, frame, center, hu, hw, ht) {
@@ -1641,7 +2341,7 @@
     const box = graph.box;
     const elements = [];
     const overrides = opts.overrides || {};
-    const runs = graph.runs && graph.runs.length ? graph.runs : extractRuns(graph);
+    const runs = extractRuns(graph);
     graph.runs = runs;
     function flexFor(id) {
       return opts.flexId && opts.flexId === id ? opts.flexAxis : null;
@@ -1754,6 +2454,7 @@
 
     const surf = surfaceFromBranches(graph, opts.width, box, overrides);
     const surfaces = surf.strips || [];
+    const sheets = surf.sheets || [];
 
     return {
       ok: true,
@@ -1767,6 +2468,7 @@
       overrides,
       elements,
       surfaces,
+      sheets,
       elementCount: elements.length,
       segmentCount: elements.filter((e) => e.kind === "segment").length,
       runCount: boxes.length,
