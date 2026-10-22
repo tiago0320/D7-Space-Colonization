@@ -1,10 +1,11 @@
-/**
- * Plank Builder: convert an imported 3D Grid Growth network into continuous
- * constant-width, zero-thickness plank surfaces.
+﻿/**
+ * Plank Builder: convert an imported 3D Grid Growth network into simple
+ * constant-width, zero-thickness planar quads.
  * Workspace: 20 ft cube. 1 world unit = 1 foot. Y is vertical.
- * Degree-2 runs become folded quad strips with shared edges.
- * Messy 3D bends rebuild as one crease or a trimmed fold patch.
- * Y-junctions trim all legs back, then share one equal-edge quad hub.
+ * One branch segment = one planar quad. Direction changes are miter-trimmed
+ * so consecutive quads share one fold edge. At a Y-junction the smallest-turn
+ * child continues the parent as one strip; the side branch is trimmed back
+ * and connected into the side of that strip with a planar quad joint.
  */
 (function (global) {
   const CUBE = 20;
@@ -115,8 +116,9 @@
   }
 
   /**
-   * Split the graph into polylines. Intermediate vertices of degree 2 stay in one run.
-   * Junctions (degree != 2) become endpoints. Cycles of all degree-2 nodes are included.
+   * Split the graph into polylines. Degree-2 corners stay in one run.
+   * At a Y-junction the walk continues along the smallest turn so the
+   * main path is one connected strip; leftover legs start new runs.
    */
   function buildChains(network) {
     const nodes = network.nodes || [];
@@ -140,22 +142,49 @@
     const used = new Set();
     const chains = [];
 
+    function bestContinuation(cur, prev, available) {
+      if (available.length === 1) return available[0];
+      const P = byId.get(cur);
+      const A = byId.get(prev);
+      if (!P || !A) return available[0];
+      const incoming = norm(sub(P, A));
+      let best = available[0];
+      let bestDot = -Infinity;
+      for (let i = 0; i < available.length; i++) {
+        const Q = byId.get(available[i].nodeId);
+        if (!Q) continue;
+        const outgoing = norm(sub(Q, P));
+        const d = dot(incoming, outgoing);
+        if (d > bestDot) {
+          bestDot = d;
+          best = available[i];
+        }
+      }
+      return best;
+    }
+
     function walk(start, next, firstBranchId) {
       const nodeIds = [start, next];
       const branchIds = [firstBranchId];
       used.add(edgeKey(start, next));
       let prev = start;
       let cur = next;
-      while (degree(cur) === 2) {
-        const nbs = adj.get(cur);
-        const nb = nbs[0].nodeId === prev ? nbs[1] : nbs[0];
-        const key = edgeKey(cur, nb.nodeId);
-        if (used.has(key)) break;
-        used.add(key);
-        branchIds.push(nb.branchId);
-        nodeIds.push(nb.nodeId);
+      while (true) {
+        const nbs = adj.get(cur) || [];
+        const available = [];
+        for (let i = 0; i < nbs.length; i++) {
+          if (nbs[i].nodeId === prev) continue;
+          const key = edgeKey(cur, nbs[i].nodeId);
+          if (used.has(key)) continue;
+          available.push(nbs[i]);
+        }
+        if (!available.length) break;
+        const pick = degree(cur) <= 2 ? available[0] : bestContinuation(cur, prev, available);
+        used.add(edgeKey(cur, pick.nodeId));
+        branchIds.push(pick.branchId);
+        nodeIds.push(pick.nodeId);
         prev = cur;
-        cur = nb.nodeId;
+        cur = pick.nodeId;
       }
       const points = [];
       for (let i = 0; i < nodeIds.length; i++) {
@@ -168,10 +197,7 @@
       return { nodeIds: nodeIds, branchIds: branchIds, points: points };
     }
 
-    for (let i = 0; i < nodes.length; i++) {
-      const id = nodes[i].id;
-      const d = degree(id);
-      if (d === 2) continue;
+    function startWalks(id) {
       const nbs = adj.get(id) || [];
       for (let j = 0; j < nbs.length; j++) {
         const nb = nbs[j];
@@ -180,6 +206,20 @@
         const chain = walk(id, nb.nodeId, nb.branchId);
         if (chain.points.length >= 2) chains.push(chain);
       }
+    }
+
+    for (let i = 0; i < nodes.length; i++) {
+      if (nodes[i].isRoot) startWalks(nodes[i].id);
+    }
+    for (let i = 0; i < nodes.length; i++) {
+      const id = nodes[i].id;
+      if (nodes[i].isRoot || degree(id) !== 1) continue;
+      startWalks(id);
+    }
+
+    for (let i = 0; i < nodes.length; i++) {
+      if (degree(nodes[i].id) !== 3) continue;
+      startWalks(nodes[i].id);
     }
 
     for (let i = 0; i < branches.length; i++) {
@@ -191,6 +231,57 @@
       if (chain.points.length >= 2) chains.push(chain);
     }
     return chains;
+  }
+
+  function buildAdjacency(network) {
+    const nodes = network.nodes || [];
+    const branches = network.branches || [];
+    const byId = new Map();
+    for (let i = 0; i < nodes.length; i++) byId.set(nodes[i].id, nodes[i]);
+    const adj = new Map();
+    function addAdj(a, b) {
+      if (!adj.has(a)) adj.set(a, []);
+      adj.get(a).push(b);
+    }
+    for (let i = 0; i < branches.length; i++) {
+      const b = branches[i];
+      if (!byId.has(b.fromId) || !byId.has(b.toId) || b.fromId === b.toId) continue;
+      addAdj(b.fromId, b.toId);
+      addAdj(b.toId, b.fromId);
+    }
+    return { byId: byId, adj: adj };
+  }
+
+  function classifyYJunctions(network, chains) {
+    const g = buildAdjacency(network);
+    const yAt = new Map();
+    for (let c = 0; c < chains.length; c++) {
+      const chain = chains[c];
+      const ids = chain.nodeIds;
+      for (let i = 1; i < ids.length - 1; i++) {
+        const id = ids[i];
+        const nbs = g.adj.get(id) || [];
+        if (nbs.length !== 3) continue;
+        const parent = ids[i - 1];
+        const main = ids[i + 1];
+        let side = null;
+        for (let k = 0; k < nbs.length; k++) {
+          if (nbs[k] !== parent && nbs[k] !== main) side = nbs[k];
+        }
+        if (side == null || yAt.has(id)) continue;
+        const P = g.byId.get(id);
+        const S = g.byId.get(side);
+        const sideDir = P && S ? norm(sub(S, P)) : { x: 0, y: 0, z: 1 };
+        yAt.set(id, { parent: parent, main: main, side: side, sideDir: sideDir });
+      }
+    }
+    return yAt;
+  }
+
+  function reverseChain(chain) {
+    chain.nodeIds.reverse();
+    chain.branchIds.reverse();
+    chain.points.reverse();
   }
 
   function perpTo(dir, hint) {
@@ -311,358 +402,285 @@
     return rights;
   }
 
-  function junctionNormal(nodeId, adj, byId) {
-    const p = byId.get(nodeId);
-    const nbs = adj.get(nodeId) || [];
-    if (!p || nbs.length < 3) return null;
-    const dirs = [];
-    for (let i = 0; i < nbs.length; i++) {
-      const q = byId.get(nbs[i].nodeId);
-      if (!q) continue;
-      dirs.push(norm(sub(q, p)));
+  function sharedWidthDir(tIn, rIn, tOut, rOut) {
+    const nIn = cross(tIn, rIn);
+    const nOut = cross(tOut, rOut);
+    if (len(nIn) > 1e-8 && len(nOut) > 1e-8) {
+      let crease = cross(nIn, nOut);
+      if (len(crease) > 1e-5) {
+        crease = norm(crease);
+        if (dot(crease, rIn) < 0) crease = scale(crease, -1);
+        if (Math.abs(dot(crease, tIn)) < 0.96 && Math.abs(dot(crease, tOut)) < 0.96) return crease;
+      }
     }
-    let N = { x: 0, y: 0, z: 0 };
-    for (let i = 0; i < dirs.length; i++) {
-      N = add(N, cross(dirs[i], dirs[(i + 1) % dirs.length]));
-    }
-    if (len(N) < 1e-6) return { x: 0, y: 0, z: 1 };
-    return norm(N);
-  }
-
-  function miterRight(dIn, dOut, rIn) {
-    const n = cross(dIn, dOut);
-    let B = add(dIn, dOut);
-    if (len(n) < 1e-6 || len(B) < 1e-6) return norm(rIn);
-    B = norm(B);
-    let rM = cross(n, B);
-    if (len(rM) < 1e-6) rM = rIn;
-    rM = norm(rM);
-    if (dot(rM, rIn) < 0) rM = scale(rM, -1);
-    return rM;
-  }
-
-  function creaseRight(dIn, rIn, dOut, rOut) {
-    const nIn = cross(dIn, rIn);
-    const nOut = cross(dOut, rOut);
-    let c = cross(nIn, nOut);
-    if (len(c) < 1e-6) return miterRight(dIn, dOut, rIn);
-    c = norm(c);
-    if (dot(c, rIn) < 0) c = scale(c, -1);
-    return c;
+    const n = cross(tIn, tOut);
+    if (len(n) < 1e-6) return norm(rIn);
+    const leaveIn = scale(tIn, -1);
+    let bis = add(norm(leaveIn), norm(tOut));
+    if (len(bis) < 1e-6) return perpTo(tIn, n);
+    bis = norm(bis);
+    let m = cross(norm(n), bis);
+    if (len(m) < 1e-6) m = rIn;
+    m = norm(m);
+    if (dot(m, rIn) < 0) m = scale(m, -1);
+    return m;
   }
 
   function lineIntersect(p1, d1, p2, d2) {
-    const w = sub(p1, p2);
-    const a = dot(d1, d1);
-    const b = dot(d1, d2);
-    const c = dot(d2, d2);
-    const d = dot(d1, w);
-    const e = dot(d2, w);
-    const denom = a * c - b * b;
-    if (Math.abs(denom) < 1e-10) return null;
-    const s = (b * e - c * d) / denom;
-    const t = (a * e - b * d) / denom;
-    const A = add(p1, scale(d1, s));
-    const B = add(p2, scale(d2, t));
-    if (len(sub(A, B)) > 2e-4) return null;
-    return { point: lerp(A, B, 0.5), s: s, t: t };
+    const a = norm(d1);
+    const b = norm(d2);
+    const n = cross(a, b);
+    const n2 = dot(n, n);
+    if (n2 < 1e-12) return null;
+    const r = sub(p2, p1);
+    const s = dot(cross(r, b), n) / n2;
+    return add(p1, scale(a, s));
   }
 
-  function makeCross(pool, L, R) {
+  function parallelogramEnd(pool, start, endCenter) {
+    const offset = sub(endCenter, start.center);
+    const L = add(start.L, offset);
+    const R = add(start.R, offset);
     return {
-      center: lerp(L, R, 0.5),
+      center: endCenter,
+      right: start.right,
       iL: pool.add(L),
       iR: pool.add(R),
       L: L,
       R: R,
-      right: norm(sub(L, R)),
     };
   }
 
-  function miterCross(pool, P, dIn, dOut, rIn, rOut, half) {
-    const hitL = lineIntersect(add(P, scale(rIn, half)), dIn, add(P, scale(rOut, half)), dOut);
-    const hitR = lineIntersect(sub(P, scale(rIn, half)), dIn, sub(P, scale(rOut, half)), dOut);
-    if (!hitL || !hitR) return null;
-    const L = hitL.point;
-    const R = hitR.point;
-    const span = len(sub(L, R));
-    const mid = lerp(L, R, 0.5);
-    if (span < half * 0.7 || span > half * 2.45) return null;
-    if (len(sub(mid, P)) > half * 0.85) return null;
-    if (dot(sub(L, R), rIn) < 0.35 * span) return null;
-    return makeCross(pool, L, R);
+  function makeCrossFromCorners(pool, L, R, hintRight) {
+    const mid = scale(add(L, R), 0.5);
+    let right = sub(L, R);
+    if (len(right) < 1e-10) return null;
+    right = norm(right);
+    if (hintRight && dot(right, hintRight) < 0) {
+      return {
+        center: mid,
+        right: scale(right, -1),
+        iL: pool.add(R),
+        iR: pool.add(L),
+        L: R,
+        R: L,
+      };
+    }
+    return { center: mid, right: right, iL: pool.add(L), iR: pool.add(R), L: L, R: R };
   }
 
-  function creaseCross(pool, P, dIn, rIn, dOut, rOut, half) {
-    const rFold = creaseRight(dIn, rIn, dOut, rOut);
-    return crossSection(pool, P, rFold, half);
-  }
+  function foldCross(pool, P, tIn, rIn, tOut, rOutHint, half) {
+    const rInU = norm(rIn);
+    let rOut = rOutHint && len(rOutHint) > 1e-8 ? norm(rOutHint) : parallelTransport(rInU, tIn, tOut);
+    if (len(rOut) < 1e-8) rOut = rInU;
+    if (dot(rOut, rInU) < 0) rOut = scale(rOut, -1);
 
-  function fillInnerNgon(pool, ring, quads) {
-    if (ring.length < 3) return;
-    if (ring.length === 4) {
-      addQuad(quads, ring[0], ring[1], ring[2], ring[3]);
-      return;
+    if (Math.abs(dot(norm(tIn), norm(tOut))) > 0.98) {
+      return crossSection(pool, P, rInU, half);
     }
-    const verts = pool.verts;
-    let cx = 0;
-    let cy = 0;
-    let cz = 0;
-    for (let i = 0; i < ring.length; i++) {
-      const p = verts[ring[i]];
-      cx += p.x;
-      cy += p.y;
-      cz += p.z;
-    }
-    const inv = 1 / ring.length;
-    const c = pool.add({ x: cx * inv, y: cy * inv, z: cz * inv });
-    const mids = [];
-    for (let i = 0; i < ring.length; i++) {
-      const a = verts[ring[i]];
-      const b = verts[ring[(i + 1) % ring.length]];
-      mids.push(pool.add(lerp(a, b, 0.5)));
-    }
-    for (let i = 0; i < ring.length; i++) {
-      const prev = (i + ring.length - 1) % ring.length;
-      addQuad(quads, ring[i], mids[i], c, mids[prev]);
-    }
-  }
 
-  function sortLegsAround(N, legs) {
-    const ref = perpTo(N, { x: 1, y: 0, z: 0 });
-    const ref2 = cross(N, ref);
-    legs.sort((a, b) => {
-      const aa = Math.atan2(dot(a.dirAway, ref2), dot(a.dirAway, ref));
-      const ba = Math.atan2(dot(b.dirAway, ref2), dot(b.dirAway, ref));
-      return aa - ba;
-    });
-  }
+    const nIn = cross(tIn, rInU);
+    const nOut = cross(tOut, rOut);
+    const crease = cross(nIn, nOut);
+    const outOfPlane =
+      len(nIn) > 1e-8 &&
+      len(nOut) > 1e-8 &&
+      len(crease) > 1e-5 &&
+      Math.abs(dot(norm(nIn), norm(nOut))) < 0.999;
 
-  function computeJunctionTrims(degrees, adj, byId, width) {
-    const half = width * 0.5;
-    const out = new Map();
-    degrees.forEach((d, id) => {
-      if (d < 3) return;
-      const p = byId.get(id);
-      const nbs = adj.get(id) || [];
-      if (!p || nbs.length < 3) return;
-      const dirs = [];
-      for (let i = 0; i < nbs.length; i++) {
-        const q = byId.get(nbs[i].nodeId);
-        if (!q) continue;
-        dirs.push(norm(sub(q, p)));
-      }
-      if (dirs.length < 3) return;
-      let N = { x: 0, y: 0, z: 0 };
-      for (let i = 0; i < dirs.length; i++) {
-        N = add(N, cross(dirs[i], dirs[(i + 1) % dirs.length]));
-      }
-      if (len(N) < 1e-6) N = { x: 0, y: 0, z: 1 };
-      N = norm(N);
-      const items = dirs.map((dir) => ({ dirAway: dir }));
-      sortLegsAround(N, items);
-      let need = half * 1.1;
-      for (let i = 0; i < items.length; i++) {
-        const a = items[i].dirAway;
-        const b = items[(i + 1) % items.length].dirAway;
-        const ang = Math.acos(clamp(dot(a, b), -1, 1));
-        const ha = Math.max(0.18, ang * 0.5);
-        need = Math.max(need, (half / Math.tan(ha)) * 1.22);
-      }
-      out.set(id, clamp(need, half * 1.05, width * 1.35));
-    });
-    return out;
-  }
-
-  function fillJunction(J, legs, pool, quads, width) {
-    if (!legs || legs.length < 3) return;
-    let N = { x: 0, y: 0, z: 0 };
-    for (let i = 0; i < legs.length; i++) {
-      N = add(N, cross(legs[i].dirAway, legs[(i + 1) % legs.length].dirAway));
-    }
-    if (len(N) < 1e-6) {
-      for (let i = 0; i < legs.length; i++) N = add(N, cross(legs[i].dirAway, legs[i].right));
-    }
-    if (len(N) < 1e-6) N = { x: 0, y: 1, z: 0 };
-    N = norm(N);
-    sortLegsAround(N, legs);
-    const half = width * 0.5;
-    function sideIndex(leg, ccw) {
-      const std = perpTo(leg.dirAway, N);
-      const leftIsCcw = dot(leg.right, std) >= 0;
-      if (ccw) return leftIsCcw ? leg.iL : leg.iR;
-      return leftIsCcw ? leg.iR : leg.iL;
-    }
-    const inners = [];
-    for (let i = 0; i < legs.length; i++) {
-      const a = legs[i];
-      const b = legs[(i + 1) % legs.length];
-      let bis = add(norm(a.dirAway), norm(b.dirAway));
-      const da = len(sub(a.center, J));
-      const db = len(sub(b.center, J));
-      if (len(bis) < 1e-6) {
-        inners.push(pool.add(J));
-        continue;
-      }
-      bis = norm(bis);
-      const t = clamp(Math.min(da, db) * 0.32, half * 0.14, Math.min(da, db) * 0.42);
-      inners.push(pool.add(add(J, scale(bis, t))));
-    }
-    for (let i = 0; i < legs.length; i++) {
-      const prev = (i + legs.length - 1) % legs.length;
-      addQuad(quads, sideIndex(legs[i], false), sideIndex(legs[i], true), inners[i], inners[prev]);
-    }
-    if (inners.length === 4) addQuad(quads, inners[0], inners[1], inners[2], inners[3]);
-    else fillInnerNgon(pool, inners, quads);
-  }
-
-  function clampJunctionTrim(need, segLen, otherNeed) {
-    let t = need;
-    if (otherNeed > 0) {
-      const sum = t + otherNeed;
-      const limit = segLen * 0.82;
-      if (sum > limit && sum > 1e-6) t *= limit / sum;
-    }
-    return clamp(t, Math.min(need * 0.35, segLen * 0.12), segLen * 0.4);
-  }
-
-  function junctionCap(pool, center, dirAway, chainRight, planeN, half) {
-    let r = chainRight;
-    if (planeN) {
-      let rHub = cross(planeN, dirAway);
-      if (len(rHub) > 1e-6) {
-        rHub = norm(rHub);
-        if (dot(rHub, chainRight) < 0) rHub = scale(rHub, -1);
-        r = rHub;
+    if (outOfPlane) {
+      let c = norm(crease);
+      if (dot(c, rInU) < 0) c = scale(c, -1);
+      if (Math.abs(dot(c, tIn)) < 0.96 && Math.abs(dot(c, tOut)) < 0.96) {
+        return crossSection(pool, P, c, half);
       }
     }
-    return crossSection(pool, center, r, half);
-  }
 
-  function emitSimplifiedFold(P, dIn, dOut, rIn, rOut, half, maxInset, pool, quads, prev) {
-    const inset = clamp(half * 0.5, half * 0.22, maxInset);
-    const csIn = crossSection(pool, sub(P, scale(dIn, inset)), rIn, half);
-    let cur = connectOriented(quads, prev, csIn);
-    if (!cur) {
-      connectCross(quads, prev, csIn);
-      cur = csIn;
-    }
-    const csOut = crossSection(pool, add(P, scale(dOut, inset)), rOut, half);
-    let next = connectOriented(quads, cur, csOut);
-    if (!next) {
-      const flipped = flipCross(csOut);
-      connectCross(quads, cur, flipped);
-      return flipped;
-    }
-    return next;
-  }
-
-  function emitVertex(P, dIn, dOut, rIn, rOut, half, maxInset, pool, quads, prev) {
-    const ang = Math.acos(clamp(dot(dIn, dOut), -1, 1));
-    if (ang < 0.18) {
-      const cs = crossSection(pool, P, rOut, half);
-      const used = connectOriented(quads, prev, cs);
-      return used || cs;
-    }
-    const nIn = cross(dIn, rIn);
-    const nOut = cross(dOut, rOut);
-    const coplanar =
-      len(nIn) > 1e-8 && len(nOut) > 1e-8 && Math.abs(dot(norm(nIn), norm(nOut))) > 0.97;
-    if (coplanar && ang < 1.05) {
-      const miter = miterCross(pool, P, dIn, dOut, rIn, rOut, half);
-      if (miter) {
-        const used = connectOriented(quads, prev, miter);
-        if (used) return used;
+    const L = lineIntersect(add(P, scale(rInU, half)), tIn, add(P, scale(rOut, half)), tOut);
+    const R = lineIntersect(sub(P, scale(rInU, half)), tIn, sub(P, scale(rOut, half)), tOut);
+    if (L && R) {
+      const span = len(sub(L, R));
+      const mid = scale(add(L, R), 0.5);
+      if (span >= half * 0.25 && span <= half * 8 && len(sub(mid, P)) <= half * 4) {
+        const made = makeCrossFromCorners(pool, L, R, rInU);
+        if (made) return made;
       }
     }
-    const crease = creaseCross(pool, P, dIn, rIn, dOut, rOut, half);
-    const used = connectOriented(quads, prev, crease);
+
+    return crossSection(pool, P, sharedWidthDir(tIn, rInU, tOut, rOut), half);
+  }
+
+  function quadPlanar(a, b) {
+    const n1 = cross(sub(a.R, a.L), sub(b.R, a.L));
+    const n2 = cross(sub(b.R, a.L), sub(b.L, a.L));
+    if (len(n1) < 1e-10 || len(n2) < 1e-10) return false;
+    return Math.abs(dot(norm(n1), norm(n2))) > 0.999;
+  }
+
+  function quadArea(a, b) {
+    return triArea(a.L, a.R, b.R) + triArea(a.L, b.R, b.L);
+  }
+
+  function tryEmitQuad(quads, a, b, minArea) {
+    const n0 = quads.length;
+    const used = connectOriented(quads, a, b);
+    if (used && quadPlanar(a, used) && !isBowtie(a, used) && quadArea(a, used) >= minArea) return used;
+    quads.length = n0;
+    return null;
+  }
+
+  function emitSpan(quads, pool, prev, endCenter, end, minArea) {
+    let used = tryEmitQuad(quads, prev, end, minArea);
     if (used) return used;
-    return emitSimplifiedFold(P, dIn, dOut, rIn, rOut, half, maxInset, pool, quads, prev);
+    const fresh = parallelogramEnd(pool, prev, endCenter);
+    used = tryEmitQuad(quads, prev, fresh, minArea);
+    return used || fresh;
   }
 
-  function emitChain(chain, width, degrees, pool, quads, junctionLegs, jNormals, jTrims) {
+  function yTrim(segLen, half) {
+    if (segLen <= 1e-8) return 0;
+    return Math.min(half, Math.max(half * 0.2, segLen * 0.35));
+  }
+
+  function makeSidePort(CA, CB, tSide) {
+    const useL = dot(tSide, CA.right) >= 0;
+    const A = useL ? CA.L : CA.R;
+    const B = useL ? CB.L : CB.R;
+    const iA = useL ? CA.iL : CA.iR;
+    const iB = useL ? CB.iL : CB.iR;
+    if (iA === iB) return null;
+    const span = sub(A, B);
+    if (len(span) < 1e-6) return null;
+    const center = scale(add(A, B), 0.5);
+    let right = norm(span);
+    if (dot(right, CA.right) < 0) {
+      return { center: center, right: scale(right, -1), iL: iB, iR: iA, L: B, R: A };
+    }
+    return { center: center, right: right, iL: iA, iR: iB, L: A, R: B };
+  }
+
+  function emitYJunction(pool, quads, prev, P, tIn, tOut, rIn, rOut, tSide, segIn, segOut, half, minArea, sidePorts, yId) {
+    const trimIn = yTrim(segIn, half);
+    const trimOut = yTrim(segOut, half);
+    const cA = add(P, scale(tIn, -trimIn));
+    const cB = add(P, scale(tOut, trimOut));
+    const CA = crossSection(pool, cA, rIn, half);
+    let CB = crossSection(pool, cB, rOut, half);
+    if (dot(CB.right, CA.right) < 0) CB = flipCross(CB);
+
+    const fromCA = emitSpan(quads, pool, prev, cA, CA, minArea);
+    let joint = tryEmitQuad(quads, fromCA, CB, minArea);
+    if (!joint) {
+      const fresh = parallelogramEnd(pool, fromCA, cB);
+      joint = tryEmitQuad(quads, fromCA, fresh, minArea);
+      if (joint) CB = joint;
+      else joint = fromCA;
+    } else {
+      CB = joint;
+    }
+
+    const port = makeSidePort(fromCA, CB, tSide);
+    if (port && len(sub(port.L, port.R)) >= half * 0.4) {
+      sidePorts.set(yId, port);
+    } else {
+      const standoff = add(P, scale(norm(tSide), half));
+      let portRight = tIn;
+      if (Math.abs(dot(norm(portRight), norm(tSide))) > 0.9) portRight = fromCA.right;
+      sidePorts.set(yId, crossSection(pool, standoff, portRight, half));
+    }
+    return CB;
+  }
+
+  function emitChain(chain, width, pool, quads, nodeCross, yAt, sidePorts) {
     const points = chain.points;
     const nodeIds = chain.nodeIds;
     const n = points.length;
     if (n < 2) return;
     const half = width * 0.5;
+    const minArea = width * width * 0.02;
     const segs = segmentLengths(points);
     const tangents = [];
     for (let i = 0; i < n - 1; i++) tangents.push(segmentDir(points, i));
-    const startN = jNormals && jNormals.get(nodeIds[0]);
-    const endN = jNormals && jNormals.get(nodeIds[n - 1]);
-    const rights = chainRights(tangents, startN, endN);
-    const startJunc = (degrees.get(nodeIds[0]) || 0) > 2;
-    const endJunc = (degrees.get(nodeIds[n - 1]) || 0) > 2;
-    const startNeed = startJunc ? jTrims.get(nodeIds[0]) || half * 1.1 : 0;
-    const endNeed = endJunc ? jTrims.get(nodeIds[n - 1]) || half * 1.1 : 0;
+    const rights = chainRights(tangents, null, null);
 
-    function registerLeg(nodeId, dirAway, cs) {
-      const list = junctionLegs.get(nodeId) || [];
-      list.push({
-        dirAway: dirAway,
-        right: cs.right,
-        iL: cs.iL,
-        iR: cs.iR,
-        center: cs.center,
-      });
-      junctionLegs.set(nodeId, list);
+    function cached(i, hintRight, maker) {
+      const id = nodeIds[i];
+      if (yAt.has(id)) {
+        const cs = maker();
+        return hintRight && dot(cs.right, hintRight) < 0 ? flipCross(cs) : cs;
+      }
+      if (nodeCross.has(id)) {
+        const existing = nodeCross.get(id);
+        return hintRight && dot(existing.right, hintRight) < 0 ? flipCross(existing) : existing;
+      }
+      const cs = maker();
+      nodeCross.set(id, cs);
+      return cs;
     }
 
+    let currentRight = rights[0];
     let prev;
-    if (startJunc) {
-      const other = endJunc && n === 2 ? endNeed : 0;
-      const t = clampJunctionTrim(startNeed, segs[0], other);
-      prev = junctionCap(
-        pool,
-        add(points[0], scale(tangents[0], t)),
-        tangents[0],
-        rights[0],
-        startN,
-        half
-      );
-      registerLeg(nodeIds[0], tangents[0], prev);
+    if (sidePorts.has(nodeIds[0])) {
+      const port = sidePorts.get(nodeIds[0]);
+      prev = dot(port.right, currentRight) < 0 ? flipCross(port) : port;
+    } else if (yAt.has(nodeIds[0])) {
+      const standoff = add(points[0], scale(tangents[0], yTrim(segs[0], half)));
+      prev = crossSection(pool, standoff, currentRight, half);
     } else {
-      prev = crossSection(pool, points[0], rights[0], half);
+      prev = cached(0, currentRight, function () {
+        return crossSection(pool, points[0], currentRight, half);
+      });
     }
+    currentRight = prev.right;
 
     for (let i = 0; i < n - 1; i++) {
-      if (i === n - 2) {
-        let cs;
-        if (endJunc) {
-          const other = startJunc && n === 2 ? startNeed : 0;
-          const t = clampJunctionTrim(endNeed, segs[i], other);
-          const dirAway = scale(tangents[i], -1);
-          cs = junctionCap(
-            pool,
-            add(points[n - 1], scale(dirAway, t)),
-            dirAway,
-            rights[i],
-            endN,
-            half
-          );
-          registerLeg(nodeIds[n - 1], dirAway, cs);
-        } else {
-          cs = crossSection(pool, points[n - 1], rights[i], half);
-        }
-        const used = connectOriented(quads, prev, cs);
-        if (!used) connectCross(quads, prev, cs);
-        break;
+      const endId = nodeIds[i + 1];
+      const yInfo = yAt.get(endId);
+      const endIsInteriorY =
+        yInfo && i + 1 < n - 1 && nodeIds[i] == yInfo.parent && nodeIds[i + 2] == yInfo.main;
+
+      if (endIsInteriorY) {
+        const rNext = rights[i + 1];
+        prev = emitYJunction(
+          pool,
+          quads,
+          prev,
+          points[i + 1],
+          tangents[i],
+          tangents[i + 1],
+          currentRight,
+          rNext,
+          yInfo.sideDir,
+          segs[i],
+          segs[i + 1],
+          half,
+          minArea,
+          sidePorts,
+          endId
+        );
+        currentRight = prev.right;
+      } else {
+      const endCenter = points[i + 1];
+      let end;
+      if (sidePorts.has(endId) && i === n - 2) {
+        const port = sidePorts.get(endId);
+        end = dot(port.right, currentRight) < 0 ? flipCross(port) : port;
+      } else if (i < n - 2) {
+        const rNext = rights[i + 1];
+        end = cached(i + 1, currentRight, function () {
+          return foldCross(pool, endCenter, tangents[i], currentRight, tangents[i + 1], rNext, half);
+        });
+      } else if (nodeCross.has(endId)) {
+        const existing = nodeCross.get(endId);
+        end = dot(existing.right, currentRight) < 0 ? flipCross(existing) : existing;
+      } else {
+        end = parallelogramEnd(pool, prev, endCenter);
+        if (!yAt.has(endId)) nodeCross.set(endId, end);
       }
-      const maxInset = Math.min(segs[i], segs[i + 1]) * 0.34;
-      prev = emitVertex(
-        points[i + 1],
-        tangents[i],
-        tangents[i + 1],
-        rights[i],
-        rights[i + 1],
-        half,
-        maxInset,
-        pool,
-        quads,
-        prev
-      );
+      const used = emitSpan(quads, pool, prev, endCenter, end, minArea);
+      prev = used;
+      currentRight = used.right;
+      }
     }
   }
 
@@ -680,42 +698,66 @@
     return deg;
   }
 
+  function validatePlanks(pool, quads, width) {
+    let bad = 0;
+    for (let i = 0; i < quads.length; i++) {
+      const q = quads[i];
+      const A = pool.verts[q[0]];
+      const B = pool.verts[q[1]];
+      const C = pool.verts[q[2]];
+      const D = pool.verts[q[3]];
+      if (!A || !B || !C || !D) {
+        bad += 1;
+        continue;
+      }
+      const n1 = cross(sub(B, A), sub(C, A));
+      const n2 = cross(sub(C, A), sub(D, A));
+      const planar =
+        len(n1) > 1e-10 &&
+        len(n2) > 1e-10 &&
+        Math.abs(dot(norm(n1), norm(n2))) > 0.999;
+      const area = triArea(A, B, C) + triArea(A, C, D);
+      const ids = [q[0], q[1], q[2], q[3]];
+      const unique = new Set(ids);
+      if (!planar || unique.size !== 4 || area < width * width * 0.02) bad += 1;
+    }
+    if (bad) {
+      console.warn("[Plank Builder] " + bad + "/" + quads.length + " faces failed planar-quad checks.");
+    }
+  }
+
   function buildPlankSystem(network, width) {
     const w = clamp(Number(width) || DEFAULT_WIDTH, MIN_WIDTH, MAX_WIDTH);
     const chains = buildChains(network);
-    const degrees = nodeDegrees(network);
-    const byId = new Map();
-    const nodes = network.nodes || [];
-    for (let i = 0; i < nodes.length; i++) byId.set(nodes[i].id, nodes[i]);
+    chains.sort(function (a, b) {
+      return b.points.length - a.points.length;
+    });
+    const yAt = classifyYJunctions(network, chains);
+    for (let i = 0; i < chains.length; i++) {
+      const ids = chains[i].nodeIds;
+      if (ids.length < 2) continue;
+      const yStart = yAt.has(ids[0]);
+      const yEnd = yAt.has(ids[ids.length - 1]);
+      if (!yStart && yEnd) reverseChain(chains[i]);
+    }
+    chains.sort(function (a, b) {
+      function interiorY(ch) {
+        for (let k = 1; k < ch.nodeIds.length - 1; k++) {
+          if (yAt.has(ch.nodeIds[k])) return 1;
+        }
+        return 0;
+      }
+      const dy = interiorY(b) - interiorY(a);
+      if (dy) return dy;
+      return b.points.length - a.points.length;
+    });
     const pool = new VertexPool();
     const quads = [];
-    const junctionLegs = new Map();
-    const adj = new Map();
-    function addAdj(a, b) {
-      if (!adj.has(a)) adj.set(a, []);
-      adj.get(a).push({ nodeId: b });
-    }
-    const branches = network.branches || [];
-    for (let i = 0; i < branches.length; i++) {
-      const b = branches[i];
-      if (!byId.has(b.fromId) || !byId.has(b.toId) || b.fromId === b.toId) continue;
-      addAdj(b.fromId, b.toId);
-      addAdj(b.toId, b.fromId);
-    }
-    const jNormals = new Map();
-    degrees.forEach((d, id) => {
-      if (d > 2) jNormals.set(id, junctionNormal(id, adj, byId));
-    });
-    const jTrims = computeJunctionTrims(degrees, adj, byId, w);
+    const nodeCross = new Map();
+    const sidePorts = new Map();
     for (let i = 0; i < chains.length; i++) {
-      emitChain(chains[i], w, degrees, pool, quads, junctionLegs, jNormals, jTrims);
+      emitChain(chains[i], w, pool, quads, nodeCross, yAt, sidePorts);
     }
-    junctionLegs.forEach((legs, nodeId) => {
-      if (!legs || legs.length < 3) return;
-      const n = byId.get(nodeId);
-      if (!n) return;
-      fillJunction({ x: n.x, y: n.y, z: n.z }, legs, pool, quads, w);
-    });
     const kept = [];
     for (let i = 0; i < quads.length; i++) {
       const q = quads[i];
@@ -730,6 +772,7 @@
     }
     quads.length = 0;
     for (let i = 0; i < kept.length; i++) quads.push(kept[i]);
+    validatePlanks(pool, quads, w);
     const pos = new Float32Array(pool.verts.length * 3);
     for (let i = 0; i < pool.verts.length; i++) {
       pos[i * 3] = pool.verts[i].x;
@@ -1148,7 +1191,7 @@
     function ensureViewer() {
       if (viewer) return viewer;
       if (!global.THREE) {
-        setStatus("Three.js did not load — Plank Builder cannot start.", "error");
+        setStatus("Three.js did not load â€” Plank Builder cannot start.", "error");
         return null;
       }
       viewer = createViewer(stage);
