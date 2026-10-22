@@ -134,6 +134,7 @@
     tabStudio: document.getElementById("tabStudio"),
     tabMatrix: document.getElementById("tabMatrix"),
     tabGrid3d: document.getElementById("tabGrid3d"),
+    tabPlank: document.getElementById("tabPlank"),
     studioView: document.getElementById("studioView"),
     studioHud: document.getElementById("studioHud"),
     matrixView: document.getElementById("matrixView"),
@@ -171,6 +172,7 @@
     matrixConfirmSave: document.getElementById("matrixConfirmSave"),
     matrixCancelSave: document.getElementById("matrixCancelSave"),
     grid3dView: document.getElementById("grid3dView"),
+    plankView: document.getElementById("plankView"),
   };
 
   const MAX_VARIANTS = 24;
@@ -186,6 +188,7 @@
   let matrixExporting = false;
   let appPage = "studio";
   let grid3dStudio = null;
+  let plankStudio = null;
   const MatrixLib = window.D7DescriptorMatrix;
   let matrixType = "lobby";
   let matrixDescriptor = "interlocking";
@@ -3139,10 +3142,12 @@
 
   function setAppPage(page) {
     if (page === "matrix") appPage = "matrix";
+    else if (page === "plank") appPage = "plank";
     else if (page === "space3d" || page === "surfbuilder" || page === "grid3d") appPage = "grid3d";
     else appPage = "studio";
     const matrix = appPage === "matrix";
     const grid3d = appPage === "grid3d";
+    const plank = appPage === "plank";
     if (ui.tabStudio) {
       ui.tabStudio.classList.toggle("active", appPage === "studio");
       ui.tabStudio.setAttribute("aria-selected", appPage === "studio" ? "true" : "false");
@@ -3155,20 +3160,30 @@
       ui.tabGrid3d.classList.toggle("active", grid3d);
       ui.tabGrid3d.setAttribute("aria-selected", grid3d ? "true" : "false");
     }
+    if (ui.tabPlank) {
+      ui.tabPlank.classList.toggle("active", plank);
+      ui.tabPlank.setAttribute("aria-selected", plank ? "true" : "false");
+    }
     if (ui.studioView) ui.studioView.classList.toggle("hidden", appPage !== "studio");
     if (ui.matrixView) ui.matrixView.classList.toggle("hidden", !matrix);
     if (ui.grid3dView) ui.grid3dView.classList.toggle("hidden", !grid3d);
+    if (ui.plankView) ui.plankView.classList.toggle("hidden", !plank);
     const appEl = document.querySelector(".app");
     if (appEl) {
       appEl.classList.toggle("matrix-mode", matrix);
       appEl.classList.toggle("grid3d-mode", grid3d);
+      appEl.classList.toggle("plank-mode", plank);
       appEl.classList.remove("surfbuilder-mode");
     }
     if (grid3dStudio) {
       if (grid3d) grid3dStudio.show();
       else grid3dStudio.hide();
     }
-    if (matrix || grid3d) {
+    if (plankStudio) {
+      if (plank) plankStudio.show();
+      else plankStudio.hide();
+    }
+    if (matrix || grid3d || plank) {
       playing = false;
       ui.play.textContent = "Grow";
     }
@@ -3355,6 +3370,7 @@
     if (ui.tabStudio) ui.tabStudio.disabled = matrixGenerating || matrixExporting;
     if (ui.tabMatrix) ui.tabMatrix.disabled = matrixGenerating || matrixExporting;
     if (ui.tabGrid3d) ui.tabGrid3d.disabled = matrixGenerating || matrixExporting;
+    if (ui.tabPlank) ui.tabPlank.disabled = matrixGenerating || matrixExporting;
   }
 
   function captureStudioSession() {
@@ -5370,6 +5386,7 @@
   if (ui.tabStudio) ui.tabStudio.addEventListener("click", () => setAppPage("studio"));
   if (ui.tabMatrix) ui.tabMatrix.addEventListener("click", () => setAppPage("matrix"));
   if (ui.tabGrid3d) ui.tabGrid3d.addEventListener("click", () => setAppPage("grid3d"));
+  if (ui.tabPlank) ui.tabPlank.addEventListener("click", () => setAppPage("plank"));
   if (ui.matrixTypeRow) {
     ui.matrixTypeRow.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-matrix-type]");
@@ -5872,6 +5889,12 @@
         if (appPage === "grid3d" && grid3dStudio) grid3dStudio.resize();
       }).observe(grid3dStage);
     }
+    const plankStage = document.getElementById("plankStage");
+    if (plankStage) {
+      new ResizeObserver(() => {
+        if (appPage === "plank" && plankStudio) plankStudio.resize();
+      }).observe(plankStage);
+    }
   }
   loadSavedIterationsFromStorage();
   setInteractionMode("select");
@@ -5889,6 +5912,9 @@
   updateMatrixGenerateState();
   if (window.D7GridGrowth && typeof window.D7GridGrowth.mount === "function") {
     grid3dStudio = window.D7GridGrowth.mount();
+  }
+  if (window.D7PlankBuilder && typeof window.D7PlankBuilder.mount === "function") {
+    plankStudio = window.D7PlankBuilder.mount();
   }
   resize();
   restoreGridSlots();

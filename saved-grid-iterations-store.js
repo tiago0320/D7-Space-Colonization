@@ -2,7 +2,7 @@
  * Local Saved Grid Iterations (IndexedDB).
  * Independent of Saved Simulations, Saved Matrices, and Saved 3D Variations.
  * Each record holds a complete working snapshot: selection box, source
- * rectangular geometry, developed surfaces, edits, display mode, and camera.
+ * branches, roots, attractors, display toggles, and camera.
  */
 (function (global) {
   const DB_NAME = "d7-saved-grid-iterations";
