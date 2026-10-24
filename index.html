@@ -577,14 +577,25 @@
                 <span>max</span>
               </span>
             </label>
-            <label class="ctrl" title="Visible 3D Grid Growth branches accumulate along the SVG grid until they reach this length. 1 ft is close to the previous hop-by-hop behavior.">
+            <label class="ctrl" title="Visible 3D Grid Growth branches accumulate along the SVG grid until they reach this length. 1 world unit = 1 ft. Short grid edges are grouped into one committed segment.">
               Minimum Segment Length
-              <span class="value" id="grid3dMinSegVal">5.0'</span>
-              <input id="grid3dMinSeg" type="range" min="1" max="8" step="0.5" value="5" />
+              <span class="value" id="grid3dMinSegVal">6.0'</span>
+              <input id="grid3dMinSeg" type="range" min="1" max="8" step="0.5" value="6" />
               <span class="range-bounds">
                 <input id="grid3dMinSegMin" type="number" value="1" step="0.5" aria-label="Minimum Segment Length minimum" />
                 <span>min</span>
                 <input id="grid3dMinSegMax" type="number" value="8" step="0.5" aria-label="Minimum Segment Length maximum" />
+                <span>max</span>
+              </span>
+            </label>
+            <label class="ctrl" title="Internal 3D bend angle at each committed junction. Straight continuation is 180°. Turns sharper than this are rejected during growth.">
+              Minimum Bend Angle
+              <span class="value" id="grid3dMinBendVal">90°</span>
+              <input id="grid3dMinBend" type="range" min="60" max="180" step="5" value="90" />
+              <span class="range-bounds">
+                <input id="grid3dMinBendMin" type="number" value="60" step="5" aria-label="Minimum Bend Angle minimum" />
+                <span>min</span>
+                <input id="grid3dMinBendMax" type="number" value="180" step="5" aria-label="Minimum Bend Angle maximum" />
                 <span>max</span>
               </span>
             </label>
@@ -749,6 +760,15 @@
                 <span>6'</span>
               </span>
             </label>
+            <label class="ctrl" id="plankSelectedWrap">
+              Selected Plank Width
+              <span class="value" id="plankSelectedWidthVal">—</span>
+              <input id="plankSelectedWidth" type="range" min="1" max="8" step="0.25" value="2" disabled />
+              <span class="range-bounds axis-labels">
+                <span>1'</span>
+                <span>8'</span>
+              </span>
+            </label>
             <label class="check">
               <input id="plankShowBranches" type="checkbox" checked />
               Show Branches
@@ -759,6 +779,13 @@
             </label>
             <div class="row">
               <button id="plankReset" class="ghost" type="button">Reset Planks</button>
+              <button id="plankResetWidths" class="ghost" type="button">Reset Plank Widths</button>
+            </div>
+          </section>
+          <section class="grid3d-section">
+            <div class="grid3d-section-title">Export</div>
+            <div class="row">
+              <button id="plankExport3dm" class="primary" type="button" disabled>EXPORT UNIFIED PLANK .3DM</button>
             </div>
           </section>
         </aside>
@@ -775,7 +802,7 @@
             <span class="space3d-workspace-readout" id="plankReadout">Workspace: 20' W × 20' D × 20' H · Y up · 1 unit = 1 ft</span>
           </div>
           <div class="space3d-stage" id="plankStage"></div>
-          <p class="view-hint" id="plankViewHint">Left-drag orbit · Right-drag pan · Scroll zoom</p>
+          <p class="view-hint" id="plankViewHint">Click a plank to select · Shift or Ctrl-click to add · Left-drag orbit · Right-drag pan · Scroll zoom</p>
         </div>
       </div>
     </div>
@@ -792,13 +819,13 @@
     <script src="saved-matrices-store.js"></script>
     <script src="saved-grid-iterations-store.js"></script>
     <script src="descriptor-matrix.js"></script>
-    <script src="spatial-export.js?v=geomoff1"></script>
+    <script src="spatial-export.js?v=plank3dm3"></script>
     <script src="spatial-grid-spaces.js?v=geomoff1"></script>
     <script src="spatial-descriptor-metrics.js"></script>
     <script src="spatial-descriptor-profiles.js"></script>
     <script src="saved-descriptor-candidates-store.js"></script>
-    <script src="spatial-grid-growth.js?v=minseg2"></script>
-    <script src="spatial-plank-builder.js?v=plank14"></script>
+    <script src="spatial-grid-growth.js?v=minseg4"></script>
+    <script src="spatial-plank-builder.js?v=plank34"></script>
     <script src="app.js?v=n3d2"></script>
   </body>
 </html>

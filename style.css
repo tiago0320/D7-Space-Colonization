@@ -353,6 +353,10 @@ label.ctrl span.value {
   white-space: nowrap;
 }
 
+label.ctrl.is-disabled {
+  opacity: 0.5;
+}
+
 input[type="range"] {
   grid-column: 1 / -1;
   width: 100%;

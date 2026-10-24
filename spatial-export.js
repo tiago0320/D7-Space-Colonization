@@ -1,7 +1,10 @@
 /**
- * Client-side OBJ / Rhino 3DM / SVG export for 3D Grid Growth branches.
+ * Client-side OBJ / Rhino 3DM / SVG export.
+ * Grid Growth writes branch curves. Plank Builder writes one joined open Brep
+ * plus the same branch centerlines on a second layer.
  * Coordinates stay in feet. 1 unit = 1 ft. Workspace is 20' × 20' × 20'.
  * The viewport cube is never written into the file.
+ * Do not rescale. Do not thicken plank faces.
  */
 (function (global) {
   const CUBE = 20;
@@ -497,11 +500,422 @@
     return { filename: name, count: segs.length, view: viewBasis(options && options.view).name };
   }
 
+  function plankEdgeKey(a, b) {
+    return a < b ? a + "_" + b : b + "_" + a;
+  }
+
+  function plankFaceArea(verts, ids) {
+    const A = verts[ids[0]];
+    const B = verts[ids[1]];
+    const C = verts[ids[2]];
+    const D = verts[ids[3]];
+    const abx = B.x - A.x;
+    const aby = B.y - A.y;
+    const abz = B.z - A.z;
+    const acx = C.x - A.x;
+    const acy = C.y - A.y;
+    const acz = C.z - A.z;
+    const adx = D.x - A.x;
+    const ady = D.y - A.y;
+    const adz = D.z - A.z;
+    const c1x = aby * acz - abz * acy;
+    const c1y = abz * acx - abx * acz;
+    const c1z = abx * acy - aby * acx;
+    const c2x = acy * adz - acz * ady;
+    const c2y = acz * adx - acx * adz;
+    const c2z = acx * ady - acy * adx;
+    return 0.5 * (Math.hypot(c1x, c1y, c1z) + Math.hypot(c2x, c2y, c2z));
+  }
+
+  function validatePlankJoinGraph(verts, quads) {
+    const issues = [];
+    const valid = [];
+    const seen = new Set();
+    for (let f = 0; f < quads.length; f++) {
+      const ids = quads[f];
+      const tag = "FACE_" + String(f).padStart(3, "0");
+      if (!ids || ids.length !== 4) {
+        issues.push("PLANK_SYSTEM join failed at " + tag + " (not a quad)");
+        continue;
+      }
+      const a = ids[0];
+      const b = ids[1];
+      const c = ids[2];
+      const d = ids[3];
+      if ([a, b, c, d].some((id) => id == null || !verts[id])) {
+        issues.push("PLANK_SYSTEM join failed at " + tag + " (missing vertex)");
+        continue;
+      }
+      if (new Set([a, b, c, d]).size !== 4) {
+        issues.push("PLANK_SYSTEM join failed at " + tag + " (degenerate vertices)");
+        continue;
+      }
+      const sig = [a, b, c, d].slice().sort((x, y) => x - y).join(":");
+      if (seen.has(sig)) {
+        issues.push("PLANK_SYSTEM join failed at " + tag + " (duplicated overlapping face)");
+        continue;
+      }
+      seen.add(sig);
+      if (plankFaceArea(verts, ids) < 1e-10) {
+        issues.push("PLANK_SYSTEM join failed at " + tag + " (zero-area face)");
+        continue;
+      }
+      valid.push({ index: f, ids: [a, b, c, d] });
+    }
+
+    const edgeMap = new Map();
+    for (let i = 0; i < valid.length; i++) {
+      const ids = valid[i].ids;
+      const loops = [[ids[0], ids[1]], [ids[1], ids[2]], [ids[2], ids[3]], [ids[3], ids[0]]];
+      for (let e = 0; e < 4; e++) {
+        const key = plankEdgeKey(loops[e][0], loops[e][1]);
+        let rec = edgeMap.get(key);
+        if (!rec) {
+          rec = {
+            id: "EDGE_" + String(edgeMap.size).padStart(3, "0"),
+            a: loops[e][0],
+            b: loops[e][1],
+            faces: [],
+          };
+          edgeMap.set(key, rec);
+        }
+        rec.faces.push(valid[i].index);
+      }
+    }
+
+    const parent = valid.map((_, i) => i);
+    function find(x) {
+      while (parent[x] !== x) {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+      }
+      return x;
+    }
+    const indexOfFace = new Map();
+    valid.forEach((face, i) => indexOfFace.set(face.index, i));
+    const shared = [];
+    const crowded = [];
+    edgeMap.forEach((rec) => {
+      if (rec.faces.length > 2) {
+        crowded.push(rec);
+        console.warn("[Plank Builder] PLANK_SYSTEM non-manifold edge " + rec.id + " shared by " + rec.faces.length + " faces");
+      }
+      if (rec.faces.length < 2) return;
+      const va = verts[rec.a];
+      const vb = verts[rec.b];
+      const dx = va.x - vb.x;
+      const dy = va.y - vb.y;
+      const dz = va.z - vb.z;
+      if (dx * dx + dy * dy + dz * dz < 1e-16) {
+        issues.push("PLANK_SYSTEM join failed at edge " + rec.id + " (zero-length shared edge)");
+        return;
+      }
+      shared.push(rec);
+      for (let i = 1; i < rec.faces.length; i++) {
+        const ia = indexOfFace.get(rec.faces[0]);
+        const ib = indexOfFace.get(rec.faces[i]);
+        if (ia != null && ib != null && find(ia) !== find(ib)) parent[find(ib)] = find(ia);
+      }
+    });
+
+    if (valid.length > 1 && shared.length === 0) {
+      issues.push("PLANK_SYSTEM join failed: no shared edges between plank faces");
+    }
+
+    return { issues, valid, shared, crowded };
+  }
+
+  function listJoinMethods(rhino) {
+    const names = [];
+    if (!rhino || !rhino.Brep) return names;
+    const keys = [];
+    try {
+      keys.push.apply(keys, Object.keys(rhino.Brep));
+    } catch (_err) {}
+    try {
+      keys.push.apply(keys, Object.getOwnPropertyNames(rhino.Brep));
+    } catch (_err) {}
+    for (let i = 0; i < keys.length; i++) {
+      if (/join/i.test(keys[i]) && typeof rhino.Brep[keys[i]] === "function") names.push(keys[i]);
+    }
+    if (typeof rhino.Brep.joinBreps === "function" && names.indexOf("joinBreps") < 0) names.push("joinBreps");
+    if (typeof rhino.Brep.JoinBreps === "function" && names.indexOf("JoinBreps") < 0) names.push("JoinBreps");
+    return names;
+  }
+
+  function asBrepList(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value.filter(Boolean);
+    if (value.faces) return [value];
+    const n =
+      typeof value.count === "function" ? value.count() :
+      typeof value.count === "number" ? value.count :
+      typeof value.length === "number" ? value.length : 0;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const item = value.get ? value.get(i) : value[i];
+      if (item) out.push(item);
+    }
+    return out;
+  }
+
+  function tryJoinBreps(rhino, breps, tolerance) {
+    const names = listJoinMethods(rhino);
+    for (let i = 0; i < names.length; i++) {
+      try {
+        const joined = rhino.Brep[names[i]](breps, tolerance);
+        const list = asBrepList(joined);
+        if (list.length) return list;
+      } catch (_err) {}
+    }
+    return null;
+  }
+
+  function planarFaceBrep(rhino, corners) {
+    const pts3 = corners.map((v) => [v.x, v.y, v.z]);
+    const pts4 = corners.map((v) => [v.x, v.y, v.z, 1]);
+    if (typeof rhino.Brep.createFromCornerPoints === "function") {
+      try {
+        const brep = rhino.Brep.createFromCornerPoints(pts3[0], pts3[1], pts3[2], pts3[3], 1e-6);
+        if (brep && brep.faces && brep.faces().count > 0) return brep;
+      } catch (_err) {}
+    }
+    if (typeof rhino.NurbsSurface.create === "function") {
+      try {
+        const srf = rhino.NurbsSurface.create(3, false, 2, 2, 2, 2);
+        const cv = srf.points();
+        try {
+          cv.set(0, 0, pts3[0]);
+          cv.set(1, 0, pts3[1]);
+          cv.set(1, 1, pts3[2]);
+          cv.set(0, 1, pts3[3]);
+        } catch (_needW) {
+          cv.set(0, 0, pts4[0]);
+          cv.set(1, 0, pts4[1]);
+          cv.set(1, 1, pts4[2]);
+          cv.set(0, 1, pts4[3]);
+        }
+        if (srf.knotsU && typeof srf.knotsU().createUniformKnots === "function") {
+          srf.knotsU().createUniformKnots(1);
+          srf.knotsV().createUniformKnots(1);
+        }
+        const brep = rhino.Brep.createFromSurface(srf);
+        if (brep && brep.faces && brep.faces().count > 0) return brep;
+      } catch (_err) {}
+    }
+    try {
+      if (rhino.NurbsCurve && typeof rhino.NurbsCurve.createFromPoints === "function" &&
+          typeof rhino.NurbsSurface.createRuledSurface === "function") {
+        const a = rhino.NurbsCurve.createFromPoints([pts3[0], pts3[1]], 1);
+        const b = rhino.NurbsCurve.createFromPoints([pts3[3], pts3[2]], 1);
+        const ruled = rhino.NurbsSurface.createRuledSurface(a, b);
+        const brep = rhino.Brep.createFromSurface(ruled);
+        if (brep && brep.faces && brep.faces().count > 0) return brep;
+      }
+    } catch (_err) {}
+    return null;
+  }
+
+  function meshFromQuads(rhino, verts, faces) {
+    const mesh = new rhino.Mesh();
+    const mv = mesh.vertices();
+    for (let i = 0; i < verts.length; i++) {
+      const v = verts[i];
+      mv.add(v.x, v.y, v.z);
+    }
+    const mf = mesh.faces();
+    for (let i = 0; i < faces.length; i++) {
+      const q = faces[i].ids;
+      if (typeof mf.addQuadFace === "function") mf.addQuadFace(q[0], q[1], q[2], q[3]);
+      else if (typeof mf.addFace === "function") mf.addFace(q[0], q[1], q[2], q[3]);
+      else throw new Error("PLANK_SYSTEM join failed: rhino3dm cannot add quad faces");
+    }
+    try {
+      if (mesh.normals && mesh.normals().computeNormals) mesh.normals().computeNormals();
+    } catch (_err) {}
+    try {
+      if (typeof mesh.compact === "function") mesh.compact();
+    } catch (_err) {}
+    return mesh;
+  }
+
+  function brepFromMesh(rhino, mesh) {
+    const attempts = [];
+    if (typeof rhino.Brep.createFromMesh === "function") {
+      attempts.push(() => rhino.Brep.createFromMesh(mesh, false));
+      attempts.push(() => rhino.Brep.createFromMesh(mesh, true));
+      attempts.push(() => rhino.Brep.createFromMesh(mesh));
+    }
+    if (mesh && typeof mesh.toBrep === "function") {
+      attempts.push(() => mesh.toBrep(false));
+      attempts.push(() => mesh.toBrep(true));
+    }
+    if (typeof rhino.Brep.tryConvertBrep === "function") {
+      attempts.push(() => rhino.Brep.tryConvertBrep(mesh));
+    }
+    for (let i = 0; i < attempts.length; i++) {
+      try {
+        const brep = attempts[i]();
+        if (brep && brep.faces && brep.faces().count > 0) return brep;
+      } catch (_err) {}
+    }
+    return null;
+  }
+
+  function brepFaceCount(brep) {
+    try {
+      if (!brep || !brep.faces) return 0;
+      const faces = brep.faces();
+      if (typeof faces.count === "number") return faces.count;
+      if (typeof faces.count === "function") return faces.count();
+    } catch (_err) {}
+    return 0;
+  }
+
+  function brepIsSolid(brep) {
+    try {
+      if (typeof brep.isSolid === "boolean") return brep.isSolid;
+      if (typeof brep.isSolid === "function") return !!brep.isSolid();
+    } catch (_err) {}
+    return false;
+  }
+
+  function fileObjectCount(doc) {
+    try {
+      const objs = doc.objects();
+      if (typeof objs.count === "number") return objs.count;
+      if (typeof objs.count === "function") return objs.count();
+    } catch (_err) {}
+    return -1;
+  }
+
+  function pickUnifiedBrep(rhino, verts, graph) {
+    const wanted = graph.valid.length;
+    const mesh = meshFromQuads(rhino, verts, graph.valid);
+    const fromMesh = brepFromMesh(rhino, mesh);
+    if (fromMesh && brepFaceCount(fromMesh) === wanted && !brepIsSolid(fromMesh)) {
+      return fromMesh;
+    }
+
+    const joinNames = listJoinMethods(rhino);
+    if (joinNames.length) {
+      const faceBreps = [];
+      for (let i = 0; i < graph.valid.length; i++) {
+        const ids = graph.valid[i].ids;
+        const face = planarFaceBrep(rhino, [verts[ids[0]], verts[ids[1]], verts[ids[2]], verts[ids[3]]]);
+        if (!face) {
+          throw new Error("PLANK_SYSTEM join failed at FACE_" + String(graph.valid[i].index).padStart(3, "0"));
+        }
+        faceBreps.push(face);
+      }
+      const joined = tryJoinBreps(rhino, faceBreps, 1e-6);
+      if (joined && joined.length === 1 && brepFaceCount(joined[0]) === wanted && !brepIsSolid(joined[0])) {
+        return joined[0];
+      }
+      if (joined && joined.length > 1) {
+        const failed = graph.shared[0];
+        throw new Error(
+          "PLANK_SYSTEM join failed at edge " +
+            (failed ? failed.id : "EDGE_000") +
+            " (produced " + joined.length + " separate Breps)"
+        );
+      }
+    }
+
+    if (fromMesh && brepIsSolid(fromMesh)) {
+      throw new Error("PLANK_SYSTEM join failed: result is a closed solid (must remain an open polysurface)");
+    }
+    if (fromMesh && brepFaceCount(fromMesh) && brepFaceCount(fromMesh) !== wanted) {
+      throw new Error(
+        "PLANK_SYSTEM join failed: joined Brep has " +
+          brepFaceCount(fromMesh) +
+          " faces but the plank system has " +
+          wanted +
+          " quads"
+      );
+    }
+    const failed = (graph.crowded && graph.crowded[0]) || graph.shared[0];
+    throw new Error("PLANK_SYSTEM join failed at edge " + (failed ? failed.id : "EDGE_000"));
+  }
+
+  /**
+   * Export the live Plank Builder quads as one open polysurface named PLANK_SYSTEM,
+   * plus the viewport branch centerlines on layer 02_BRANCH_LINES.
+   * Uses the exact verts/quads already on screen. Does not rebuild branching.
+   */
+  async function exportUnifiedPlank3dm(system, filename) {
+    const verts = system && system.verts;
+    const quads = system && system.quads;
+    if (!verts || !quads || !quads.length) {
+      throw new Error("No plank surfaces to export.");
+    }
+
+    const graph = validatePlankJoinGraph(verts, quads);
+    if (graph.issues.length) {
+      graph.issues.forEach((msg) => console.warn("[Plank Builder]", msg));
+      throw new Error(graph.issues[0] + (graph.issues.length > 1 ? " (+" + (graph.issues.length - 1) + " more)" : ""));
+    }
+    if (!graph.valid.length) {
+      throw new Error("PLANK_SYSTEM join failed: no valid quad faces");
+    }
+
+    const rhino = await loadRhino();
+    const unified = pickUnifiedBrep(rhino, verts, graph);
+    if (brepIsSolid(unified)) {
+      throw new Error("PLANK_SYSTEM join failed: result is a closed solid (must remain an open polysurface)");
+    }
+
+    const segs = (system && system.branchSegs) || [];
+    const doc = new rhino.File3dm();
+    setFeet(rhino, doc);
+    const layerAttrs = addLayer(rhino, doc, "01_PLANK_SYSTEM");
+    const attrs = namedObjectAttrs(rhino, layerAttrs, "PLANK_SYSTEM");
+    doc.objects().addBrep(unified, attrs);
+    const objects = doc.objects();
+    const branchLayer = addLayer(rhino, doc, "02_BRANCH_LINES");
+    let branchCount = 0;
+    for (let i = 0; i < segs.length; i++) {
+      const g = segs[i];
+      const curveAttrs = namedObjectAttrs(
+        rhino,
+        branchLayer,
+        g.id || "branch_" + String(i + 1).padStart(3, "0")
+      );
+      if (addRhinoCurve(rhino, objects, curveAttrs, g.ax, g.ay, g.az, g.bx, g.by, g.bz)) branchCount += 1;
+    }
+    const objectCount = fileObjectCount(doc);
+    const expected = 1 + branchCount;
+    if (objectCount > 0 && objectCount !== expected) {
+      throw new Error(
+        "PLANK_SYSTEM join failed: file contains " +
+          objectCount +
+          " objects instead of " +
+          expected +
+          " (1 plank polysurface + " +
+          branchCount +
+          " branch lines)"
+      );
+    }
+
+    const bytes = doc.toByteArray();
+    let name = sanitizeFilename(String(filename || "D7_Plank_System").replace(/\.3dm$/i, ""));
+    if (!name) name = "D7_Plank_System";
+    downloadBlob(name + ".3dm", new Blob([bytes], { type: "application/octet-stream" }));
+    return {
+      filename: name + ".3dm",
+      faceCount: brepFaceCount(unified),
+      objectCount: objectCount < 0 ? expected : objectCount,
+      quadCount: graph.valid.length,
+      branchCount: branchCount,
+    };
+  }
+
   global.D7SpatialExport = {
     CUBE,
     sanitizeFilename,
     gridBranchesToOBJ,
     exportGridBranches3dm,
+    exportUnifiedPlank3dm,
     clippedBranchesToSvg,
     exportClippedBranchesSvg,
     hashGeometryState,

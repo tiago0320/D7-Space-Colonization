@@ -20,7 +20,8 @@
   const DEFAULT_CONNECT = false;
   const DEFAULT_CONNECT_DIST = 1;
   const DEFAULT_CONNECT_BIAS = 50;
-  const DEFAULT_MIN_SEG = 5;
+  const DEFAULT_MIN_SEG = 6;
+  const DEFAULT_MIN_BEND = 90;
   const CONNECT_HIGHLIGHT_MS = 1000;
 
   function clamp(n, a, b) {
@@ -69,6 +70,35 @@
 
   function currentMinSegmentLength(sim) {
     return resolveMinSegmentLength(sim && sim.minSegmentLength);
+  }
+
+  function resolveMinBendAngle(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return DEFAULT_MIN_BEND;
+    return clamp(n, 60, 180);
+  }
+
+  function currentMinBendAngle(sim) {
+    return resolveMinBendAngle(sim && sim.minBendAngle);
+  }
+
+  function internalBendDeg(fromPt, atPt, toPt) {
+    if (!fromPt || !atPt || !toPt) return 0;
+    const bax = fromPt.x - atPt.x;
+    const bay = fromPt.y - atPt.y;
+    const baz = fromPt.z - atPt.z;
+    const bcx = toPt.x - atPt.x;
+    const bcy = toPt.y - atPt.y;
+    const bcz = toPt.z - atPt.z;
+    const la = Math.hypot(bax, bay, baz);
+    const lc = Math.hypot(bcx, bcy, bcz);
+    if (la < 1e-9 || lc < 1e-9) return 0;
+    const dot = (bax * bcx + bay * bcy + baz * bcz) / (la * lc);
+    return Math.acos(Math.max(-1, Math.min(1, dot))) * (180 / Math.PI);
+  }
+
+  function bendOk(fromPt, atPt, toPt, minBend) {
+    return internalBendDeg(fromPt, atPt, toPt) + 1e-6 >= minBend;
   }
 
   function defaultGridUrl() {
@@ -1146,6 +1176,7 @@
       connectDistance: options.connectDistance != null ? options.connectDistance : DEFAULT_CONNECT_DIST,
       connectBias: options.connectBias != null ? options.connectBias : DEFAULT_CONNECT_BIAS,
       minSegmentLength: resolveMinSegmentLength(options.minSegmentLength),
+      minBendAngle: resolveMinBendAngle(options.minBendAngle),
       reservedGrid: new Set(),
       legacyGraph: false,
       freshConnections: [],
@@ -1499,20 +1530,19 @@
     return sim.nodeById.get(sim.gridToSim.get(gridId)) || null;
   }
 
-  function pickGraphNeighbor(sim, node, pull, extraUsed, blockedNodes) {
+  function rankGraphNeighbors(sim, node, pull, extraUsed, blockedNodes) {
     const gid = node.gridId;
     const neigh = sim.grid.adj[gid] || [];
     const plen = Math.hypot(pull.x, pull.y, pull.z);
-    if (plen < 1e-8) return -1;
+    if (plen < 1e-8) return [];
     const px = pull.x / plen;
     const py = pull.y / plen;
     const pz = pull.z / plen;
     const fromNet = findNetwork(sim, node.networkId);
-    let best = -1;
-    let bestDot = 0.04;
     const bias = sim.descriptorBias;
     const hb = bias ? Number(bias.horiz) || 0 : 0;
     const vb = bias ? Number(bias.vert) || 0 : 0;
+    const ranked = [];
     for (let i = 0; i < neigh.length; i++) {
       const toId = neigh[i];
       const ek = edgeKey(gid, toId);
@@ -1522,22 +1552,102 @@
       const occ = occupantAtGrid(sim, toId);
       if (occ && findNetwork(sim, occ.networkId) !== fromNet && !sim.connectNetworks) continue;
       const to = sim.grid.nodes[toId];
+      if (!to) continue;
       const dx = to.x - node.x;
       const dy = to.y - node.y;
       const dz = to.z - node.z;
-      const len = Math.hypot(dx, dy, dz) || 1;
+      const len = Math.hypot(dx, dy, dz);
+      if (len < 1e-9) continue;
       let score = (dx / len) * px + (dy / len) * py + (dz / len) * pz;
       if (hb || vb) {
         const horiz = 1 - Math.abs(dy) / len;
         const vert = Math.abs(dy) / len;
         score += hb * horiz * 0.35 + vb * vert * 0.35;
       }
-      if (score > bestDot) {
-        bestDot = score;
-        best = toId;
+      if (score <= 0.04) continue;
+      ranked.push({
+        id: toId,
+        score,
+        x: to.x,
+        y: to.y,
+        z: to.z,
+        len,
+      });
+    }
+    ranked.sort((a, b) => b.score - a.score);
+    return ranked;
+  }
+
+  function pickGraphNeighbor(sim, node, pull, extraUsed, blockedNodes) {
+    const ranked = rankGraphNeighbors(sim, node, pull, extraUsed, blockedNodes);
+    return ranked.length ? ranked[0].id : -1;
+  }
+
+  function armPointForBranchAtNode(sim, branch, node) {
+    if (!sim || !branch || !node) return null;
+    const pts = branch.pathPts;
+    if (branch.toId === node.id) {
+      if (pts && pts.length >= 2) {
+        const p = pts[pts.length - 2];
+        return { x: p.x, y: p.y, z: p.z };
+      }
+      const from = sim.nodeById.get(branch.fromId);
+      return from ? { x: from.x, y: from.y, z: from.z } : null;
+    }
+    if (branch.fromId === node.id) {
+      if (pts && pts.length >= 2) {
+        const p = pts[1];
+        return { x: p.x, y: p.y, z: p.z };
+      }
+      const to = sim.nodeById.get(branch.toId);
+      return to ? { x: to.x, y: to.y, z: to.z } : null;
+    }
+    return null;
+  }
+
+  function existingArmPoints(sim, node) {
+    const arms = [];
+    if (!sim || !node) return arms;
+    for (let i = 0; i < sim.branches.length; i++) {
+      const p = armPointForBranchAtNode(sim, sim.branches[i], node);
+      if (p) arms.push(p);
+    }
+    return arms;
+  }
+
+  function junctionClearOfArms(atPt, proposedPts, arms, minBend) {
+    if (!arms || !arms.length) return true;
+    if (!proposedPts || !proposedPts.length) return false;
+    for (let i = 0; i < arms.length; i++) {
+      for (let j = 0; j < proposedPts.length; j++) {
+        if (!bendOk(arms[i], atPt, proposedPts[j], minBend)) return false;
       }
     }
-    return best;
+    return true;
+  }
+
+  function pathBendOk(sim, fromNode, gridPath, minBend) {
+    if (!sim || !sim.grid || !fromNode || !gridPath || gridPath.length < 2) return false;
+    const nodes = sim.grid.nodes;
+    const startPt = { x: fromNode.x, y: fromNode.y, z: fromNode.z };
+    const first = nodes[gridPath[1]];
+    const end = nodes[gridPath[gridPath.length - 1]];
+    if (!first || !end) return false;
+    if (!junctionClearOfArms(startPt, [first, end], existingArmPoints(sim, fromNode), minBend)) return false;
+    for (let i = 1; i < gridPath.length - 1; i++) {
+      const a = nodes[gridPath[i - 1]];
+      const b = nodes[gridPath[i]];
+      const c = nodes[gridPath[i + 1]];
+      if (!a || !b || !c) return false;
+      if (!bendOk(a, b, c, minBend)) return false;
+    }
+    const occ = occupantAtGrid(sim, gridPath[gridPath.length - 1]);
+    if (occ && occ.id !== fromNode.id) {
+      const arrive = nodes[gridPath[gridPath.length - 2]];
+      if (!arrive) return false;
+      if (!junctionClearOfArms(occ, [arrive, startPt], existingArmPoints(sim, occ), minBend)) return false;
+    }
+    return true;
   }
 
   function growAlongEdge(sim, fromNode, toGridId, asConnection) {
@@ -1630,11 +1740,13 @@
 
   function commitVisibleSegment(sim, fromNode, toGridId, gridPath, pathLen, asConnection) {
     const minLen = currentMinSegmentLength(sim);
+    const minBend = currentMinBendAngle(sim);
     if (!fromNode || toGridId == null || !gridPath || gridPath.length < 2) return false;
     const pts = pathPointsFromGrid(sim, gridPath);
     let len = Number(pathLen);
     if (!Number.isFinite(len) || len <= 0) len = polylineLength(pts);
     if (!(len + 1e-6 >= minLen)) return false;
+    if (!pathBendOk(sim, fromNode, gridPath, minBend)) return false;
     if (sim.reservedGrid) sim.reservedGrid.delete(toGridId);
     let child = occupantAtGrid(sim, toGridId);
     if (child && findNetwork(sim, child.networkId) !== findNetwork(sim, fromNode.networkId) && !sim.connectNetworks) {
@@ -1663,46 +1775,74 @@
   function growMinSegment(sim, fromNode, pull) {
     if (!fromNode || fromNode.gridId == null || !sim.grid) return false;
     const minLen = currentMinSegmentLength(sim);
-    const extraUsed = new Set();
-    const walked = new Set([fromNode.gridId]);
-    const path = [fromNode.gridId];
-    let acc = 0;
-    const cursor = {
-      gridId: fromNode.gridId,
-      x: fromNode.x,
-      y: fromNode.y,
-      z: fromNode.z,
-      networkId: fromNode.networkId,
-    };
+    const minBend = currentMinBendAngle(sim);
     const fromNet = findNetwork(sim, fromNode.networkId);
+    const firsts = rankGraphNeighbors(sim, fromNode, pull, null, new Set([fromNode.gridId]));
     const maxHops = 96;
-    for (let hop = 0; hop < maxHops; hop++) {
-      const next = pickGraphNeighbor(sim, cursor, pull, extraUsed, walked);
-      if (next < 0) break;
-      const to = sim.grid.nodes[next];
-      if (!to) break;
-      const step = Math.hypot(to.x - cursor.x, to.y - cursor.y, to.z - cursor.z);
-      if (step < 1e-9) break;
-      extraUsed.add(edgeKey(cursor.gridId, next));
-      const occ = occupantAtGrid(sim, next);
-      if (occ) {
-        if (occ.id === fromNode.id) continue;
-        const sameNet = findNetwork(sim, occ.networkId) === fromNet;
-        if (!sameNet && !sim.connectNetworks) continue;
-        if (acc + step + 1e-6 < minLen) continue;
-        path.push(next);
-        return commitVisibleSegment(sim, fromNode, next, path, acc + step, !sameNet);
+
+    function tryFirstHop(first) {
+      const arms = existingArmPoints(sim, fromNode);
+      if (arms.length && !junctionClearOfArms(fromNode, [first], arms, minBend)) return false;
+      const extraUsed = new Set([edgeKey(fromNode.gridId, first.id)]);
+      const walked = new Set([fromNode.gridId, first.id]);
+      const path = [fromNode.gridId, first.id];
+      let acc = first.len;
+      const cursor = {
+        gridId: first.id,
+        x: first.x,
+        y: first.y,
+        z: first.z,
+        networkId: fromNode.networkId,
+      };
+      let prevGrid = fromNode.gridId;
+      const occ0 = occupantAtGrid(sim, first.id);
+      if (occ0) {
+        if (occ0.id === fromNode.id) return false;
+        const sameNet = findNetwork(sim, occ0.networkId) === fromNet;
+        if (!sameNet && !sim.connectNetworks) return false;
+        if (acc + 1e-6 < minLen) return false;
+        return commitVisibleSegment(sim, fromNode, first.id, path, acc, !sameNet);
       }
-      path.push(next);
-      walked.add(next);
-      acc += step;
-      cursor.gridId = next;
-      cursor.x = to.x;
-      cursor.y = to.y;
-      cursor.z = to.z;
-      if (acc + 1e-6 >= minLen) {
-        return commitVisibleSegment(sim, fromNode, next, path, acc, false);
+      for (let hop = 0; hop < maxHops; hop++) {
+        if (acc + 1e-6 >= minLen) {
+          return commitVisibleSegment(sim, fromNode, cursor.gridId, path, acc, false);
+        }
+        const ranked = rankGraphNeighbors(sim, cursor, pull, extraUsed, walked);
+        let advanced = false;
+        for (let i = 0; i < ranked.length; i++) {
+          const cand = ranked[i];
+          extraUsed.add(edgeKey(cursor.gridId, cand.id));
+          const fromPt = sim.grid.nodes[prevGrid];
+          const atPt = sim.grid.nodes[cursor.gridId];
+          if (!fromPt || !atPt || !bendOk(fromPt, atPt, cand, minBend)) continue;
+          const occ = occupantAtGrid(sim, cand.id);
+          if (occ) {
+            if (occ.id === fromNode.id) continue;
+            const sameNet = findNetwork(sim, occ.networkId) === fromNet;
+            if (!sameNet && !sim.connectNetworks) continue;
+            if (acc + cand.len + 1e-6 < minLen) continue;
+            const trial = path.concat(cand.id);
+            if (commitVisibleSegment(sim, fromNode, cand.id, trial, acc + cand.len, !sameNet)) return true;
+            continue;
+          }
+          path.push(cand.id);
+          walked.add(cand.id);
+          acc += cand.len;
+          prevGrid = cursor.gridId;
+          cursor.gridId = cand.id;
+          cursor.x = cand.x;
+          cursor.y = cand.y;
+          cursor.z = cand.z;
+          advanced = true;
+          break;
+        }
+        if (!advanced) return false;
       }
+      return false;
+    }
+
+    for (let f = 0; f < firsts.length; f++) {
+      if (tryFirstHop(firsts[f])) return true;
     }
     return false;
   }
@@ -1720,9 +1860,12 @@
   function logMinSegmentValidation(sim) {
     if (!sim || sim.legacyGraph || sim.quietValidation) return;
     const minLen = currentMinSegmentLength(sim);
+    const minBend = currentMinBendAngle(sim);
     let short = 0;
+    let acute = 0;
     let n = 0;
     let minSeen = Infinity;
+    let minAngle = Infinity;
     for (let i = 0; i < sim.branches.length; i++) {
       const b = sim.branches[i];
       n += 1;
@@ -1738,6 +1881,45 @@
           minimumSegmentLength: minLen,
           connection: !!b.connection,
         });
+      }
+      const from = sim.nodeById.get(b.fromId);
+      const to = sim.nodeById.get(b.toId);
+      if (from && to) {
+        const arms = existingArmPoints(sim, from);
+        for (let a = 0; a < arms.length; a++) {
+          const other = armPointForBranchAtNode(sim, b, from);
+          if (!other) continue;
+          if (Math.hypot(arms[a].x - other.x, arms[a].y - other.y, arms[a].z - other.z) < 1e-6) continue;
+          const ang = internalBendDeg(arms[a], from, other);
+          if (ang < minAngle) minAngle = ang;
+          if (ang + 1e-6 < minBend) {
+            acute += 1;
+            console.error("[3D Grid Growth] acute branch bend", {
+              branchId: b.id,
+              parentNodeId: b.fromId,
+              childNodeId: b.toId,
+              bendAngle: ang,
+              minimumBendAngle: minBend,
+              connection: !!b.connection,
+            });
+          }
+        }
+      }
+      const pts = b.pathPts && b.pathPts.length >= 3 ? b.pathPts : null;
+      if (pts) {
+        for (let p = 1; p < pts.length - 1; p++) {
+          const ang = internalBendDeg(pts[p - 1], pts[p], pts[p + 1]);
+          if (ang < minAngle) minAngle = ang;
+          if (ang + 1e-6 < minBend) {
+            acute += 1;
+            console.error("[3D Grid Growth] acute interior bend", {
+              branchId: b.id,
+              vertex: p,
+              bendAngle: ang,
+              minimumBendAngle: minBend,
+            });
+          }
+        }
       }
     }
     if (!n) return;
@@ -1764,12 +1946,33 @@
           " ft."
       );
     }
+    if (acute) {
+      console.error(
+        "[3D Grid Growth] min bend " +
+          minBend.toFixed(0) +
+          "°: " +
+          acute +
+          " acute turns (sharpest " +
+          (Number.isFinite(minAngle) ? minAngle.toFixed(1) : "?") +
+          "°)."
+      );
+    } else {
+      console.log(
+        "[3D Grid Growth] min bend " +
+          minBend.toFixed(0) +
+          "°: " +
+          n +
+          " committed branches" +
+          (Number.isFinite(minAngle) ? ", sharpest " + minAngle.toFixed(1) + "°." : ", no continuation bends.")
+      );
+    }
   }
 
   function shortestGridPath(sim, start, goal, maxLen) {
     if (start === goal) return [start];
     if (!sim.grid || start < 0 || goal < 0) return null;
     const grid = sim.grid;
+    const minBend = currentMinBendAngle(sim);
     const dist = new Map();
     const prev = new Map();
     const heap = [start];
@@ -1791,6 +1994,9 @@
       const d0 = dist.get(cur);
       if (d0 > maxLen) continue;
       const neigh = grid.adj[cur] || [];
+      const back = prev.get(cur);
+      const backPt = back != null ? grid.nodes[back] : null;
+      const curPt = grid.nodes[cur];
       for (let i = 0; i < neigh.length; i++) {
         const nb = neigh[i];
         const ek = edgeKey(cur, nb);
@@ -1798,6 +2004,7 @@
         if (sim.reservedGrid && sim.reservedGrid.has(nb) && nb !== goal) continue;
         const a = grid.nodes[cur];
         const b = grid.nodes[nb];
+        if (backPt && curPt && b && !bendOk(backPt, curPt, b, minBend)) continue;
         const step = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
         const nd = d0 + step;
         if (nd > maxLen + 1e-6) continue;
@@ -2029,6 +2236,8 @@
       connectBias: sim.connectBias != null ? sim.connectBias : DEFAULT_CONNECT_BIAS,
       minSegmentLength: resolveMinSegmentLength(sim.minSegmentLength),
       minimumSegmentLength: resolveMinSegmentLength(sim.minSegmentLength),
+      minBendAngle: resolveMinBendAngle(sim.minBendAngle),
+      minimumBendAngle: resolveMinBendAngle(sim.minBendAngle),
       connectedNetworks: connectedNetworkSummary(sim),
       roots: (sim.rootDrafts && sim.rootDrafts.length ? sim.rootDrafts : sim.roots.map((id) => sim.nodeById.get(id)).filter(Boolean)).map((n) => ({
         id: n.simId != null ? n.simId : n.id,
@@ -2091,6 +2300,7 @@
       connectDistance: opts.connectDistance != null ? opts.connectDistance : DEFAULT_CONNECT_DIST,
       connectBias: opts.connectBias != null ? opts.connectBias : DEFAULT_CONNECT_BIAS,
       minSegmentLength: resolveMinSegmentLength(opts.minSegmentLength),
+      minBendAngle: resolveMinBendAngle(opts.minBendAngle),
       descriptorBias: useBias ? bias : null,
     });
     sim.quietValidation = true;
@@ -3562,6 +3772,8 @@
       speedVal: document.getElementById("grid3dSpeedVal"),
       minSeg: document.getElementById("grid3dMinSeg"),
       minSegVal: document.getElementById("grid3dMinSegVal"),
+      minBend: document.getElementById("grid3dMinBend"),
+      minBendVal: document.getElementById("grid3dMinBendVal"),
       generate: document.getElementById("grid3dGenerate"),
       addRoot: document.getElementById("grid3dAddRoot"),
       moveRoot: document.getElementById("grid3dMoveRoot"),
@@ -3945,6 +4157,15 @@
       sim.minSegmentLength = v;
     }
 
+    function writeMinBendToHud(value) {
+      const v = resolveMinBendAngle(value);
+      if (els.minBend) {
+        els.minBend.value = String(v);
+        if (els.minBendVal) els.minBendVal.textContent = Math.round(v) + "°";
+      }
+      sim.minBendAngle = v;
+    }
+
     function writeConnectToHud(data) {
       if (!data) return;
       if (els.connectNetworks && data.connectNetworks != null) {
@@ -4158,6 +4379,7 @@
       sim.connectDistance = clamp(Number(els.connectDist?.value ?? DEFAULT_CONNECT_DIST), 0.25, 4);
       sim.connectBias = clamp(Number(els.connectBias?.value ?? DEFAULT_CONNECT_BIAS), 0, 100);
       sim.minSegmentLength = resolveMinSegmentLength(els.minSeg?.value ?? DEFAULT_MIN_SEG);
+      sim.minBendAngle = resolveMinBendAngle(els.minBend?.value ?? DEFAULT_MIN_BEND);
     }
 
     function growLoop(ts) {
@@ -4428,6 +4650,8 @@
           connectBias: clamp(Number(els.connectBias?.value ?? DEFAULT_CONNECT_BIAS), 0, 100),
           minimumSegmentLength: resolveMinSegmentLength(els.minSeg?.value ?? sim.minSegmentLength),
           minSegmentLength: resolveMinSegmentLength(els.minSeg?.value ?? sim.minSegmentLength),
+          minimumBendAngle: resolveMinBendAngle(els.minBend?.value ?? sim.minBendAngle),
+          minBendAngle: resolveMinBendAngle(els.minBend?.value ?? sim.minBendAngle),
         },
         displayState: {
           showBranches: !!(els.showBranches && els.showBranches.checked),
@@ -4444,6 +4668,8 @@
         connectBias: clamp(Number(els.connectBias?.value ?? DEFAULT_CONNECT_BIAS), 0, 100),
         minimumSegmentLength: resolveMinSegmentLength(els.minSeg?.value ?? sim.minSegmentLength),
         minSegmentLength: resolveMinSegmentLength(els.minSeg?.value ?? sim.minSegmentLength),
+        minimumBendAngle: resolveMinBendAngle(els.minBend?.value ?? sim.minBendAngle),
+        minBendAngle: resolveMinBendAngle(els.minBend?.value ?? sim.minBendAngle),
         growthSnapshot: snapshot(sim),
         showBranches: !!(els.showBranches && els.showBranches.checked),
         showSelBox: !(els.showSelBox) || !!els.showSelBox.checked,
@@ -4504,6 +4730,13 @@
             snapshot.minSegmentLength ??
             (snapshot.growthSnapshot &&
               (snapshot.growthSnapshot.minimumSegmentLength ?? snapshot.growthSnapshot.minSegmentLength))
+        );
+        writeMinBendToHud(
+          (snapshot.parameters && (snapshot.parameters.minimumBendAngle ?? snapshot.parameters.minBendAngle)) ??
+            snapshot.minimumBendAngle ??
+            snapshot.minBendAngle ??
+            (snapshot.growthSnapshot &&
+              (snapshot.growthSnapshot.minimumBendAngle ?? snapshot.growthSnapshot.minBendAngle))
         );
         if (snapshot.randomSeed != null) sim.seed = snapshot.randomSeed >>> 0;
         if (snapshot.growthSnapshot && snapshot.growthSnapshot.nodes && snapshot.growthSnapshot.nodes.length) {
@@ -5006,10 +5239,16 @@
     bindVal(els.connectBias, els.connectBiasVal, (v) => String(Math.round(Number(v))));
     bindVal(els.speed, els.speedVal, (v) => `${Math.round(Number(v))}/s`);
     bindVal(els.minSeg, els.minSegVal, (v) => `${Number(v).toFixed(1)}'`);
+    bindVal(els.minBend, els.minBendVal, (v) => `${Math.round(Number(v))}°`);
     bindVal(els.spacing, els.spacingVal, (v) => `${Number(v).toFixed(1)}'`);
     if (els.minSeg) {
       els.minSeg.addEventListener("input", () => {
         sim.minSegmentLength = resolveMinSegmentLength(els.minSeg.value);
+      });
+    }
+    if (els.minBend) {
+      els.minBend.addEventListener("input", () => {
+        sim.minBendAngle = resolveMinBendAngle(els.minBend.value);
       });
     }
 
@@ -5021,7 +5260,8 @@
       { slider: "grid3dConnectDist", min: "grid3dConnectDistMin", max: "grid3dConnectDistMax", hardMin: 0.25, hardMax: 8 },
       { slider: "grid3dConnectBias", min: "grid3dConnectBiasMin", max: "grid3dConnectBiasMax", hardMin: 0, hardMax: 100 },
       { slider: "grid3dSpeed", min: "grid3dSpeedMin", max: "grid3dSpeedMax", hardMin: 1, hardMax: 120 },
-      { slider: "grid3dMinSeg", min: "grid3dMinSegMin", max: "grid3dMinSegMax", hardMin: 1, hardMax: 8 }
+      { slider: "grid3dMinSeg", min: "grid3dMinSegMin", max: "grid3dMinSegMax", hardMin: 1, hardMax: 8 },
+      { slider: "grid3dMinBend", min: "grid3dMinBendMin", max: "grid3dMinBendMax", hardMin: 60, hardMax: 180 }
     ];
 
     function saveGridSliderBounds() {
@@ -5278,6 +5518,7 @@
             connectDistance: clamp(Number(els.connectDist && els.connectDist.value != null ? els.connectDist.value : DEFAULT_CONNECT_DIST), 0.25, 4),
             connectBias: clamp(Number(els.connectBias && els.connectBias.value != null ? els.connectBias.value : DEFAULT_CONNECT_BIAS), 0, 100),
             minSegmentLength: resolveMinSegmentLength(els.minSeg && els.minSeg.value != null ? els.minSeg.value : sim.minSegmentLength),
+            minBendAngle: resolveMinBendAngle(els.minBend && els.minBend.value != null ? els.minBend.value : sim.minBendAngle),
             maxSteps: 560,
           });
           const metrics = global.D7DescriptorMetrics.analyze(snap);
@@ -5830,6 +6071,7 @@
       sim.connectBias =
         data.connectBias != null ? clamp(Number(data.connectBias), 0, 100) : sim.connectBias;
       writeMinSegToHud(data.minimumSegmentLength ?? data.minSegmentLength);
+      writeMinBendToHud(data.minimumBendAngle ?? data.minBendAngle);
       writeConnectToHud({
         connectNetworks: sim.connectNetworks,
         connectDistance: sim.connectDistance,
